@@ -1,31 +1,50 @@
-import pkg from '@prisma/client';
-const { PrismaClient } = pkg;
-import { PrismaPg } from '@prisma/adapter-pg';
+import pg from 'pg';
 import { config } from './env.js';
 
-const globalForPrisma = globalThis;
+const { Pool } = pg;
 
-function createPrisma() {
-  if (!config.databaseUrl) {
-    return new PrismaClient({ log: config.isDev ? ['query', 'error', 'warn'] : ['error'] });
+const url = config.databaseUrl || '';
+const needsAcceptSelfSigned =
+  url &&
+  (/sslmode=|supabase|neon\.|render\.com|amazonaws\.com/i.test(url) ||
+    (!url.includes('localhost') && !url.includes('127.0.0.1')));
+const poolConfig = config.databaseUrl
+  ? {
+      connectionString: config.databaseUrl,
+      ssl: needsAcceptSelfSigned ? { rejectUnauthorized: false } : false,
+    }
+  : {};
+
+const pool = new Pool(poolConfig);
+
+/**
+ * Run a parameterized query. Usage: query('SELECT * FROM "User" WHERE id = $1', [id])
+ * @param {string} text - SQL with $1, $2, ... placeholders
+ * @param {unknown[]} [params] - Values for placeholders
+ * @returns {Promise<pg.QueryResult>}
+ */
+export async function query(text, params = []) {
+  const client = await pool.connect();
+  try {
+    return await client.query(text, params);
+  } finally {
+    client.release();
   }
-  const adapter = new PrismaPg({
-    connectionString: config.databaseUrl,
-    // Accept self-signed TLS certs (e.g. Render, Neon, other cloud Postgres)
-    ssl: { rejectUnauthorized: false },
-  });
-  return new PrismaClient({
-    adapter,
-    log: config.isDev ? ['query', 'error', 'warn'] : ['error'],
-  });
 }
 
-export const prisma = globalForPrisma.prisma ?? createPrisma();
-if (config.isDev) globalForPrisma.prisma = prisma;
+/** Get the pool for transactions (client.query within a single client). */
+export function getPool() {
+  return pool;
+}
+
+/** Generate a new id (e.g. for inserts). Compatible with Prisma-style text ids. */
+export function createId() {
+  return crypto.randomUUID();
+}
 
 export async function connectDb() {
   try {
-    await prisma.$connect();
+    await query('SELECT 1');
     return true;
   } catch (err) {
     console.error('[db] Connection failed:', err.message);
@@ -34,5 +53,5 @@ export async function connectDb() {
 }
 
 export async function disconnectDb() {
-  await prisma.$disconnect();
+  await pool.end();
 }

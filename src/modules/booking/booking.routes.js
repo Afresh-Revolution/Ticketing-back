@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { prisma } from '../../shared/config/db.js';
+import { query, createId } from '../../shared/config/db.js';
 import { optionalAuth } from '../../shared/middleware/authMiddleware.js';
 import * as imageController from './beforeBooking/image/image.controller.js';
 import * as artController from './beforeBooking/art/art.controller.js';
@@ -19,15 +19,14 @@ router.post('/tickets', optionalAuth, async (req, res, next) => {
   try {
     const { eventId, email, quantity = 1 } = req.body;
     if (!eventId || !email) return res.status(400).json({ error: 'eventId and email are required' });
-    const ticket = await prisma.ticket.create({
-      data: {
-        eventId,
-        email,
-        userId: req.user?.id ?? null,
-        quantity: Math.max(1, parseInt(quantity, 10) || 1),
-      },
-    });
-    res.status(201).json(ticket);
+    const id = createId();
+    const qty = Math.max(1, parseInt(quantity, 10) || 1);
+    await query(
+      'INSERT INTO "Ticket" (id, "eventId", "userId", email, quantity) VALUES ($1, $2, $3, $4, $5)',
+      [id, eventId, req.user?.id ?? null, email, qty]
+    );
+    const { rows } = await query('SELECT * FROM "Ticket" WHERE id = $1', [id]);
+    res.status(201).json(rows[0]);
   } catch (e) {
     next(e);
   }

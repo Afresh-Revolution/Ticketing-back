@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env.js';
-import { prisma } from '../config/db.js';
+import { query } from '../config/db.js';
 
 export async function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -12,10 +12,11 @@ export async function authMiddleware(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, config.jwtSecret);
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      select: { id: true, email: true, name: true },
-    });
+    const { rows } = await query(
+      'SELECT id, email, name FROM "User" WHERE id = $1',
+      [decoded.userId]
+    );
+    const user = rows[0];
     if (!user) return res.status(401).json({ error: 'User not found' });
     req.user = user;
     next();
@@ -31,23 +32,20 @@ export function optionalAuth(req, res, next) {
     req.user = null;
     return next();
   }
-  jwt.verify(token, config.jwtSecret, (err, decoded) => {
+  jwt.verify(token, config.jwtSecret, async (err, decoded) => {
     if (err) {
       req.user = null;
       return next();
     }
-    prisma.user
-      .findUnique({
-        where: { id: decoded.userId },
-        select: { id: true, email: true, name: true },
-      })
-      .then((user) => {
-        req.user = user ?? null;
-        next();
-      })
-      .catch(() => {
-        req.user = null;
-        next();
-      });
+    try {
+      const { rows } = await query(
+        'SELECT id, email, name FROM "User" WHERE id = $1',
+        [decoded.userId]
+      );
+      req.user = rows[0] ?? null;
+    } catch {
+      req.user = null;
+    }
+    next();
   });
 }

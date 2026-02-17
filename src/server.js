@@ -9,7 +9,7 @@ const server = app.listen(config.port, async () => {
   if (dbOk) {
     console.log('[server] Database connected successfully');
   } else {
-    console.warn('[server] Database not connected. Set DATABASE_URL in .env and run: npx prisma migrate dev');
+    console.warn('[server] Database not connected. Set DATABASE_URL in .env and run: psql $DATABASE_URL -f db/schema.sql');
   }
 });
 

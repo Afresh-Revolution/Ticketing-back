@@ -1,4 +1,4 @@
-import { prisma } from '../../../shared/config/db.js';
+import { query } from '../../../shared/config/db.js';
 
 const SECTION_DEFAULT = {
   title: 'Trending Now',
@@ -22,10 +22,9 @@ function formatPrice(price, currency = 'N') {
 
 export const trendingModel = {
   async get() {
-    const events = await prisma.event.findMany({
-      take: 6,
-      orderBy: { date: 'asc' },
-    });
+    const { rows: events } = await query(
+      'SELECT * FROM "Event" ORDER BY date ASC LIMIT 6'
+    );
     const cards = events.map((e) => ({
       eventId: e.id,
       title: e.title,

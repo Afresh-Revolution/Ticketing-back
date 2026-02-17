@@ -1,6 +1,6 @@
 import 'dotenv/config';
 
-const required = ['DATABASE_URL', 'DIRECT_URL'];
+const required = ['DATABASE_URL'];
 const missing = required.filter((key) => !process.env[key]);
 if (missing.length) {
   console.warn(`[config] Missing env: ${missing.join(', ')}. Using defaults may cause runtime errors.`);

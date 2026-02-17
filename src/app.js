@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { config } from './shared/config/env.js';
-import { prisma } from './shared/config/db.js';
+import { query } from './shared/config/db.js';
 import { errorHandler } from './shared/middleware/errorHandler.js';
 import authRoutes from './modules/auth/auth.routes.js';
 import landingRoutes from './modules/landing/landing.routes.js';
@@ -24,7 +24,7 @@ app.use(express.urlencoded({ extended: true }));
 app.get('/health', async (req, res) => {
   let dbOk = false;
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    await query('SELECT 1');
     dbOk = true;
   } catch {
     // ignore

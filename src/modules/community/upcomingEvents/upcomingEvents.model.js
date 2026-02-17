@@ -1,4 +1,4 @@
-import { prisma } from '../../../shared/config/db.js';
+import { query } from '../../../shared/config/db.js';
 
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
@@ -49,18 +49,18 @@ function mapEventToCard(e) {
 
 export const upcomingEventsModel = {
   async get(opts = {}) {
-    const where = { date: { gte: new Date() } };
+    const limit = Math.min(opts.limit ?? 10, 50);
+    let sql = 'SELECT * FROM "Event" WHERE date >= $1';
+    const params = [new Date()];
     if (opts.category) {
       const slug = String(opts.category).toLowerCase();
       const name = CATEGORY_SLUG_TO_NAME[slug] ?? opts.category;
-      where.category = name;
+      params.push(name);
+      sql += ` AND category = $${params.length}`;
     }
-    const limit = Math.min(opts.limit ?? 10, 50);
-    const events = await prisma.event.findMany({
-      where,
-      orderBy: { date: 'asc' },
-      take: limit,
-    });
+    sql += ' ORDER BY date ASC LIMIT $' + (params.length + 1);
+    params.push(limit);
+    const { rows: events } = await query(sql, params);
     const cards = events.map(mapEventToCard);
     return {
       ...SECTION_DEFAULT,

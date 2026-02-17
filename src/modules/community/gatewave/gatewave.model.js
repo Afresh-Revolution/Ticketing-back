@@ -1,4 +1,4 @@
-import { prisma } from '../../../shared/config/db.js';
+import { query } from '../../../shared/config/db.js';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -36,10 +36,11 @@ export const gatewaveModel = {
         : null,
     };
 
-    const featuredEventRow = await prisma.event.findFirst({
-      where: { date: { gte: new Date() } },
-      orderBy: { date: 'asc' },
-    });
+    const { rows } = await query(
+      'SELECT * FROM "Event" WHERE date >= $1 ORDER BY date ASC LIMIT 1',
+      [new Date()]
+    );
+    const featuredEventRow = rows[0];
 
     const featuredEvent = featuredEventRow
       ? {

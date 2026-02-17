@@ -1,6 +1,6 @@
 # Gatewave Backend
 
-Express + Prisma + PostgreSQL (Supabase) backend with modular structure.
+Express + PostgreSQL (pg driver) backend with raw SQL schema and modular structure.
 
 ## Folder structure
 
@@ -8,79 +8,38 @@ Express + Prisma + PostgreSQL (Supabase) backend with modular structure.
 src/
 ├── modules/
 │   ├── auth/                 # Signup / Signin
-│   │   ├── auth.controller.js
-│   │   ├── auth.service.js
-│   │   ├── auth.routes.js
-│   │   └── auth.model.js
-│   │
-│   ├── landing/               # Landing page
-│   │   ├── hero/
-│   │   ├── everyone/
-│   │   ├── whyChooseUs/
-│   │   ├── trending/
-│   │   ├── join/
-│   │   ├── footer/
-│   │   └── landing.routes.js
-│   │
+│   ├── landing/              # Landing page (hero, trending, etc.)
 │   ├── community/            # Event ticket community
-│   │   ├── gatewave/
-│   │   ├── categories/
-│   │   ├── upcomingEvents/
-│   │   ├── footer/
-│   │   └── community.routes.js
-│   │
 │   ├── booking/              # Before & after booking
-│   │   ├── beforeBooking/
-│   │   │   ├── image/
-│   │   │   ├── art/
-│   │   │   └── ticketSelection/
-│   │   ├── afterBooking/
-│   │   │   ├── bookedPay/
-│   │   │   └── payed/
-│   │   └── booking.routes.js
-│   │
 │   ├── user/                 # User site
-│   │   ├── userPage/
-│   │   ├── footer/
-│   │   └── user.routes.js
-│   │
 │   └── event/                # Core event system
-│       ├── event.controller.js
-│       ├── event.routes.js
-│       └── event.model.js
-│
 ├── shared/
 │   ├── middleware/
-│   │   ├── authMiddleware.js
-│   │   └── errorHandler.js
 │   ├── utils/
-│   │   └── generateTicket.js
-│   └── config/
-│       ├── db.js
-│       └── env.js
-│
+│   └── config/               # db.js (pg pool), env.js
 ├── app.js
 └── server.js
 
-prisma/
-├── schema.prisma
-└── migrations/
+db/
+├── schema.sql                # PostgreSQL DDL (tables, indexes, triggers)
+├── run-schema.js             # Apply schema via Node (npm run db:schema)
+└── seed.js                   # Seed default hero section (npm run db:seed)
 ```
 
 ## Setup
 
-1. Copy `.env.example` to `.env` and set `DATABASE_URL`, `DIRECT_URL`, and `JWT_SECRET`.
+1. Copy `.env.example` to `.env` and set `DATABASE_URL` and `JWT_SECRET`.
 2. Install dependencies: `npm install`
-3. Generate Prisma client: `npm run db:generate`
-4. Run migrations: `npm run db:migrate`
+3. Apply the database schema: `npm run db:schema`
+4. (Optional) Seed default data: `npm run db:seed`
+5. Start the server: `npm run dev` or `npm start`
 
 ## Scripts
 
 - `npm run dev` – start with watch mode
 - `npm start` – start server
-- `npm run db:generate` – generate Prisma client
-- `npm run db:migrate` – run migrations
-- `npm run db:studio` – open Prisma Studio
+- `npm run db:schema` – create/update tables from `db/schema.sql` (uses `DATABASE_URL`)
+- `npm run db:seed` – seed default hero section if none exists
 
 ## API base
 
