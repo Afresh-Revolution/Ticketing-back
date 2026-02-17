@@ -48,9 +48,10 @@ export const eventModel = {
   },
   async create(data) {
     const id = createId();
+    const now = new Date().toISOString();
     await query(
-      `INSERT INTO "Event" (id, title, description, date, venue, "imageUrl", category, "startTime", price, currency)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      `INSERT INTO "Event" (id, title, description, date, venue, "imageUrl", category, "startTime", price, currency, "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         id,
         data.title,
@@ -62,6 +63,8 @@ export const eventModel = {
         data.startTime ?? null,
         data.price ?? null,
         data.currency ?? null,
+        now,
+        now,
       ]
     );
     const { rows } = await query('SELECT * FROM "Event" WHERE id = $1', [id]);

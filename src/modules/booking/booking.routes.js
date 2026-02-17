@@ -21,9 +21,10 @@ router.post('/tickets', optionalAuth, async (req, res, next) => {
     if (!eventId || !email) return res.status(400).json({ error: 'eventId and email are required' });
     const id = createId();
     const qty = Math.max(1, parseInt(quantity, 10) || 1);
+    const now = new Date().toISOString();
     await query(
-      'INSERT INTO "Ticket" (id, "eventId", "userId", email, quantity) VALUES ($1, $2, $3, $4, $5)',
-      [id, eventId, req.user?.id ?? null, email, qty]
+      'INSERT INTO "Ticket" (id, "eventId", "userId", email, quantity, "createdAt", "updatedAt") VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [id, eventId, req.user?.id ?? null, email, qty, now, now]
     );
     const { rows } = await query('SELECT * FROM "Ticket" WHERE id = $1', [id]);
     res.status(201).json(rows[0]);
