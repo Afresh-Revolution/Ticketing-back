@@ -52,19 +52,27 @@ function splitSql(sql) {
   return statements.filter((s) => s.length > 0);
 }
 
+function getConnectionConfig() {
+  const url = process.env.DATABASE_URL || '';
+  const isRemote =
+    url && !url.includes('localhost') && !url.includes('127.0.0.1');
+  const connectionString =
+    isRemote && url.includes('sslmode=') && !url.includes('uselibpqcompat=')
+      ? (url.includes('?') ? `${url}&uselibpqcompat=true` : `${url}?uselibpqcompat=true`)
+      : url;
+  return {
+    connectionString: url ? connectionString : undefined,
+    ssl: isRemote ? { rejectUnauthorized: false } : false,
+  };
+}
+
 async function main() {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
     console.error('DATABASE_URL is not set');
     process.exit(1);
   }
-  const needsAcceptSelfSigned =
-    /sslmode=|supabase|neon\.|render\.com|amazonaws\.com/i.test(connectionString) ||
-    (!connectionString.includes('localhost') && !connectionString.includes('127.0.0.1'));
-  const pool = new pg.Pool({
-    connectionString,
-    ssl: needsAcceptSelfSigned ? { rejectUnauthorized: false } : false,
-  });
+  const pool = new pg.Pool(getConnectionConfig());
   const sql = readFileSync(join(__dirname, 'schema.sql'), 'utf8');
   const statements = splitSql(sql);
   const client = await pool.connect();

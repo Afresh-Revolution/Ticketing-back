@@ -9,7 +9,11 @@ if (missing.length) {
 /** Comma-separated list of allowed origins for CORS, e.g. "http://localhost:5173,https://myapp.vercel.app" */
 const corsOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean)
-  : ['http://localhost:5173', 'http://localhost:3000'];
+  : [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'https://ticketing-wu55t.ondigitalocean.app',
+    ];
 
 export const config = {
   env: process.env.NODE_ENV || 'development',

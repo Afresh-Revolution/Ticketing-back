@@ -2,12 +2,15 @@ import 'dotenv/config';
 import pg from 'pg';
 
 const url = process.env.DATABASE_URL || '';
-const needsAcceptSelfSigned =
-  /sslmode=|supabase|neon\.|render\.com|amazonaws\.com/i.test(url) ||
-  (url && !url.includes('localhost') && !url.includes('127.0.0.1'));
+const isRemote =
+  url && !url.includes('localhost') && !url.includes('127.0.0.1');
+const connectionString =
+  isRemote && url.includes('sslmode=') && !url.includes('uselibpqcompat=')
+    ? (url.includes('?') ? `${url}&uselibpqcompat=true` : `${url}?uselibpqcompat=true`)
+    : url;
 const pool = new pg.Pool({
-  connectionString: url,
-  ssl: needsAcceptSelfSigned ? { rejectUnauthorized: false } : false,
+  connectionString,
+  ssl: isRemote ? { rejectUnauthorized: false } : false,
 });
 
 const defaultHero = {

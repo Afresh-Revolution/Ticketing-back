@@ -4,14 +4,17 @@ import { config } from './env.js';
 const { Pool } = pg;
 
 const url = config.databaseUrl || '';
-const needsAcceptSelfSigned =
-  url &&
-  (/sslmode=|supabase|neon\.|render\.com|amazonaws\.com/i.test(url) ||
-    (!url.includes('localhost') && !url.includes('127.0.0.1')));
+const isRemoteDb =
+  url && !url.includes('localhost') && !url.includes('127.0.0.1');
+// pg-connection-string treats sslmode=require as verify-full; add uselibpqcompat so SSL accepts cloud DB certs
+const connectionString =
+  isRemoteDb && url.includes('sslmode=') && !url.includes('uselibpqcompat=')
+    ? (url.includes('?') ? `${url}&uselibpqcompat=true` : `${url}?uselibpqcompat=true`)
+    : url;
 const poolConfig = config.databaseUrl
   ? {
-      connectionString: config.databaseUrl,
-      ssl: needsAcceptSelfSigned ? { rejectUnauthorized: false } : false,
+      connectionString: connectionString || config.databaseUrl,
+      ssl: isRemoteDb ? { rejectUnauthorized: false } : false,
     }
   : {};
 
