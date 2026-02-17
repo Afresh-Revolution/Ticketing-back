@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS "User" (
   email      TEXT NOT NULL UNIQUE,
   password   TEXT NOT NULL,
   name       TEXT,
+  role       TEXT NOT NULL DEFAULT 'user', -- 'user', 'admin', 'superadmin'
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -45,6 +46,8 @@ CREATE TABLE IF NOT EXISTS "Event" (
   "startTime" TEXT,
   price       INTEGER,
   currency    TEXT,
+  "isTrending" BOOLEAN DEFAULT FALSE,
+  location    TEXT,
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );

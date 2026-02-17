@@ -46,3 +46,37 @@ export async function signIn(req, res, next) {
     next(e);
   }
 }
+
+export async function createAdmin(req, res, next) {
+  try {
+    console.log('[auth.controller] Received create-admin request');
+    const { email, password, name } = req.body;
+    
+    // Check if the requester has a super admin token
+    // For super admin, the token is validated in middleware but we need additional check
+    // Since super admin token is a special client-side token, we'll validate based on the user
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    
+    // Check if token indicates super admin (starts with 'superadmin-token-')
+    const isSuperAdmin = token && token.startsWith('superadmin-token-');
+    
+    if (!isSuperAdmin) {
+      console.log('[auth.controller] Unauthorized: Only super admin can create admins');
+      return res.status(403).json({ error: 'Only super admin can create admins' });
+    }
+    
+    if (!email || !password || !name) {
+      console.log('[auth.controller] Missing required fields');
+      return res.status(400).json({ error: 'Name, email and password are required' });
+    }
+    
+    console.log('[auth.controller] Creating admin for email:', email);
+    const result = await authService.createAdmin(email, password, name);
+    console.log('[auth.controller] Admin created successfully');
+    res.status(201).json(result);
+  } catch (e) {
+    console.error('[auth.controller] Create admin error:', e.message);
+    next(e);
+  }
+}

@@ -8,6 +8,7 @@ router.get('/', eventController.list);
 router.get('/:id', eventController.getById);
 router.post('/', authMiddleware, eventController.create);
 router.patch('/:id', authMiddleware, eventController.update);
+router.patch('/:id/trending', authMiddleware, eventController.toggleTrending);
 router.delete('/:id', authMiddleware, eventController.remove);
 
 export default router;
