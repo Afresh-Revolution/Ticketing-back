@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import { config } from './shared/config/env.js';
 import { prisma } from './shared/config/db.js';
 import { errorHandler } from './shared/middleware/errorHandler.js';
@@ -11,6 +12,11 @@ import eventRoutes from './modules/event/event.routes.js';
 
 const app = express();
 
+app.use(cors({
+  origin: config.corsOrigins,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
