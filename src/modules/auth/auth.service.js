@@ -62,9 +62,56 @@ export async function signIn(email, password) {
     const token = jwt.sign({ userId: user.id }, config.jwtSecret, { expiresIn: config.jwtExpiresIn });
     
     console.log('[auth.service] Signin successful for user:', user.id);
-    return { user: { id: user.id, email: user.email, name: user.name }, token };
+    return { 
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        name: user.name,
+        role: user.role || 'user' 
+      }, 
+      token 
+    };
   } catch (error) {
     console.error('[auth.service] Signin failed:', error.message);
+    throw error;
+  }
+}
+
+export async function createAdmin(email, password, name) {
+  try {
+    console.log('[auth.service] Starting admin creation for email:', email);
+    
+    const existing = await authModel.findUserByEmail(email);
+    if (existing) {
+      console.log('[auth.service] Email already exists:', email);
+      throw Object.assign(new Error('Email already registered'), { statusCode: 400 });
+    }
+    
+    console.log('[auth.service] Hashing password...');
+    const hashed = await bcrypt.hash(password, SALT_ROUNDS);
+    
+    console.log('[auth.service] Creating admin user in database...');
+    const user = await authModel.createAdmin({
+      email,
+      password: hashed,
+      name,
+    });
+    
+    console.log('[auth.service] Generating JWT token for new admin...');
+    const token = jwt.sign({ userId: user.id }, config.jwtSecret, { expiresIn: config.jwtExpiresIn });
+    
+    console.log('[auth.service] Admin creation successful for user:', user.id);
+    return { 
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        name: user.name,
+        role: user.role 
+      }, 
+      token 
+    };
+  } catch (error) {
+    console.error('[auth.service] Admin creation failed:', error.message);
     throw error;
   }
 }

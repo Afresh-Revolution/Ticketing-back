@@ -9,6 +9,7 @@ import communityRoutes from './modules/community/community.routes.js';
 import bookingRoutes from './modules/booking/booking.routes.js';
 import userRoutes from './modules/user/user.routes.js';
 import eventRoutes from './modules/event/event.routes.js';
+import orderRoutes from './modules/order/order.routes.js';
 
 const app = express();
 
@@ -43,6 +44,7 @@ app.use('/api/community', communityRoutes);
 app.use('/api/booking', bookingRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/events', eventRoutes);
+app.use('/api/orders', orderRoutes);
 
 app.get('/api', (req, res) => {
   res.json({

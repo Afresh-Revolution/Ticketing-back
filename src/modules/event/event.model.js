@@ -13,6 +13,8 @@ function rowToEvent(row) {
     startTime: row.startTime,
     price: row.price,
     currency: row.currency,
+    isTrending: row.isTrending,
+    location: row.location,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -21,37 +23,58 @@ function rowToEvent(row) {
 export const eventModel = {
   async findMany(opts = {}) {
     const limit = opts.take != null ? Math.max(0, opts.take) : null;
-    const sql = limit != null
-      ? 'SELECT * FROM "Event" ORDER BY date ASC LIMIT $1'
-      : 'SELECT * FROM "Event" ORDER BY date ASC';
-    const params = limit != null ? [limit] : [];
+    let sql = 'SELECT * FROM "Event"';
+    const params = [];
+    
+    // Handle trending filter
+    if (opts.trending) {
+      sql += ' WHERE "isTrending" = true';
+    }
+    
+    sql += ' ORDER BY date ASC';
+    
+    if (limit != null) {
+      if (params.length === 0) {
+        sql += ' LIMIT $1';
+        params.push(limit);
+      } else {
+        // If we already have params (e.g. for WHERE clause which we don't have yet but good practice)
+        // For now trending is boolean, so no param needed for that specific check
+        // but if we had WHERE category = $1, then LIMIT would be $2
+        sql += ' LIMIT $' + (params.length + 1);
+        params.push(limit);
+      }
+    }
+
     const { rows } = await query(sql, params);
     return rows.map(rowToEvent);
   },
-  async findById(id, includeTickets = false) {
+  async findById(id) {
     const { rows } = await query('SELECT * FROM "Event" WHERE id = $1', [id]);
     const event = rowToEvent(rows[0]);
     if (!event) return null;
-    if (includeTickets) {
-      const { rows: ticketRows } = await query('SELECT * FROM "Ticket" WHERE "eventId" = $1', [id]);
-      event.tickets = ticketRows.map((r) => ({
-        id: r.id,
-        eventId: r.eventId,
-        userId: r.userId,
-        email: r.email,
-        quantity: r.quantity,
-        createdAt: r.createdAt,
-        updatedAt: r.updatedAt,
-      }));
-    }
+    
+    // Fetch Ticket Types (pools) and map them to "tickets" field for frontend compatibility
+    const { rows: ticketTypeRows } = await query('SELECT * FROM "TicketType" WHERE "eventId" = $1', [id]);
+    event.tickets = ticketTypeRows.map(t => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      price: t.price,
+      quantity: t.quantity,
+      // Frontend expects these fields for now
+    }));
+    
     return event;
   },
   async create(data) {
     const id = createId();
-    const now = new Date().toISOString();
+    constnow = new Date().toISOString();
+    
+    // 1. Create Event
     await query(
-      `INSERT INTO "Event" (id, title, description, date, venue, "imageUrl", category, "startTime", price, currency, "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      `INSERT INTO "Event" (id, title, description, date, venue, "imageUrl", category, "startTime", price, currency, "isTrending", location, "createdBy", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
         id,
         data.title,
@@ -63,10 +86,35 @@ export const eventModel = {
         data.startTime ?? null,
         data.price ?? null,
         data.currency ?? null,
+        data.isTrending ?? false,
+        data.location ?? null,
+        data.createdBy ?? null,
         now,
         now,
       ]
     );
+
+    // 2. Create Ticket Types (if any)
+    if (data.ticketTypes && Array.isArray(data.ticketTypes)) {
+      for (const ticket of data.ticketTypes) {
+        const ticketId = createId();
+        await query(
+          `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, "createdAt", "updatedAt")
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            ticketId,
+            id,
+            ticket.name,
+            ticket.description ?? null,
+            ticket.price ?? 0,
+            ticket.quantity ?? 0,
+            now,
+            now
+          ]
+        );
+      }
+    }
+
     const { rows } = await query('SELECT * FROM "Event" WHERE id = $1', [id]);
     return rowToEvent(rows[0]);
   },
@@ -84,6 +132,8 @@ export const eventModel = {
       startTime: 'startTime',
       price: 'price',
       currency: 'currency',
+      isTrending: 'isTrending',
+      location: 'location',
     };
     for (const [key, col] of Object.entries(map)) {
       if (data[key] !== undefined) {
