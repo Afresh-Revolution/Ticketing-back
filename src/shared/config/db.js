@@ -9,7 +9,11 @@ function createPrisma() {
   if (!config.databaseUrl) {
     return new PrismaClient({ log: config.isDev ? ['query', 'error', 'warn'] : ['error'] });
   }
-  const adapter = new PrismaPg({ connectionString: config.databaseUrl });
+  const adapter = new PrismaPg({
+    connectionString: config.databaseUrl,
+    // Accept self-signed TLS certs (e.g. Render, Neon, other cloud Postgres)
+    ssl: { rejectUnauthorized: false },
+  });
   return new PrismaClient({
     adapter,
     log: config.isDev ? ['query', 'error', 'warn'] : ['error'],

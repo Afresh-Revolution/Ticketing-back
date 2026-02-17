@@ -3,7 +3,7 @@ const { PrismaClient } = pkg;
 
 const prisma = new PrismaClient();
 
-const defaultHero = {
+const defaultHero = { 
   headline: "Don't Miss the Moment . Get Your Tickets Now.",
   subtitle:
     'Discover concerts, festivals, conferences, and unforgettable experiences and happening near you',
