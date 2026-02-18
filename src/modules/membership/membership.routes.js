@@ -1,6 +1,6 @@
 import express from 'express';
 import * as membershipController from './membership.controller.js';
-import { authenticateToken, authorizeRole } from '../../shared/middleware/authMiddleware.js'; // Assuming these exist
+import { authMiddleware, authorizeRole } from '../../shared/middleware/authMiddleware.js';
 
 const router = express.Router();
 
@@ -8,15 +8,15 @@ const router = express.Router();
 router.get('/plans', membershipController.getPlans);
 
 // Protected User Routes
-router.post('/', authenticateToken, membershipController.createMembership);
-router.get('/my', authenticateToken, membershipController.getMyMembership);
+router.post('/', authMiddleware, membershipController.createMembership);
+router.get('/my', authMiddleware, membershipController.getMyMembership);
 
 // Admin Routes (Plans)
-router.post('/plans', authenticateToken, authorizeRole(['admin', 'superadmin']), membershipController.createPlan);
-router.patch('/plans/:id', authenticateToken, authorizeRole(['admin', 'superadmin']), membershipController.updatePlan);
+router.post('/plans', authMiddleware, authorizeRole(['admin', 'superadmin']), membershipController.createPlan);
+router.patch('/plans/:id', authMiddleware, authorizeRole(['admin', 'superadmin']), membershipController.updatePlan);
 
 // Admin Routes (Memberships)
-router.get('/', authenticateToken, authorizeRole(['admin', 'superadmin']), membershipController.getAllMemberships);
-router.patch('/:id', authenticateToken, authorizeRole(['admin', 'superadmin']), membershipController.updateMembershipStatus);
+router.get('/', authMiddleware, authorizeRole(['admin', 'superadmin']), membershipController.getAllMemberships);
+router.patch('/:id', authMiddleware, authorizeRole(['admin', 'superadmin']), membershipController.updateMembershipStatus);
 
 export default router;

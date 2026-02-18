@@ -24,7 +24,7 @@ export async function authMiddleware(req, res, next) {
   try {
     const decoded = jwt.verify(token, config.jwtSecret);
     const { rows } = await query(
-      'SELECT id, email, name FROM "User" WHERE id = $1',
+      'SELECT id, email, name, role FROM "User" WHERE id = $1',
       [decoded.userId]
     );
     const user = rows[0];
@@ -34,6 +34,15 @@ export async function authMiddleware(req, res, next) {
   } catch {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
+}
+
+export function authorizeRole(allowedRoles) {
+  return (req, res, next) => {
+    if (!req.user || !allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    next();
+  };
 }
 
 export function optionalAuth(req, res, next) {
@@ -50,7 +59,7 @@ export function optionalAuth(req, res, next) {
     }
     try {
       const { rows } = await query(
-        'SELECT id, email, name FROM "User" WHERE id = $1',
+        'SELECT id, email, name, role FROM "User" WHERE id = $1',
         [decoded.userId]
       );
       req.user = rows[0] ?? null;
