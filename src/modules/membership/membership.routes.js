@@ -11,6 +11,10 @@ router.get('/plans', membershipController.getPlans);
 router.post('/', authMiddleware, membershipController.createMembership);
 router.get('/my', authMiddleware, membershipController.getMyMembership);
 
+// Admin self-service subscription
+router.post('/cancel', authMiddleware, membershipController.cancelMyMembership);
+router.post('/resubscribe', authMiddleware, membershipController.resubscribeMyMembership);
+
 // Admin Routes (Plans)
 router.post('/plans', authMiddleware, authorizeRole(['admin', 'superadmin']), membershipController.createPlan);
 router.patch('/plans/:id', authMiddleware, authorizeRole(['admin', 'superadmin']), membershipController.updatePlan);
@@ -20,3 +24,4 @@ router.get('/', authMiddleware, authorizeRole(['admin', 'superadmin']), membersh
 router.patch('/:id', authMiddleware, authorizeRole(['admin', 'superadmin']), membershipController.updateMembershipStatus);
 
 export default router;
+

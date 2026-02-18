@@ -158,3 +158,78 @@ export const updateMembershipStatus = async (req, res, next) => {
     next(err);
   }
 };
+
+// --- Admin self-service subscription actions ---
+
+/**
+ * POST /api/memberships/cancel
+ * Cancels the calling admin's active membership.
+ */
+export const cancelMyMembership = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const result = await query(
+      `UPDATE "Membership" SET status = 'cancelled', "updatedAt" = now()
+       WHERE "userId" = $1 AND status = 'active'
+       RETURNING *`,
+      [userId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'No active membership found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/memberships/resubscribe
+ * Creates a new membership from the same plan as the last one.
+ * Only allowed if the current membership expires within 5 days OR is already cancelled/expired.
+ */
+export const resubscribeMyMembership = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    // Find the most recent membership (any status)
+    const lastResult = await query(
+      `SELECT m.*, p.duration FROM "Membership" m
+       JOIN "MembershipPlan" p ON m."planId" = p.id
+       WHERE m."userId" = $1
+       ORDER BY m."createdAt" DESC LIMIT 1`,
+      [userId]
+    );
+    if (lastResult.rows.length === 0) return res.status(404).json({ error: 'No previous membership found' });
+    const last = lastResult.rows[0];
+
+    // Check eligibility: must be within 5 days of expiry OR already cancelled/expired
+    const now = new Date();
+    const endDate = new Date(last.endDate);
+    const daysUntilExpiry = (endDate - now) / (1000 * 60 * 60 * 24);
+    const isExpiredOrCancelled = last.status === 'cancelled' || last.status === 'expired' || endDate < now;
+
+    if (!isExpiredOrCancelled && daysUntilExpiry > 5) {
+      return res.status(400).json({
+        error: 'Resubscription is only available within 5 days of expiry',
+        daysUntilEligible: Math.ceil(daysUntilExpiry - 5),
+      });
+    }
+
+    // Create new membership
+    const startDate = new Date();
+    const newEndDate = new Date(startDate);
+    if (last.duration === 'monthly') newEndDate.setMonth(newEndDate.getMonth() + 1);
+    else if (last.duration === 'yearly') newEndDate.setFullYear(newEndDate.getFullYear() + 1);
+
+    const id = createId();
+    const result = await query(
+      `INSERT INTO "Membership" (id, "userId", "planId", "startDate", "endDate", status)
+       VALUES ($1, $2, $3, $4, $5, 'active')
+       RETURNING *`,
+      [id, userId, last.planId, startDate, newEndDate]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    next(err);
+  }
+};
+
