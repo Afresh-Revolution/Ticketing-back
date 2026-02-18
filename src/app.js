@@ -10,6 +10,7 @@ import bookingRoutes from './modules/booking/booking.routes.js';
 import userRoutes from './modules/user/user.routes.js';
 import eventRoutes from './modules/event/event.routes.js';
 import orderRoutes from './modules/order/order.routes.js';
+import membershipRoutes from './modules/membership/membership.routes.js';
 
 const app = express();
 
@@ -45,6 +46,7 @@ app.use('/api/booking', bookingRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/memberships', membershipRoutes);
 
 app.get('/api', (req, res) => {
   res.json({

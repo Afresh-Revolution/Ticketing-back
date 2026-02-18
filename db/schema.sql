@@ -85,4 +85,36 @@ DROP TRIGGER IF EXISTS event_updated_at ON "Event";
 CREATE TRIGGER event_updated_at BEFORE UPDATE ON "Event" FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
 
 DROP TRIGGER IF EXISTS ticket_updated_at ON "Ticket";
-CREATE TRIGGER ticket_updated_at BEFORE UPDATE ON "Ticket" FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+
+-- Membership Plans (Packages)
+CREATE TABLE IF NOT EXISTS "MembershipPlan" (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  price       INTEGER NOT NULL, -- in kobo/smallest currency unit
+  currency    TEXT NOT NULL DEFAULT 'NGN',
+  duration    TEXT NOT NULL, -- 'monthly', 'yearly'
+  description TEXT,
+  "isActive"  BOOLEAN DEFAULT TRUE,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+  "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- User Memberships
+CREATE TABLE IF NOT EXISTS "Membership" (
+  id                 TEXT PRIMARY KEY,
+  "userId"           TEXT NOT NULL REFERENCES "User"(id) ON DELETE CASCADE,
+  "planId"           TEXT REFERENCES "MembershipPlan"(id) ON DELETE SET NULL,
+  "startDate"        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  "endDate"          TIMESTAMPTZ NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'active', -- 'active', 'expired', 'cancelled', 'suspended'
+  "paystackReference" TEXT,
+  "createdAt"        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  "updatedAt"        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Triggers for updatedAt
+DROP TRIGGER IF EXISTS membershipplan_updated_at ON "MembershipPlan";
+CREATE TRIGGER membershipplan_updated_at BEFORE UPDATE ON "MembershipPlan" FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+
+DROP TRIGGER IF EXISTS membership_updated_at ON "Membership";
+CREATE TRIGGER membership_updated_at BEFORE UPDATE ON "Membership" FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
