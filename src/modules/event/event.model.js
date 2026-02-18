@@ -69,7 +69,7 @@ export const eventModel = {
   },
   async create(data) {
     const id = createId();
-    constnow = new Date().toISOString();
+    const now = new Date().toISOString();
     
     // 1. Create Event
     await query(
