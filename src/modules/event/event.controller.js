@@ -48,7 +48,8 @@ export async function create(req, res, next) {
       isTrending: isTrending || false,
       location,
       ticketTypes, // Pass ticketTypes to model
-      createdBy: req.user ? req.user.id : null // Pass createdBy from auth middleware
+      // Synthetic superadmin (id 0) is not in User table; use null to satisfy FK
+      createdBy: req.user && req.user.id !== 0 && req.user.id !== '0' ? req.user.id : null
     });
 
     res.status(201).json(event);
