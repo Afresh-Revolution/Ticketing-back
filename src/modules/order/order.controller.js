@@ -5,8 +5,8 @@ export async function create(req, res, next) {
     const { eventId, items, fullName, email, phone, address, totalAmount } = req.body;
     
     // Basic validation
-    if (!eventId || !items || items.length === 0 || !email || !totalAmount) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!eventId || !items || items.length === 0 || !fullName || !email || !totalAmount) {
+      return res.status(400).json({ error: 'Missing required fields: eventId, items, fullName, email, totalAmount' });
     }
 
     // Identify user if logged in

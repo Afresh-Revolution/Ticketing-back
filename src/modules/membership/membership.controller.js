@@ -139,11 +139,13 @@ export const updateMembershipStatus = async (req, res, next) => {
 
     let result;
     if (extendDays) {
-       result = await query(
+      const days = Math.max(0, parseInt(extendDays, 10));
+      if (Number.isNaN(days)) return res.status(400).json({ error: 'Invalid extendDays' });
+      result = await query(
         `UPDATE "Membership" 
-         SET "endDate" = "endDate" + interval '${parseInt(extendDays)} days', status = 'active'
-         WHERE id = $1 RETURNING *`,
-        [id]
+         SET "endDate" = "endDate" + ($1 || ' days')::interval, status = 'active'
+         WHERE id = $2 RETURNING *`,
+        [String(days), id]
       );
     } else {
       result = await query(

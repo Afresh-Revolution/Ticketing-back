@@ -15,6 +15,9 @@ const poolConfig = config.databaseUrl
   ? {
       connectionString: connectionString || config.databaseUrl,
       ssl: isRemoteDb ? { rejectUnauthorized: false } : false,
+      // Cloud DBs (e.g. Render) can be slow to accept first connection; avoid ETIMEDOUT
+      connectionTimeoutMillis: 20000,
+      idleTimeoutMillis: 30000,
     }
   : {};
 

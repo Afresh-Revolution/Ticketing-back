@@ -47,7 +47,27 @@ export const eventModel = {
     }
 
     const { rows } = await query(sql, params);
-    return rows.map(rowToEvent);
+    const events = rows.map(rowToEvent);
+    if (events.length && opts.include?.tickets) {
+      const eventIds = events.map((e) => e.id);
+      const { rows: ticketRows } = await query(
+        'SELECT * FROM "TicketType" WHERE "eventId" = ANY($1)',
+        [eventIds]
+      );
+      const byEventId = {};
+      for (const t of ticketRows) {
+        if (!byEventId[t.eventId]) byEventId[t.eventId] = [];
+        byEventId[t.eventId].push({
+          id: t.id,
+          name: t.name,
+          description: t.description,
+          price: t.price,
+          quantity: t.quantity,
+        });
+      }
+      events.forEach((e) => { e.tickets = byEventId[e.id] || []; });
+    }
+    return events;
   },
   async findById(id) {
     const { rows } = await query('SELECT * FROM "Event" WHERE id = $1', [id]);
