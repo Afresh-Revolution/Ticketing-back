@@ -95,6 +95,110 @@ export const getDashboardStats = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/admin/events
+ * Super admin: all events with creator name (createdByName). Other admins: only their events.
+ */
+export const getAdminEvents = async (req, res, next) => {
+  try {
+    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
+    const adminId = req.user.id;
+
+    if (isSuperAdmin) {
+      const { rows } = await query(
+        `SELECT e.id, e.title, e.description, e.date, e.venue, e."imageUrl", e.category, e."startTime", e.price, e.currency, e."isTrending", e.location, e."createdAt", e."updatedAt", e."createdBy",
+         u.name AS "createdByName"
+         FROM "Event" e
+         LEFT JOIN "User" u ON e."createdBy" = u.id
+         ORDER BY e.date ASC`
+      );
+      const events = rows.map((r) => ({
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        date: r.date,
+        venue: r.venue,
+        imageUrl: r.imageUrl,
+        category: r.category,
+        startTime: r.startTime,
+        price: r.price,
+        currency: r.currency,
+        isTrending: r.isTrending ?? false,
+        location: r.location ?? r.venue,
+        createdByName: r.createdByName ?? (r.createdBy == null ? 'Super Admin' : null),
+      }));
+      return res.json(events);
+    }
+
+    const { rows } = await query(
+      `SELECT id, title, description, date, venue, "imageUrl", category, "startTime", price, currency, "isTrending", location, "createdAt", "updatedAt"
+       FROM "Event" WHERE "createdBy" = $1 ORDER BY date ASC`,
+      [adminId]
+    );
+    const events = rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      description: r.description,
+      date: r.date,
+      venue: r.venue,
+      imageUrl: r.imageUrl,
+      category: r.category,
+      startTime: r.startTime,
+      price: r.price,
+      currency: r.currency,
+      isTrending: r.isTrending ?? false,
+      location: r.location ?? r.venue,
+    }));
+    res.json(events);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/admin/sales
+ * Returns sales for events (super admin: all events; others: own events).
+ */
+export const getSales = async (req, res, next) => {
+  try {
+    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
+    const adminId = req.user.id;
+    const eventWhere = isSuperAdmin ? '' : 'WHERE e."createdBy" = $1';
+    const params = isSuperAdmin ? [] : [adminId];
+    const { rows } = await query(
+      `SELECT o.id, o."fullName" AS buyer_name, o.email AS buyer_email, o."totalAmount" AS amount, o.status, o."createdAt" AS created_at, e.title AS event_title
+       FROM "Order" o
+       JOIN "Event" e ON o."eventId" = e.id
+       ${eventWhere}
+       ORDER BY o."createdAt" DESC`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /api/admin/admins
+ * Super admin only. Returns all admin users (role admin or superadmin) without password.
+ */
+export const getAdmins = async (req, res, next) => {
+  try {
+    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
+    if (!isSuperAdmin) return res.status(403).json({ error: 'Super admin only' });
+    const { rows } = await query(
+      `SELECT id, email, name, role, "emailVerified", "createdAt", "updatedAt"
+       FROM "User"
+       WHERE role IN ('admin', 'superadmin')
+       ORDER BY "createdAt" DESC`
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ─── Withdraw Page Data ───────────────────────────────────────────────────────
 
 /**

@@ -95,6 +95,13 @@ export async function update(req, res, next) {
 
 export async function remove(req, res, next) {
   try {
+    const event = await eventModel.findById(req.params.id);
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0 || req.user.id === '0';
+    if (!isSuperAdmin) {
+      const ownsEvent = event.createdBy != null && String(event.createdBy) === String(req.user.id);
+      if (!ownsEvent) return res.status(403).json({ error: 'You do not own this event' });
+    }
     await eventModel.delete(req.params.id);
     res.status(204).send();
   } catch (e) {

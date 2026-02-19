@@ -15,6 +15,7 @@ function rowToEvent(row) {
     currency: row.currency,
     isTrending: row.isTrending,
     location: row.location,
+    createdBy: row.createdBy,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

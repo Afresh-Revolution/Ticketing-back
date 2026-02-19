@@ -2,6 +2,9 @@ import { Router } from 'express';
 import { authMiddleware } from '../../shared/middleware/authMiddleware.js';
 import {
   getDashboardStats,
+  getAdminEvents,
+  getSales,
+  getAdmins,
   getWithdrawPage,
   withdrawEvent,
   getBankAccount,
@@ -13,6 +16,15 @@ const router = Router();
 
 // Dashboard
 router.get('/dashboard', authMiddleware, getDashboardStats);
+
+// Events (super admin: all + creator name; others: own only)
+router.get('/events', authMiddleware, getAdminEvents);
+
+// Sales
+router.get('/sales', authMiddleware, getSales);
+
+// Admins list (super admin only)
+router.get('/admins', authMiddleware, getAdmins);
 
 // Withdraw page data
 router.get('/withdraw', authMiddleware, getWithdrawPage);
