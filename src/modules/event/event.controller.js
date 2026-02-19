@@ -1,5 +1,13 @@
 import { eventModel } from './event.model.js';
 
+/** Returns true if the current user is allowed to modify this event (creator or super admin for null createdBy). */
+function canModifyEvent(event, userId) {
+  const sid = String(userId);
+  const isSuperAdmin = sid === '0' || userId === 0;
+  if (event.createdBy == null) return isSuperAdmin;
+  return String(event.createdBy) === sid;
+}
+
 export async function list(req, res, next) {
   try {
     const trending = req.query.trending === 'true';
@@ -61,6 +69,10 @@ export async function create(req, res, next) {
 
 export async function update(req, res, next) {
   try {
+    const existing = await eventModel.findById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Event not found' });
+    if (!canModifyEvent(existing, req.user.id)) return res.status(403).json({ error: 'You do not own this event' });
+
     const {
       title,
       description,
@@ -113,7 +125,8 @@ export async function toggleTrending(req, res, next) {
   try {
     const event = await eventModel.findById(req.params.id);
     if (!event) return res.status(404).json({ error: 'Event not found' });
-    
+    if (!canModifyEvent(event, req.user.id)) return res.status(403).json({ error: 'You do not own this event' });
+
     const updated = await eventModel.update(req.params.id, {
       isTrending: !event.isTrending
     });
