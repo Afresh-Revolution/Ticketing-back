@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authMiddleware } from '../../shared/middleware/authMiddleware.js';
 import {
   getDashboardStats,
+  getAdminEvents,
   getSales,
   getWithdrawPage,
   withdrawEvent,
@@ -14,6 +15,9 @@ const router = Router();
 
 // Dashboard
 router.get('/dashboard', authMiddleware, getDashboardStats);
+
+// Events (only those created by this admin)
+router.get('/events', authMiddleware, getAdminEvents);
 
 // Sales reports
 router.get('/sales', authMiddleware, getSales);

@@ -5,6 +5,15 @@ import { config } from '../../shared/config/env.js';
 
 const PLATFORM_FEE_PCT = 0.15;
 
+/** Event scope: each admin (including super admin) sees only events they created. Super admin's events have createdBy NULL. */
+function eventScope(req) {
+  const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0 || req.user.id === '0';
+  const adminId = req.user.id;
+  const whereClause = isSuperAdmin ? 'e."createdBy" IS NULL' : 'e."createdBy" = $1';
+  const params = isSuperAdmin ? [] : [adminId];
+  return { whereClause, params, isSuperAdmin, adminId };
+}
+
 async function paystackRequest(method, path, body) {
   const res = await fetch(`https://api.paystack.co${path}`, {
     method,
@@ -24,21 +33,18 @@ async function paystackRequest(method, path, body) {
  */
 export const getDashboardStats = async (req, res, next) => {
   try {
-    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
-    const adminId = req.user.id;
-    const eventScopeClause = isSuperAdmin ? '' : `WHERE e."createdBy" = $1`;
-    const eventScopeParam = isSuperAdmin ? [] : [adminId];
+    const scope = eventScope(req);
+    const { whereClause, params, isSuperAdmin } = scope;
 
     const totalEventsResult = await query(
-      `SELECT COUNT(*) AS count FROM "Event" e ${eventScopeClause}`,
-      eventScopeParam
+      `SELECT COUNT(*) AS count FROM "Event" e WHERE ${whereClause}`,
+      params
     );
     const totalEvents = parseInt(totalEventsResult.rows[0].count, 10);
 
     const activeEventsResult = await query(
-      `SELECT COUNT(*) AS count FROM "Event" e
-       ${isSuperAdmin ? 'WHERE' : 'WHERE e."createdBy" = $1 AND'} e.date >= NOW()`,
-      eventScopeParam
+      `SELECT COUNT(*) AS count FROM "Event" e WHERE ${whereClause} AND e.date >= NOW()`,
+      params
     );
     const activeEvents = parseInt(activeEventsResult.rows[0].count, 10);
 
@@ -49,9 +55,8 @@ export const getDashboardStats = async (req, res, next) => {
        FROM "Order" o
        JOIN "Event" e ON o."eventId" = e.id
        LEFT JOIN "OrderItem" oi ON oi."orderId" = o.id
-       WHERE o.status = 'paid'
-       ${isSuperAdmin ? '' : 'AND e."createdBy" = $1'}`,
-      eventScopeParam
+       WHERE o.status = 'paid' AND (${whereClause})`,
+      params
     );
     const ticketRevenue = parseFloat(ticketStatsResult.rows[0].revenue);
     const ticketsSold = parseInt(ticketStatsResult.rows[0].tickets_sold, 10);
@@ -80,10 +85,10 @@ export const getDashboardStats = async (req, res, next) => {
          e.title         AS event_title
        FROM "Order" o
        JOIN "Event" e ON o."eventId" = e.id
-       ${isSuperAdmin ? '' : 'WHERE e."createdBy" = $1'}
+       WHERE (${whereClause})
        ORDER BY o."createdAt" DESC
        LIMIT 10`,
-      eventScopeParam
+      params
     );
 
     res.json({
@@ -96,15 +101,46 @@ export const getDashboardStats = async (req, res, next) => {
 };
 
 /**
+ * GET /api/admin/events
+ * Returns only events created by this admin (super admin: createdBy IS NULL; others: createdBy = adminId).
+ */
+export const getAdminEvents = async (req, res, next) => {
+  try {
+    const scope = eventScope(req);
+    const { rows } = await query(
+      `SELECT id, title, description, date, venue, "imageUrl", category, "startTime", price, currency, "isTrending", location, "createdAt", "updatedAt"
+       FROM "Event" e
+       WHERE (${scope.whereClause})
+       ORDER BY e.date ASC`,
+      scope.params
+    );
+    const events = rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      description: r.description,
+      date: r.date,
+      venue: r.venue,
+      imageUrl: r.imageUrl,
+      category: r.category,
+      startTime: r.startTime,
+      price: r.price,
+      currency: r.currency,
+      isTrending: r.isTrending ?? false,
+      location: r.location ?? r.venue,
+    }));
+    res.json(events);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
  * GET /api/admin/sales
- * Returns all sales (orders) for the Sales Reports page. Same scope as dashboard (superadmin: all, else own events).
+ * Returns all sales (orders) for events created by this admin only.
  */
 export const getSales = async (req, res, next) => {
   try {
-    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
-    const adminId = req.user.id;
-    const eventScopeParam = isSuperAdmin ? [] : [adminId];
-
+    const scope = eventScope(req);
     const salesResult = await query(
       `SELECT
          o.id,
@@ -116,9 +152,9 @@ export const getSales = async (req, res, next) => {
          e.title         AS event_title
        FROM "Order" o
        JOIN "Event" e ON o."eventId" = e.id
-       ${isSuperAdmin ? '' : 'WHERE e."createdBy" = $1'}
+       WHERE (${scope.whereClause})
        ORDER BY o."createdAt" DESC`,
-      eventScopeParam
+      scope.params
     );
 
     res.json(salesResult.rows);
@@ -135,11 +171,10 @@ export const getSales = async (req, res, next) => {
  */
 export const getWithdrawPage = async (req, res, next) => {
   try {
-    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
-    const adminId = req.user.id;
-    const scopeParam = isSuperAdmin ? [] : [adminId];
+    const scope = eventScope(req);
+    const { whereClause, params, isSuperAdmin, adminId } = scope;
 
-    // Events with their ticket revenue and withdrawal status
+    // Events with their ticket revenue and withdrawal status (only events created by this admin)
     const eventsResult = await query(
       `SELECT
          e.id,
@@ -154,13 +189,13 @@ export const getWithdrawPage = async (req, res, next) => {
        FROM "Event" e
        LEFT JOIN "Order" o ON o."eventId" = e.id
        LEFT JOIN "Withdrawal" w ON w."eventId" = e.id
-       ${isSuperAdmin ? '' : 'WHERE e."createdBy" = $1'}
+       WHERE (${whereClause})
        GROUP BY e.id
        ORDER BY e.date DESC`,
-      scopeParam
+      params
     );
 
-    // Withdrawal history
+    // Withdrawal history for this admin's events only
     const withdrawalsResult = await query(
       `SELECT
          w.*,
@@ -170,12 +205,12 @@ export const getWithdrawPage = async (req, res, next) => {
        FROM "Withdrawal" w
        JOIN "Event" e ON w."eventId" = e.id
        LEFT JOIN "User" u ON w."adminId" = u.id
-       ${isSuperAdmin ? '' : 'WHERE w."adminId" = $1'}
+       WHERE (${whereClause})
        ORDER BY w."createdAt" DESC`,
-      scopeParam
+      params
     );
 
-    // KPI totals
+    // KPI totals for this admin's events only
     const kpiResult = await query(
       `SELECT
          COALESCE(SUM(o."totalAmount") FILTER (WHERE o.status = 'paid'), 0) AS total_gross,
@@ -184,8 +219,8 @@ export const getWithdrawPage = async (req, res, next) => {
        FROM "Event" e
        LEFT JOIN "Order" o ON o."eventId" = e.id
        LEFT JOIN "Withdrawal" w ON w."eventId" = e.id
-       ${isSuperAdmin ? '' : 'WHERE e."createdBy" = $1'}`,
-      scopeParam
+       WHERE (${whereClause})`,
+      params
     );
 
     let membershipRevenue = 0;
@@ -249,8 +284,11 @@ export const withdrawEvent = async (req, res, next) => {
     if (eventResult.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
     const event = eventResult.rows[0];
 
-    // 2. Ownership check
-    if (!isSuperAdmin && event.createdBy !== String(adminId)) {
+    // 2. Ownership check: each admin can only withdraw from events they created
+    const ownsEvent = isSuperAdmin
+      ? (event.createdBy === null || event.createdBy === undefined)
+      : (String(event.createdBy) === String(adminId));
+    if (!ownsEvent) {
       return res.status(403).json({ error: 'You do not own this event' });
     }
 
