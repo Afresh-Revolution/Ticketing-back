@@ -162,14 +162,35 @@ export const eventModel = {
         i++;
       }
     }
-    if (fields.length === 0) return eventModel.findById(id);
-    values.push(id);
-    await query(
-      `UPDATE "Event" SET ${fields.join(', ')} WHERE id = $${i}`,
-      values
-    );
-    const { rows } = await query('SELECT * FROM "Event" WHERE id = $1', [id]);
-    return rowToEvent(rows[0]);
+    if (fields.length > 0) {
+      values.push(id);
+      await query(
+        `UPDATE "Event" SET ${fields.join(', ')} WHERE id = $${i}`,
+        values
+      );
+    }
+    if (data.ticketTypes && Array.isArray(data.ticketTypes)) {
+      await query('DELETE FROM "TicketType" WHERE "eventId" = $1', [id]);
+      const now = new Date().toISOString();
+      for (const ticket of data.ticketTypes) {
+        const ticketId = ticket.id && /^[a-f0-9-]{36}$/i.test(ticket.id) ? ticket.id : createId();
+        await query(
+          `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, "createdAt", "updatedAt")
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            ticketId,
+            id,
+            ticket.name ?? 'Ticket',
+            ticket.description ?? null,
+            ticket.price ?? 0,
+            ticket.quantity ?? 0,
+            now,
+            now,
+          ]
+        );
+      }
+    }
+    return eventModel.findById(id);
   },
   async delete(id) {
     const { rows } = await query('SELECT * FROM "Event" WHERE id = $1', [id]);

@@ -15,8 +15,9 @@ export async function list(req, res, next) {
 
 export async function getById(req, res, next) {
   try {
-    const event = await eventModel.findById(req.params.id, true);
+    const event = await eventModel.findById(req.params.id);
     if (!event) return res.status(404).json({ error: 'Event not found' });
+    event.tickets = Array.isArray(event.tickets) ? event.tickets : [];
     res.json(event);
   } catch (e) {
     next(e);
@@ -60,7 +61,19 @@ export async function create(req, res, next) {
 
 export async function update(req, res, next) {
   try {
-    const { title, description, date, venue, location, isTrending } = req.body;
+    const {
+      title,
+      description,
+      date,
+      venue,
+      location,
+      isTrending,
+      startTime,
+      imageUrl,
+      category,
+      price,
+      ticketTypes,
+    } = req.body;
     const event = await eventModel.update(req.params.id, {
       ...(title != null && { title }),
       ...(description != null && { description }),
@@ -68,6 +81,11 @@ export async function update(req, res, next) {
       ...(venue != null && { venue }),
       ...(location != null && { location }),
       ...(isTrending != null && { isTrending }),
+      ...(startTime != null && { startTime }),
+      ...(imageUrl != null && { imageUrl }),
+      ...(category != null && { category }),
+      ...(price != null && { price }),
+      ...(ticketTypes != null && { ticketTypes }),
     });
     res.json(event);
   } catch (e) {
