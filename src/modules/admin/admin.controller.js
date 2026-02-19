@@ -166,14 +166,39 @@ export const getSales = async (req, res, next) => {
     const eventWhere = isSuperAdmin ? '' : 'WHERE e."createdBy" = $1';
     const params = isSuperAdmin ? [] : [adminId];
     const { rows } = await query(
-      `SELECT o.id, o."fullName" AS buyer_name, o.email AS buyer_email, o."totalAmount" AS amount, o.status, o."createdAt" AS created_at, e.title AS event_title
+      `SELECT o.id, o."eventId" AS event_id, o."fullName" AS buyer_name, o.email AS buyer_email, o."totalAmount" AS amount, o.status, o."createdAt" AS created_at, e.title AS event_title
        FROM "Order" o
        JOIN "Event" e ON o."eventId" = e.id
        ${eventWhere}
-       ORDER BY o."createdAt" DESC`,
+       ORDER BY e.title ASC, o."createdAt" DESC`,
       params
     );
     res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * DELETE /api/admin/events/:eventId/orders
+ * Deletes all order/sales history for an event. Ownership: super admin or event creator only.
+ */
+export const deleteEventOrders = async (req, res, next) => {
+  try {
+    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
+    const adminId = req.user.id;
+    const { eventId } = req.params;
+
+    const eventResult = await query('SELECT id, "createdBy" FROM "Event" WHERE id = $1', [eventId]);
+    if (eventResult.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
+    const event = eventResult.rows[0];
+    if (!isSuperAdmin) {
+      const owns = event.createdBy != null && String(event.createdBy) === String(adminId);
+      if (!owns) return res.status(403).json({ error: 'You do not own this event' });
+    }
+
+    await query('DELETE FROM "Order" WHERE "eventId" = $1', [eventId]);
+    res.json({ message: 'Sales history for this event has been deleted' });
   } catch (err) {
     next(err);
   }

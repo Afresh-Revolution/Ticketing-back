@@ -5,6 +5,7 @@ import {
   getAdminEvents,
   getSales,
   getAdmins,
+  deleteEventOrders,
   getWithdrawPage,
   withdrawEvent,
   getBankAccount,
@@ -25,6 +26,9 @@ router.get('/sales', authMiddleware, getSales);
 
 // Admins list (super admin only)
 router.get('/admins', authMiddleware, getAdmins);
+
+// Delete all sales/orders for an event
+router.delete('/events/:eventId/orders', authMiddleware, deleteEventOrders);
 
 // Withdraw page data
 router.get('/withdraw', authMiddleware, getWithdrawPage);
