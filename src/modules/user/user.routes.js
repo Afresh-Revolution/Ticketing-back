@@ -9,6 +9,7 @@ router.use(authMiddleware);
 
 router.get('/profile', userPageController.getProfile);
 router.get('/tickets', userPageController.getMyTickets);
+router.get('/orders', userPageController.getMyOrders);
 router.get('/footer', footerController.getFooter);
 
 export default router;

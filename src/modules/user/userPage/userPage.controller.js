@@ -18,3 +18,12 @@ export async function getMyTickets(req, res, next) {
     next(e);
   }
 }
+
+export async function getMyOrders(req, res, next) {
+  try {
+    const data = await userPageModel.getMyOrders(req.user.id);
+    res.json(data);
+  } catch (e) {
+    next(e);
+  }
+}

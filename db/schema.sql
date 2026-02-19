@@ -12,9 +12,21 @@ CREATE TABLE IF NOT EXISTS "User" (
   password   TEXT NOT NULL,
   name       TEXT,
   role       TEXT NOT NULL DEFAULT 'user', -- 'user', 'admin', 'superadmin'
+  "emailVerified" BOOLEAN NOT NULL DEFAULT FALSE,
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Verification codes (OTP) for forgot-password and signup email verification
+CREATE TABLE IF NOT EXISTS "VerificationCode" (
+  id         TEXT PRIMARY KEY,
+  email      TEXT NOT NULL,
+  code       TEXT NOT NULL,
+  type       TEXT NOT NULL, -- 'forgot_password', 'signup_verify'
+  "expiresAt" TIMESTAMPTZ NOT NULL,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS "VerificationCode_email_type_idx" ON "VerificationCode"(email, type);
 
 -- Hero section (landing)
 CREATE TABLE IF NOT EXISTS "HeroSection" (
@@ -122,6 +134,9 @@ CREATE TRIGGER membership_updated_at BEFORE UPDATE ON "Membership" FOR EACH ROW 
 
 -- Ensure Event has createdBy (idempotent for existing DBs)
 ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "createdBy" TEXT REFERENCES "User"(id);
+
+-- Ensure User has emailVerified (idempotent for existing DBs)
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "emailVerified" BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- Bank account details per admin (withdrawals)
 CREATE TABLE IF NOT EXISTS "BankAccount" (

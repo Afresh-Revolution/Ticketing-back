@@ -8,6 +8,7 @@ function rowToUser(row) {
     password: row.password,
     name: row.name,
     role: row.role,
+    emailVerified: row.emailVerified ?? false,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -15,15 +16,16 @@ function rowToUser(row) {
 
 export const authModel = {
   async findUserByEmail(email) {
-    const { rows } = await query('SELECT * FROM "User" WHERE email = $1', [email]);
+    const { rows } = await query('SELECT * FROM "User" WHERE email = $1', [email.toLowerCase()]);
     return rowToUser(rows[0]);
   },
   async createUser(data) {
     const id = createId();
     const now = new Date().toISOString();
     await query(
-      'INSERT INTO "User" (id, email, password, name, "createdAt", "updatedAt") VALUES ($1, $2, $3, $4, $5, $6)',
-      [id, data.email, data.password, data.name ?? null, now, now]
+      `INSERT INTO "User" (id, email, password, name, "emailVerified", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, FALSE, $5, $6)`,
+      [id, data.email.toLowerCase(), data.password, data.name ?? null, now, now]
     );
     const { rows } = await query('SELECT * FROM "User" WHERE id = $1', [id]);
     return rowToUser(rows[0]);
@@ -40,9 +42,23 @@ export const authModel = {
   },
   async findUserById(id) {
     const { rows } = await query(
-      'SELECT id, email, name FROM "User" WHERE id = $1',
+      'SELECT id, email, name, "emailVerified" FROM "User" WHERE id = $1',
       [id]
     );
     return rowToUser(rows[0]);
+  },
+  async updatePassword(email, hashedPassword) {
+    const now = new Date().toISOString();
+    await query(
+      `UPDATE "User" SET password = $1, "updatedAt" = $2 WHERE email = $3`,
+      [hashedPassword, now, email.toLowerCase()]
+    );
+  },
+  async markEmailVerified(email) {
+    const now = new Date().toISOString();
+    await query(
+      `UPDATE "User" SET "emailVerified" = TRUE, "updatedAt" = $1 WHERE email = $2`,
+      [now, email.toLowerCase()]
+    );
   },
 };

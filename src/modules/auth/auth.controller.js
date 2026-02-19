@@ -18,15 +18,15 @@ export async function signUp(req, res, next) {
   try {
     console.log('[auth.controller] Received signup request');
     const { email, password, name } = req.body;
-    
+
     if (!email || !password) {
       console.log('[auth.controller] Missing required fields - email:', !!email, 'password:', !!password);
       return res.status(400).json({ error: 'Email and password are required' });
     }
-    
+
     console.log('[auth.controller] Signup request for email:', email, 'with name:', name || 'none');
     const result = await authService.signUp(email, password, name);
-    console.log('[auth.controller] Signup successful, returning token');
+    console.log('[auth.controller] Signup successful, OTP sent');
     res.status(201).json(result);
   } catch (e) {
     console.error('[auth.controller] Signup error:', e.message);
@@ -36,11 +36,53 @@ export async function signUp(req, res, next) {
 
 export async function signIn(req, res, next) {
   try {
-    const { email, password } = req.body;
+    const { email, password, otp } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
-    const result = await authService.signIn(email, password);
+    const result = await authService.signIn(email, password, otp);
+    res.json(result);
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function forgotPassword(req, res, next) {
+  try {
+    const { email } = req.body;
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    const result = await authService.forgotPassword(email);
+    res.json(result);
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function resendVerification(req, res, next) {
+  try {
+    const { email } = req.body;
+    if (!email || !String(email).trim()) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    const result = await authService.resendVerification(email);
+    res.json(result);
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function resetPassword(req, res, next) {
+  try {
+    const { email, code, newPassword } = req.body;
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({ error: 'Email, code, and new password are required' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+    const result = await authService.resetPassword(email, code, newPassword);
     res.json(result);
   } catch (e) {
     next(e);

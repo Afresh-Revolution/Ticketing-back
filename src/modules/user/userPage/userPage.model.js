@@ -45,4 +45,49 @@ export const userPageModel = {
       },
     }));
   },
+
+  /** Fetches paid orders for the user with event and order item details (ticket purchases) */
+  async getMyOrders(userId) {
+    const { rows } = await query(
+      `SELECT o.id AS "orderId", o."eventId", o."fullName", o.email, o."totalAmount", o.status, o."createdAt" AS "orderCreatedAt",
+              e.title AS "event_title", e.description AS "event_description", e.date AS "event_date",
+              e.venue AS "event_venue", e."imageUrl" AS "event_imageUrl", e.category AS "event_category",
+              e."startTime" AS "event_startTime"
+       FROM "Order" o
+       JOIN "Event" e ON e.id = o."eventId"
+       WHERE o."userId" = $1 AND o.status = 'paid'
+       ORDER BY o."createdAt" DESC`,
+      [userId]
+    );
+    const orders = [];
+    for (const r of rows) {
+      const { rows: items } = await query(
+        `SELECT oi.quantity, oi.price, tt.name AS "ticketName"
+         FROM "OrderItem" oi
+         JOIN "TicketType" tt ON oi."ticketTypeId" = tt.id
+         WHERE oi."orderId" = $1`,
+        [r.orderId]
+      );
+      orders.push({
+        id: r.orderId,
+        eventId: r.eventId,
+        fullName: r.fullName,
+        email: r.email,
+        totalAmount: r.totalAmount,
+        status: r.status,
+        createdAt: r.orderCreatedAt,
+        event: {
+          title: r.event_title,
+          description: r.event_description,
+          date: r.event_date,
+          venue: r.event_venue,
+          imageUrl: r.event_imageUrl,
+          category: r.event_category,
+          startTime: r.event_startTime,
+        },
+        items,
+      });
+    }
+    return orders;
+  },
 };
