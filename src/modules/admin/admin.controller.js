@@ -229,6 +229,32 @@ export const getAdmins = async (req, res, next) => {
   }
 };
 
+/**
+ * DELETE /api/admin/admins/:userId
+ * Super admin only. Deletes an admin user from the database. Unlinks their events/orders first.
+ */
+export const deleteAdmin = async (req, res, next) => {
+  try {
+    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
+    if (!isSuperAdmin) return res.status(403).json({ error: 'Super admin only' });
+    const { userId } = req.params;
+    const currentId = String(req.user.id);
+    if (userId === currentId) return res.status(400).json({ error: 'You cannot delete your own account' });
+
+    const userRow = await query('SELECT id, role FROM "User" WHERE id = $1 AND role IN (\'admin\', \'superadmin\')', [userId]);
+    if (userRow.rows.length === 0) return res.status(404).json({ error: 'Admin not found' });
+
+    await query('UPDATE "Event" SET "createdBy" = NULL WHERE "createdBy" = $1', [userId]);
+    await query('UPDATE "Order" SET "userId" = NULL WHERE "userId" = $1', [userId]);
+    await query('DELETE FROM "BankAccount" WHERE "userId" = $1', [userId]);
+    await query('DELETE FROM "User" WHERE id = $1', [userId]);
+
+    res.json({ message: 'Admin account deleted' });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ─── Withdraw Page Data ───────────────────────────────────────────────────────
 
 /**
