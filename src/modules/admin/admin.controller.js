@@ -95,6 +95,38 @@ export const getDashboardStats = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /api/admin/sales
+ * Returns all sales (orders) for the Sales Reports page. Same scope as dashboard (superadmin: all, else own events).
+ */
+export const getSales = async (req, res, next) => {
+  try {
+    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
+    const adminId = req.user.id;
+    const eventScopeParam = isSuperAdmin ? [] : [adminId];
+
+    const salesResult = await query(
+      `SELECT
+         o.id,
+         o."fullName"    AS buyer_name,
+         o.email         AS buyer_email,
+         o."totalAmount" AS amount,
+         o.status,
+         o."createdAt"   AS created_at,
+         e.title         AS event_title
+       FROM "Order" o
+       JOIN "Event" e ON o."eventId" = e.id
+       ${isSuperAdmin ? '' : 'WHERE e."createdBy" = $1'}
+       ORDER BY o."createdAt" DESC`,
+      eventScopeParam
+    );
+
+    res.json(salesResult.rows);
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ─── Withdraw Page Data ───────────────────────────────────────────────────────
 
 /**

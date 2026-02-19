@@ -34,8 +34,8 @@ export const authModel = {
     const id = createId();
     const now = new Date().toISOString();
     await query(
-      'INSERT INTO "User" (id, email, password, name, role, "createdAt", "updatedAt") VALUES ($1, $2, $3, $4, $5, $6, $7)',
-      [id, data.email, data.password, data.name, 'admin', now, now]
+      `INSERT INTO "User" (id, email, password, name, role, "emailVerified", "createdAt", "updatedAt") VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7)`,
+      [id, data.email.toLowerCase(), data.password, data.name, 'admin', now, now]
     );
     const { rows } = await query('SELECT * FROM "User" WHERE id = $1', [id]);
     return rowToUser(rows[0]);
