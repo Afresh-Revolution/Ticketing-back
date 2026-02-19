@@ -1,6 +1,8 @@
 import nodemailer from 'nodemailer';
 import { config } from '../config/env.js';
 
+const EMAIL_TIMEOUT_MS = 15000;
+
 let transporter = null;
 
 function getTransporter() {
@@ -14,8 +16,20 @@ function getTransporter() {
     port: smtp.port,
     secure: smtp.secure,
     auth: smtp.user && smtp.pass ? { user: smtp.user, pass: smtp.pass } : undefined,
+    connectionTimeout: 10000,
+    greetingTimeout: 5000,
+    socketTimeout: 15000,
   });
   return transporter;
+}
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Email delivery timed out. Please try again.')), ms)
+    ),
+  ]);
 }
 
 export async function sendEmail({ to, subject, text, html }) {
@@ -34,7 +48,8 @@ export async function sendEmail({ to, subject, text, html }) {
   }
 
   try {
-    const info = await getTransporter().sendMail(mailOptions);
+    const sendPromise = getTransporter().sendMail(mailOptions);
+    const info = await withTimeout(sendPromise, EMAIL_TIMEOUT_MS);
     return { ok: true, messageId: info.messageId };
   } catch (err) {
     console.error('[email] Send failed:', err.message);

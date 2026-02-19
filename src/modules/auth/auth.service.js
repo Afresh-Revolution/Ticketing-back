@@ -8,37 +8,44 @@ import { sendOtpEmail } from '../../shared/services/email.service.js';
 const SALT_ROUNDS = 10;
 
 export async function signUp(email, password, name) {
+  const normalizedEmail = email.trim().toLowerCase();
+
+  const existing = await authModel.findUserByEmail(normalizedEmail);
+  if (existing) {
+    throw Object.assign(new Error('Email already registered'), { statusCode: 400 });
+  }
+
+  const hashed = await bcrypt.hash(password, SALT_ROUNDS);
+
+  const { code } = await verificationModel.create(normalizedEmail, 'signup_verify');
   try {
-    console.log('[auth.service] Starting signup for email:', email);
-    const normalizedEmail = email.trim().toLowerCase();
+    await sendOtpEmail(normalizedEmail, code, 'signup_verify');
+  } catch (emailErr) {
+    await verificationModel.deleteByEmailAndType(normalizedEmail, 'signup_verify');
+    console.error('[auth.service] Signup: email failed, cleaned up. User not created:', emailErr.message);
+    throw Object.assign(
+      new Error(emailErr.message?.includes('timed out') ? 'Email delivery timed out. Please try again.' : 'Failed to send verification email. Please try again.'),
+      { statusCode: 503 }
+    );
+  }
 
-    const existing = await authModel.findUserByEmail(normalizedEmail);
-    if (existing) {
-      console.log('[auth.service] Email already exists:', email);
-      throw Object.assign(new Error('Email already registered'), { statusCode: 400 });
-    }
-
-    console.log('[auth.service] Hashing password...');
-    const hashed = await bcrypt.hash(password, SALT_ROUNDS);
-
-    console.log('[auth.service] Creating user in database...');
+  try {
     await authModel.createUser({
       email: normalizedEmail,
       password: hashed,
       name: name?.trim() || null,
     });
-
-    const { code } = await verificationModel.create(normalizedEmail, 'signup_verify');
-    await sendOtpEmail(normalizedEmail, code, 'signup_verify');
-
-    console.log('[auth.service] Signup successful, OTP sent');
-    return {
-      message: 'Account created. Check your email for a verification code. You will need it when you first sign in.',
-    };
-  } catch (error) {
-    console.error('[auth.service] Signup failed:', error.message);
-    throw error;
+  } catch (createErr) {
+    await verificationModel.deleteByEmailAndType(normalizedEmail, 'signup_verify');
+    if (createErr.message?.includes('duplicate') || createErr.code === '23505') {
+      throw Object.assign(new Error('Email already registered'), { statusCode: 400 });
+    }
+    throw createErr;
   }
+
+  return {
+    message: 'Account created. Check your email for a verification code. You will need it when you first sign in.',
+  };
 }
 
 export async function signIn(email, password, otp) {
@@ -139,7 +146,16 @@ export async function forgotPassword(email) {
   }
 
   const { code } = await verificationModel.create(normalizedEmail, 'forgot_password');
-  await sendOtpEmail(normalizedEmail, code, 'forgot_password');
+  try {
+    await sendOtpEmail(normalizedEmail, code, 'forgot_password');
+  } catch (emailErr) {
+    await verificationModel.deleteByEmailAndType(normalizedEmail, 'forgot_password');
+    console.error('[auth.service] Forgot password: email failed:', emailErr.message);
+    throw Object.assign(
+      new Error(emailErr.message?.includes('timed out') ? 'Email delivery timed out. Please try again.' : 'Failed to send reset code. Please try again.'),
+      { statusCode: 503 }
+    );
+  }
 
   return { message: 'If an account exists with this email, you will receive a reset code.' };
 }
@@ -154,7 +170,16 @@ export async function resendVerification(email) {
     return { message: 'This account is already verified. You can sign in.' };
   }
   const { code } = await verificationModel.create(normalizedEmail, 'signup_verify');
-  await sendOtpEmail(normalizedEmail, code, 'signup_verify');
+  try {
+    await sendOtpEmail(normalizedEmail, code, 'signup_verify');
+  } catch (emailErr) {
+    await verificationModel.deleteByEmailAndType(normalizedEmail, 'signup_verify');
+    console.error('[auth.service] Resend verification: email failed:', emailErr.message);
+    throw Object.assign(
+      new Error(emailErr.message?.includes('timed out') ? 'Email delivery timed out. Please try again.' : 'Failed to send verification code. Please try again.'),
+      { statusCode: 503 }
+    );
+  }
   return { message: 'Verification code sent. Check your email.' };
 }
 
