@@ -1,26 +1,18 @@
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 import { config } from '../config/env.js';
 
 const EMAIL_TIMEOUT_MS = 15000;
 
-let transporter = null;
+let resendClient = null;
 
-function getTransporter() {
-  if (transporter) return transporter;
-  const { smtp } = config;
-  if (!smtp.user || !smtp.pass) {
-    console.warn('[email] SMTP not configured (SMTP_USER/SMTP_PASS missing). Emails will be logged only.');
+function getResend() {
+  if (resendClient) return resendClient;
+  const { resend } = config;
+  if (!resend.apiKey) {
+    console.warn('[email] Resend not configured (RESEND_API_KEY missing). Emails will be logged only.');
   }
-  transporter = nodemailer.createTransport({
-    host: smtp.host,
-    port: smtp.port,
-    secure: smtp.secure,
-    auth: smtp.user && smtp.pass ? { user: smtp.user, pass: smtp.pass } : undefined,
-    connectionTimeout: 10000,
-    greetingTimeout: 5000,
-    socketTimeout: 15000,
-  });
-  return transporter;
+  resendClient = new Resend(resend.apiKey || 'placeholder');
+  return resendClient;
 }
 
 function withTimeout(promise, ms) {
@@ -33,24 +25,29 @@ function withTimeout(promise, ms) {
 }
 
 export async function sendEmail({ to, subject, text, html }) {
-  const { smtp } = config;
-  const mailOptions = {
-    from: smtp.from,
-    to,
-    subject,
-    text: text || html?.replace(/<[^>]+>/g, '') || '',
-    html: html || text,
-  };
-
-  if (!smtp.user || !smtp.pass) {
-    console.log('[email] (SMTP not configured) Would send:', { to, subject, text: text?.slice(0, 80) });
+  const { resend } = config;
+  if (!resend.apiKey) {
+    console.log('[email] (Resend not configured) Would send:', { to, subject, text: (text || html)?.slice(0, 80) });
     return { ok: true, simulated: true };
   }
 
   try {
-    const sendPromise = getTransporter().sendMail(mailOptions);
-    const info = await withTimeout(sendPromise, EMAIL_TIMEOUT_MS);
-    return { ok: true, messageId: info.messageId };
+    const sendPromise = getResend().emails.send({
+      from: resend.from,
+      to: Array.isArray(to) ? to : [to],
+      subject,
+      html: html || text || '',
+      text: text || (html ? html.replace(/<[^>]+>/g, '') : ''),
+    });
+
+    const result = await withTimeout(sendPromise, EMAIL_TIMEOUT_MS);
+
+    if (result.error) {
+      console.error('[email] Resend error:', result.error);
+      throw new Error(result.error.message || 'Email send failed');
+    }
+
+    return { ok: true, messageId: result.data?.id };
   } catch (err) {
     console.error('[email] Send failed:', err.message);
     throw err;
