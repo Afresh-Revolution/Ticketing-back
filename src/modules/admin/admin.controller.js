@@ -1,5 +1,6 @@
 import { query, createId } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
+import { orderModel } from '../order/order.model.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -250,6 +251,87 @@ export const deleteAdmin = async (req, res, next) => {
     await query('DELETE FROM "User" WHERE id = $1', [userId]);
 
     res.json({ message: 'Admin account deleted' });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/admin/verify-ticket
+ * Body: { code }. Admin (or super admin) verifies a ticket by QR code.
+ * Checks: ticket exists, payment confirmed, not already fully used; admin may only verify tickets for events they created (super admin: all).
+ */
+export const verifyTicket = async (req, res, next) => {
+  try {
+    const { code } = req.body;
+    const codeStr = typeof code === 'string' ? code.trim() : '';
+    if (!codeStr) {
+      return res.status(400).json({ valid: false, reason: 'missing_code', message: 'Ticket code is required' });
+    }
+
+    const order = await orderModel.findByTicketCode(codeStr);
+    if (!order) {
+      return res.json({ valid: false, reason: 'not_found', message: 'Ticket not found' });
+    }
+    if (order.status !== 'paid') {
+      return res.json({ valid: false, reason: 'not_paid', message: 'Payment not confirmed for this ticket' });
+    }
+
+    const eventRows = await query('SELECT id, "createdBy" FROM "Event" WHERE id = $1', [order.eventId]);
+    const event = eventRows.rows[0];
+    if (!event) {
+      return res.json({ valid: false, reason: 'not_found', message: 'Event not found' });
+    }
+    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0 || req.user.id === '0';
+    const adminId = String(req.user.id);
+    if (!isSuperAdmin) {
+      const eventCreator = event.createdBy == null ? null : String(event.createdBy);
+      if (eventCreator !== adminId) {
+        return res.json({ valid: false, reason: 'not_authorized', message: 'You can only verify tickets for events you created' });
+      }
+    }
+
+    const qtyRows = await query(
+      'SELECT COALESCE(SUM(quantity), 0) AS total FROM "OrderItem" WHERE "orderId" = $1',
+      [order.id]
+    );
+    const totalQuantity = parseInt(qtyRows.rows[0].total, 10) || 1;
+    const scanRows = await query('SELECT COUNT(*) AS cnt FROM "ScanLog" WHERE "orderId" = $1', [order.id]);
+    const scanCount = parseInt(scanRows.rows[0].cnt, 10) || 0;
+
+    if (scanCount >= totalQuantity) {
+      const eventTitleRows = await query('SELECT title FROM "Event" WHERE id = $1', [order.eventId]);
+      const eventTitle = eventTitleRows.rows[0]?.title || 'Event';
+      return res.json({
+        valid: false,
+        reason: 'already_used',
+        message: 'This ticket has already been used',
+        fullName: order.fullName,
+        eventTitle,
+        scanCount,
+        totalQuantity,
+      });
+    }
+
+    const scanId = createId();
+    await query(
+      'INSERT INTO "ScanLog" (id, "orderId", "eventId", "scannedBy") VALUES ($1, $2, $3, $4)',
+      [scanId, order.id, order.eventId, adminId]
+    );
+    const eventTitleRows = await query('SELECT title FROM "Event" WHERE id = $1', [order.eventId]);
+    const eventTitle = eventTitleRows.rows[0]?.title || 'Event';
+    const newScanCount = scanCount + 1;
+    const fullyUsed = newScanCount >= totalQuantity;
+
+    return res.json({
+      valid: true,
+      message: fullyUsed ? 'Ticket verified (fully used)' : 'Ticket verified',
+      fullName: order.fullName,
+      eventTitle,
+      scanCount: newScanCount,
+      totalQuantity,
+      fullyUsed,
+    });
   } catch (err) {
     next(err);
   }

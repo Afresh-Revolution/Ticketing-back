@@ -13,6 +13,7 @@ function rowToOrder(row) {
     totalAmount: row.totalAmount,
     status: row.status,
     reference: row.reference,
+    ticketCode: row.ticketCode ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -84,5 +85,19 @@ export const orderModel = {
       [status, reference, now, id]
     );
     return this.findById(id);
-  }
+  },
+
+  async setTicketCode(id, ticketCode) {
+    const now = new Date().toISOString();
+    await query(
+      `UPDATE "Order" SET "ticketCode" = $1, "updatedAt" = $2 WHERE id = $3`,
+      [ticketCode, now, id]
+    );
+    return this.findById(id);
+  },
+
+  async findByTicketCode(ticketCode) {
+    const { rows } = await query('SELECT * FROM "Order" WHERE "ticketCode" = $1', [ticketCode]);
+    return rowToOrder(rows[0]);
+  },
 };

@@ -7,6 +7,7 @@ import {
   getAdmins,
   deleteAdmin,
   deleteEventOrders,
+  verifyTicket,
   getWithdrawPage,
   withdrawEvent,
   getBankAccount,
@@ -32,6 +33,9 @@ router.delete('/admins/:userId', authMiddleware, deleteAdmin);
 
 // Delete all sales/orders for an event
 router.delete('/events/:eventId/orders', authMiddleware, deleteEventOrders);
+
+// Verify ticket (scan) – all admins
+router.post('/verify-ticket', authMiddleware, verifyTicket);
 
 // Withdraw page data
 router.get('/withdraw', authMiddleware, getWithdrawPage);

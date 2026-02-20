@@ -189,6 +189,7 @@ CREATE TABLE IF NOT EXISTS "Order" (
   "totalAmount" INTEGER NOT NULL,
   status       TEXT NOT NULL DEFAULT 'pending',
   reference    TEXT,
+  "ticketCode" TEXT UNIQUE,
   "createdAt"  TIMESTAMPTZ NOT NULL DEFAULT now(),
   "updatedAt"  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -206,6 +207,17 @@ CREATE INDEX IF NOT EXISTS "TicketType_eventId_idx" ON "TicketType"("eventId");
 CREATE INDEX IF NOT EXISTS "Order_eventId_idx" ON "Order"("eventId");
 CREATE INDEX IF NOT EXISTS "Order_userId_idx" ON "Order"("userId");
 CREATE INDEX IF NOT EXISTS "OrderItem_orderId_idx" ON "OrderItem"("orderId");
+
+-- Scan log (ticket verification by admins)
+CREATE TABLE IF NOT EXISTS "ScanLog" (
+  id           TEXT PRIMARY KEY,
+  "orderId"    TEXT NOT NULL REFERENCES "Order"(id) ON DELETE CASCADE,
+  "eventId"    TEXT NOT NULL REFERENCES "Event"(id) ON DELETE CASCADE,
+  "scannedAt"  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  "scannedBy"  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS "ScanLog_orderId_idx" ON "ScanLog"("orderId");
+CREATE INDEX IF NOT EXISTS "ScanLog_eventId_idx" ON "ScanLog"("eventId");
 
 DROP TRIGGER IF EXISTS bankaccount_updated_at ON "BankAccount";
 CREATE TRIGGER bankaccount_updated_at BEFORE UPDATE ON "BankAccount" FOR EACH ROW EXECUTE PROCEDURE set_updated_at();

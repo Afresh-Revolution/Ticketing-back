@@ -49,7 +49,7 @@ export const userPageModel = {
   /** Fetches paid orders for the user with event and order item details (ticket purchases) */
   async getMyOrders(userId) {
     const { rows } = await query(
-      `SELECT o.id AS "orderId", o."eventId", o."fullName", o.email, o."totalAmount", o.status, o."createdAt" AS "orderCreatedAt",
+      `SELECT o.id AS "orderId", o."eventId", o."ticketCode", o."fullName", o.email, o."totalAmount", o.status, o."createdAt" AS "orderCreatedAt",
               e.title AS "event_title", e.description AS "event_description", e.date AS "event_date",
               e.venue AS "event_venue", e."imageUrl" AS "event_imageUrl", e.category AS "event_category",
               e."startTime" AS "event_startTime"
@@ -71,6 +71,7 @@ export const userPageModel = {
       orders.push({
         id: r.orderId,
         eventId: r.eventId,
+        ticketCode: r.ticketCode ?? null,
         fullName: r.fullName,
         email: r.email,
         totalAmount: r.totalAmount,
