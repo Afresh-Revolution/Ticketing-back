@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS "Withdrawal" (
   "updatedAt"         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Ticket types (pools) per event
+-- Ticket types (pools) per event; type: 'paid' | 'free' (free = no payment)
 CREATE TABLE IF NOT EXISTS "TicketType" (
   id         TEXT PRIMARY KEY,
   "eventId"  TEXT NOT NULL REFERENCES "Event"(id) ON DELETE CASCADE,
@@ -173,6 +173,7 @@ CREATE TABLE IF NOT EXISTS "TicketType" (
   description TEXT,
   price      INTEGER NOT NULL DEFAULT 0,
   quantity   INTEGER NOT NULL DEFAULT 0,
+  type       TEXT NOT NULL DEFAULT 'paid',
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
