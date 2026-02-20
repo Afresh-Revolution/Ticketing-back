@@ -13,6 +13,7 @@ const corsOrigins = process.env.CORS_ORIGIN
       'http://localhost:5173',
       'http://localhost:3000',
       'https://ticketing-wu55t.ondigitalocean.app',
+      'https://gatewav.com',
     ];
 
 export const config = {

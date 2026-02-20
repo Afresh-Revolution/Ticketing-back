@@ -230,3 +230,21 @@ CREATE TRIGGER tickettype_updated_at BEFORE UPDATE ON "TicketType" FOR EACH ROW 
 
 DROP TRIGGER IF EXISTS order_updated_at ON "Order";
 CREATE TRIGGER order_updated_at BEFORE UPDATE ON "Order" FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- Add to existing DB (e.g. Supabase): if "Order" was created without
+-- "ticketCode" and ScanLog doesn't exist, run this in the Supabase SQL editor:
+-- ---------------------------------------------------------------------------
+-- Ticket code on paid orders (unique, scanned at entry)
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "ticketCode" TEXT UNIQUE;
+
+-- Scan log: each scan of a ticket by an admin (for "used" count)
+CREATE TABLE IF NOT EXISTS "ScanLog" (
+  id           TEXT PRIMARY KEY,
+  "orderId"    TEXT NOT NULL REFERENCES "Order"(id) ON DELETE CASCADE,
+  "eventId"    TEXT NOT NULL REFERENCES "Event"(id) ON DELETE CASCADE,
+  "scannedAt"  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  "scannedBy"  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS "ScanLog_orderId_idx" ON "ScanLog"("orderId");
+CREATE INDEX IF NOT EXISTS "ScanLog_eventId_idx" ON "ScanLog"("eventId");
