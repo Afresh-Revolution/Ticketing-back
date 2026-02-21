@@ -75,17 +75,31 @@ export const eventModel = {
     const event = rowToEvent(rows[0]);
     if (!event) return null;
     
-    // Fetch Ticket Types (pools) and map them to "tickets" field for frontend compatibility
+    // Fetch Ticket Types (pools) with sold count from paid orders
     const { rows: ticketTypeRows } = await query('SELECT * FROM "TicketType" WHERE "eventId" = $1', [id]);
+    const ticketIds = ticketTypeRows.map(t => t.id);
+    let soldByTicketId = {};
+    if (ticketIds.length > 0) {
+      const { rows: soldRows } = await query(
+        `SELECT oi."ticketTypeId", COALESCE(SUM(oi.quantity), 0)::int AS sold
+         FROM "OrderItem" oi
+         INNER JOIN "Order" o ON o.id = oi."orderId" AND o.status = 'paid'
+         WHERE oi."ticketTypeId" = ANY($1)
+         GROUP BY oi."ticketTypeId"`,
+        [ticketIds]
+      );
+      soldByTicketId = soldRows.reduce((acc, r) => { acc[r.ticketTypeId] = Number(r.sold) || 0; return acc; }, {});
+    }
     event.tickets = ticketTypeRows.map(t => ({
       id: t.id,
       name: t.name,
       description: t.description,
       price: t.price,
       quantity: t.quantity,
-      // Frontend expects these fields for now
+      type: t.type || (t.price === 0 ? 'free' : 'paid'),
+      sold: soldByTicketId[t.id] || 0,
     }));
-    
+
     return event;
   },
   async create(data) {
@@ -119,16 +133,19 @@ export const eventModel = {
     if (data.ticketTypes && Array.isArray(data.ticketTypes)) {
       for (const ticket of data.ticketTypes) {
         const ticketId = createId();
+        const price = ticket.price ?? 0;
+        const type = ticket.type || (price === 0 ? 'free' : 'paid');
         await query(
-          `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, "createdAt", "updatedAt")
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "createdAt", "updatedAt")
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
             ticketId,
             id,
             ticket.name,
             ticket.description ?? null,
-            ticket.price ?? 0,
+            price,
             ticket.quantity ?? 0,
+            type,
             now,
             now
           ]
@@ -175,16 +192,19 @@ export const eventModel = {
       const now = new Date().toISOString();
       for (const ticket of data.ticketTypes) {
         const ticketId = ticket.id && /^[a-f0-9-]{36}$/i.test(ticket.id) ? ticket.id : createId();
+        const price = ticket.price ?? 0;
+        const type = ticket.type || (price === 0 ? 'free' : 'paid');
         await query(
-          `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, "createdAt", "updatedAt")
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "createdAt", "updatedAt")
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
             ticketId,
             id,
             ticket.name ?? 'Ticket',
             ticket.description ?? null,
-            ticket.price ?? 0,
+            price,
             ticket.quantity ?? 0,
+            type,
             now,
             now,
           ]
