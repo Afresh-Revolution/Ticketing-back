@@ -48,9 +48,8 @@ export const userPageModel = {
 
   /** Fetches paid orders for the user with event and order item details (ticket purchases). */
   async getMyOrders(userId) {
-    // Omit o."ticketCode" if migration 004 has not been run (column may not exist). After running db/migrations/004_ticket_code_and_scan_log.sql, add: o."ticketCode",
     const { rows } = await query(
-      `SELECT o.id AS "orderId", o."eventId", o."fullName", o.email, o."totalAmount", o.status, o."createdAt" AS "orderCreatedAt",
+      `SELECT o.id AS "orderId", o."eventId", o."fullName", o.email, o."totalAmount", o.status, o."ticketCode", o."createdAt" AS "orderCreatedAt",
               e.title AS "event_title", e.description AS "event_description", e.date AS "event_date",
               e.venue AS "event_venue", e."imageUrl" AS "event_imageUrl", e.category AS "event_category",
               e."startTime" AS "event_startTime"

@@ -13,6 +13,10 @@ import {
   getBankAccount,
   saveBankAccount,
   getPaystackBanks,
+  getTopUsersAdmin,
+  createTopUser,
+  updateTopUser,
+  deleteTopUser,
 } from './admin.controller.js';
 
 const router = Router();
@@ -49,5 +53,11 @@ router.post('/bank-account', authMiddleware, saveBankAccount);
 
 // Paystack bank list (for dropdown)
 router.get('/banks', authMiddleware, getPaystackBanks);
+
+// Top users (landing carousel)
+router.get('/top-users', authMiddleware, getTopUsersAdmin);
+router.post('/top-users', authMiddleware, createTopUser);
+router.patch('/top-users/:id', authMiddleware, updateTopUser);
+router.delete('/top-users/:id', authMiddleware, deleteTopUser);
 
 export default router;

@@ -1,6 +1,7 @@
 import { query, createId } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
 import { orderModel } from '../order/order.model.js';
+import { topUsersModel } from '../landing/topUsers/topUsers.model.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -658,6 +659,58 @@ export const getPaystackBanks = async (req, res, next) => {
     }
     const data = await paystackRequest('GET', '/bank?currency=NGN&perPage=100', null);
     res.json(data.data || []);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── Top Users (landing carousel) ───────────────────────────────────────────
+
+export const getTopUsersAdmin = async (req, res, next) => {
+  try {
+    const list = await topUsersModel.getAll();
+    res.json(list);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const createTopUser = async (req, res, next) => {
+  try {
+    const { name, title, imageUrl, sortOrder } = req.body;
+    if (!name || String(name).trim() === '') {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+    const created = await topUsersModel.create({ name: String(name).trim(), title: title ? String(title).trim() : null, imageUrl: imageUrl || null, sortOrder: sortOrder != null ? Number(sortOrder) : 0 });
+    res.status(201).json(created);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const updateTopUser = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { name, title, imageUrl, sortOrder } = req.body;
+    const updated = await topUsersModel.update(id, {
+      name: name !== undefined ? String(name).trim() : undefined,
+      title: title !== undefined ? (title ? String(title).trim() : null) : undefined,
+      imageUrl: imageUrl !== undefined ? imageUrl || null : undefined,
+      sortOrder: sortOrder !== undefined ? Number(sortOrder) : undefined,
+    });
+    if (!updated) return res.status(404).json({ error: 'Top user not found' });
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const deleteTopUser = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const deleted = await topUsersModel.delete(id);
+    if (!deleted) return res.status(404).json({ error: 'Top user not found' });
+    res.status(204).send();
   } catch (err) {
     next(err);
   }
