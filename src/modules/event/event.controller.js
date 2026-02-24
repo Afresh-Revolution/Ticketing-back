@@ -1,4 +1,48 @@
 import { eventModel } from './event.model.js';
+import { config } from '../../shared/config/env.js';
+
+/** Stable numeric id for external systems (e.g. JOSCITY) from our UUID. */
+function toStableNumericId(id) {
+  if (!id || typeof id !== 'string') return 0;
+  const hex = id.replace(/-/g, '').slice(0, 12);
+  return parseInt(hex, 16) || 0;
+}
+
+/** GET /api/events/feed/joscity – JOSCITY-compatible event list. Optional: X-API-Key or Authorization: Bearer <key> if JOSCITY_API_KEY is set. */
+export async function listForJoscity(req, res, next) {
+  try {
+    const apiKey = config.joscityApiKey;
+    if (apiKey) {
+      const key = req.headers['x-api-key'] || (req.headers.authorization && req.headers.authorization.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
+      if (key !== apiKey) {
+        return res.status(401).json({ error: 'Invalid or missing API key' });
+      }
+    }
+
+    const events = await eventModel.findMany({ include: { tickets: true } });
+    const list = events.map((e) => {
+      const date = e.date;
+      const eventDate = date instanceof Date ? date.toISOString() : (typeof date === 'string' ? date : '');
+      const capacity = Array.isArray(e.tickets) ? e.tickets.reduce((sum, t) => sum + (Number(t.quantity) || 0), 0) : 0;
+      return {
+        event_id: toStableNumericId(e.id),
+        event_id_string: e.id,
+        event_title: e.title || '',
+        event_description: e.description ?? '',
+        event_category: e.category ?? '',
+        event_date: eventDate,
+        event_location: e.venue || e.location || '',
+        event_cover: (e.imageUrl && e.imageUrl.startsWith('http')) ? e.imageUrl : (e.imageUrl && config.publicBaseUrl ? new URL(e.imageUrl, config.publicBaseUrl).href : (e.imageUrl || '')),
+        event_capacity: capacity || undefined,
+        source: 'gatewav',
+        ticket_url: config.publicFrontendUrl ? `${config.publicFrontendUrl.replace(/\/$/, '')}/event/${e.id}` : undefined,
+      };
+    });
+    res.json(list);
+  } catch (e) {
+    next(e);
+  }
+}
 
 /** Returns true if the current user is allowed to modify this event (creator or super admin for null createdBy). */
 function canModifyEvent(event, userId) {

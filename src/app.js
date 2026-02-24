@@ -18,7 +18,7 @@ const app = express();
 app.use(cors({
   origin: config.corsOrigins,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -54,7 +54,15 @@ app.get('/api', (req, res) => {
   res.json({
     name: 'Gatewave API',
     version: '1.0',
-    endpoints: ['/api/auth', '/api/landing', '/api/community', '/api/booking', '/api/user', '/api/events'],
+    endpoints: [
+      '/api/auth',
+      '/api/landing',
+      '/api/community',
+      '/api/booking',
+      '/api/user',
+      '/api/events',
+      '/api/events/feed/joscity', // JOSCITY integration – GET for event list
+    ],
   });
 });
 

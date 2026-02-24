@@ -30,5 +30,11 @@ export const config = {
     apiKey: process.env.RESEND_API_KEY || '',
     from: process.env.RESEND_FROM || 'Gatewave <onboarding@resend.dev>',
   },
+  /** Optional: if set, GET /api/events/feed/joscity requires this key via X-API-Key or Authorization: Bearer <key> */
+  joscityApiKey: process.env.JOSCITY_API_KEY || '',
+  /** Base URL for resolving relative event cover URLs (used in JOSCITY feed). */
+  publicBaseUrl: process.env.PUBLIC_BASE_URL || 'https://ticketing-back.onrender.com',
+  /** Frontend base URL for "Get tickets" links in JOSCITY feed (e.g. https://gatewav.com). */
+  publicFrontendUrl: process.env.PUBLIC_FRONTEND_URL || '',
 };
 
