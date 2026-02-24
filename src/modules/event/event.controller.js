@@ -1,5 +1,6 @@
 import { eventModel } from './event.model.js';
 import { config } from '../../shared/config/env.js';
+import { query } from '../../shared/config/db.js';
 
 /** Stable numeric id for external systems (e.g. JOSCITY) from our UUID. */
 function toStableNumericId(id) {
@@ -20,10 +21,25 @@ export async function listForJoscity(req, res, next) {
     }
 
     const events = await eventModel.findMany({ include: { tickets: true } });
+    const allTicketTypeIds = events.flatMap((e) => (Array.isArray(e.tickets) ? e.tickets : []).map((t) => t.id)).filter(Boolean);
+    let soldByTicketTypeId = {};
+    if (allTicketTypeIds.length > 0) {
+      const { rows: soldRows } = await query(
+        `SELECT oi."ticketTypeId", COALESCE(SUM(oi.quantity), 0)::int AS sold
+         FROM "OrderItem" oi
+         INNER JOIN "Order" o ON o.id = oi."orderId" AND o.status = 'paid'
+         WHERE oi."ticketTypeId" = ANY($1)
+         GROUP BY oi."ticketTypeId"`,
+        [allTicketTypeIds]
+      );
+      soldByTicketTypeId = soldRows.reduce((acc, r) => { acc[r.ticketTypeId] = Number(r.sold) || 0; return acc; }, {});
+    }
     const list = events.map((e) => {
       const date = e.date;
       const eventDate = date instanceof Date ? date.toISOString() : (typeof date === 'string' ? date : '');
-      const capacity = Array.isArray(e.tickets) ? e.tickets.reduce((sum, t) => sum + (Number(t.quantity) || 0), 0) : 0;
+      const tickets = Array.isArray(e.tickets) ? e.tickets : [];
+      const capacity = tickets.reduce((sum, t) => sum + (Number(t.quantity) || 0), 0);
+      const ticketsSold = tickets.reduce((sum, t) => sum + (soldByTicketTypeId[t.id] || 0), 0);
       return {
         event_id: toStableNumericId(e.id),
         event_id_string: e.id,
@@ -34,6 +50,8 @@ export async function listForJoscity(req, res, next) {
         event_location: e.venue || e.location || '',
         event_cover: (e.imageUrl && e.imageUrl.startsWith('http')) ? e.imageUrl : (e.imageUrl && config.publicBaseUrl ? new URL(e.imageUrl, config.publicBaseUrl).href : (e.imageUrl || '')),
         event_capacity: capacity || undefined,
+        capacity: capacity || undefined,
+        tickets_sold: ticketsSold,
         source: 'gatewav',
         ticket_url: config.publicFrontendUrl ? `${config.publicFrontendUrl.replace(/\/$/, '')}/event/${e.id}` : undefined,
       };

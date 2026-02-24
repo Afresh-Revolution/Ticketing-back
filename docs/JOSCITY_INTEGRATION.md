@@ -29,7 +29,16 @@ Replace the host with your Ticketing backend URL if different. No query params r
 | `event_location`   | string | No       | Venue or address. |
 | `event_cover`      | string | No       | Full URL to cover image. |
 | `event_capacity`   | number | No       | Max attendees (sum of ticket type quantities). Omitted if 0. |
+| `capacity`         | number | No       | Same as `event_capacity` (alias for convenience). |
+| `tickets_sold`     | number | No       | Number of tickets sold (paid orders only). Use with capacity to show e.g. **3/100**. |
 | `source`           | string | Yes      | Always `"gatewav"` so JOSCITY can label external events. |
+
+**Capacity and sold count:** The feed includes capacity and sold count so the Events page can show availability like **3/100**. Supported field names:
+
+| Purpose    | Preferred field name  | Alternative (alias) |
+|------------|------------------------|----------------------|
+| Max capacity | `event_capacity`     | `capacity`           |
+| Sold count   | `tickets_sold`       | —                    |
 
 Example:
 
@@ -44,6 +53,8 @@ Example:
     "event_location": "Main Arena, Lagos",
     "event_cover": "https://images.unsplash.com/photo-...",
     "event_capacity": 500,
+    "capacity": 500,
+    "tickets_sold": 42,
     "source": "gatewav"
   }
 ]
@@ -136,7 +147,22 @@ Open `GET https://<your-ticketing-backend>/api` in a browser or with curl. The J
 - [ ] Set `TICKETING_FEED_URL` to the full feed URL (e.g. `https://your-ticketing-api.com/api/events/feed/joscity`).
 - [ ] Call `GET TICKETING_FEED_URL` (no query params).
 - [ ] If API key required: send header `X-API-Key` or `Authorization: Bearer <key>`.
-- [ ] Parse JSON; use `event_id`, `event_title`, `event_date`, `event_location`, `event_cover`, `event_capacity`, `source`.
+- [ ] Parse JSON; use `event_id`, `event_title`, `event_date`, `event_location`, `event_cover`, `event_capacity` / `capacity`, `tickets_sold`, `source`.
 - [ ] For "Buy tickets": call `GET /api/events` and use each event's `id` in `{TICKETING_FRONTEND_BASE}/event/{id}`.
 - [ ] If calling from frontend: add JOSCITY origin to Ticketing backend `CORS_ORIGIN`.
 - [ ] If you get 404: confirm Ticketing backend is deployed and `GET <TICKETING_API>/api` lists `"/api/events/feed/joscity"`.
+
+---
+
+## 10. Showing capacity and sold (e.g. 3/100)
+
+If you still see **0/100** for a Gatewav event, the feed from `GET .../api/events/feed/joscity` may not be sending the sold count (or uses a different property name).
+
+1. **Check the actual JSON** from that endpoint (e.g. open the URL in a browser or use curl). Look for:
+   - **Capacity:** `event_capacity` or `capacity`
+   - **Sold:** `tickets_sold`
+2. **If the sold count appears under another name** (e.g. `bookings`, `sold_count`), we can add that property name to the backend mapping so the feed exposes it as `tickets_sold` (or JOSCITY can map it on their side).
+3. **If the Ticketing backend does not include sold/capacity in the feed**, it must add them. This backend sends:
+   - `event_capacity` and `capacity` (max attendees)
+   - `tickets_sold` (paid orders only)  
+   so JOSCITY can display e.g. **3/100** correctly.
