@@ -278,7 +278,7 @@ export const verifyTicket = async (req, res, next) => {
       return res.json({ valid: false, reason: 'not_paid', message: 'Payment not confirmed for this ticket' });
     }
 
-    const eventRows = await query('SELECT id, "createdBy" FROM "Event" WHERE id = $1', [order.eventId]);
+    const eventRows = await query('SELECT id, "createdBy", title FROM "Event" WHERE id = $1', [order.eventId]);
     const event = eventRows.rows[0];
     if (!event) {
       return res.json({ valid: false, reason: 'not_found', message: 'Event not found' });
@@ -288,7 +288,12 @@ export const verifyTicket = async (req, res, next) => {
     if (!isSuperAdmin) {
       const eventCreator = event.createdBy == null ? null : String(event.createdBy);
       if (eventCreator !== adminId) {
-        return res.json({ valid: false, reason: 'not_authorized', message: 'You can only verify tickets for events you created' });
+        return res.status(403).json({
+          valid: false,
+          reason: 'not_authorized',
+          message: 'You can only scan tickets for events you created.',
+          eventTitle: event.title || 'Event',
+        });
       }
     }
 
