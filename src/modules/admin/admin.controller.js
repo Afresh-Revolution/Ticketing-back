@@ -82,6 +82,7 @@ export const getDashboardStats = async (req, res, next) => {
          o."fullName"    AS buyer_name,
          o.email         AS buyer_email,
          o."totalAmount" AS amount,
+         (SELECT COALESCE(SUM(oi.quantity), 0)::int FROM "OrderItem" oi WHERE oi."orderId" = o.id) AS ticket_count,
          o.status,
          o."createdAt"   AS created_at,
          e.title         AS event_title
