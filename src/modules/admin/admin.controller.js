@@ -186,8 +186,130 @@ export async function saveBankAccount(req, res) {
   }
 }
 
+/** GET /api/admin/withdraw – full withdraw page payload (kpi, events, withdrawals, bankAccount, isSuperAdmin) */
+export async function getWithdrawPage(req, res) {
+  try {
+    const isSuperAdmin = req.userRole === 'superadmin';
+    const userId = req.userId;
+
+    const kpi = { totalGross: 0, availableToWithdraw: 0, totalFees: 0 };
+
+    const revResult = await query(
+      `SELECT COALESCE(SUM(o."totalAmount"), 0) AS total
+       FROM "Order" o
+       JOIN "Event" e ON e."id" = o."eventId"
+       WHERE o."status" = 'paid' ${!isSuperAdmin ? 'AND e."createdBy" = $1' : ''}`,
+      isSuperAdmin ? [] : [userId]
+    ).catch(() => ({ rows: [{ total: 0 }] }));
+    kpi.totalGross = Number(revResult.rows?.[0]?.total) || 0;
+    kpi.totalFees = Math.round(kpi.totalGross * 0.15);
+    kpi.availableToWithdraw = kpi.totalGross - kpi.totalFees;
+
+    const eventsSql = isSuperAdmin
+      ? `
+      SELECT e."id", e."title", e."date", e."imageUrl", e."createdBy",
+             COALESCE(rev.gross, 0) AS "gross_revenue",
+             NULL::varchar AS "withdrawal_status", NULL::integer AS "withdrawn_net", NULL::timestamptz AS "withdrawn_at"
+      FROM "Event" e
+      LEFT JOIN (
+        SELECT o."eventId", SUM(o."totalAmount") AS gross
+        FROM "Order" o WHERE o."status" = 'paid'
+        GROUP BY o."eventId"
+      ) rev ON rev."eventId" = e."id"
+      ORDER BY e."date" DESC
+    `
+      : `
+      SELECT e."id", e."title", e."date", e."imageUrl", e."createdBy",
+             COALESCE(rev.gross, 0) AS "gross_revenue",
+             w."status" AS "withdrawal_status", w."amount" AS "withdrawn_net", w."createdAt" AS "withdrawn_at"
+      FROM "Event" e
+      LEFT JOIN (
+        SELECT o."eventId", SUM(o."totalAmount") AS gross
+        FROM "Order" o WHERE o."status" = 'paid'
+        GROUP BY o."eventId"
+      ) rev ON rev."eventId" = e."id"
+      LEFT JOIN LATERAL (
+        SELECT "status", "amount", "createdAt"
+        FROM "Withdrawal" WHERE "eventId" = e."id" AND "userId" = $1
+        ORDER BY "createdAt" DESC LIMIT 1
+      ) w ON true
+      WHERE e."createdBy" = $2
+      ORDER BY e."date" DESC
+    `;
+    const eventsResult = await query(
+      eventsSql,
+      isSuperAdmin ? [] : [userId, userId]
+    ).catch(() => ({ rows: [] }));
+    const events = (eventsResult.rows || []).map((r) => ({
+      id: String(r.id),
+      title: r.title || '',
+      date: r.date || '',
+      imageUrl: r.imageUrl || null,
+      createdBy: r.createdBy != null ? String(r.createdBy) : null,
+      gross_revenue: Number(r.gross_revenue) || 0,
+      withdrawal_status: r.withdrawal_status || null,
+      withdrawn_net: r.withdrawn_net != null ? Number(r.withdrawn_net) : null,
+      withdrawn_at: r.withdrawn_at || null,
+    }));
+
+    const withResult = await query(
+      'SELECT * FROM "Withdrawal" WHERE "userId" = $1 ORDER BY "createdAt" DESC',
+      [userId]
+    ).catch(() => ({ rows: [] }));
+    const withdrawals = (withResult.rows || []).map((w) => ({
+      id: String(w.id),
+      eventId: String(w.eventId),
+      adminId: String(w.userId),
+      grossAmount: 0,
+      platformFee: 0,
+      netAmount: w.amount || 0,
+      status: w.status || 'pending',
+      paystackReference: null,
+      createdAt: w.createdAt,
+      event_title: '',
+      admin_name: null,
+      admin_email: null,
+    }));
+
+    let bankAccount = null;
+    if (userId != null && userId !== 0) {
+      const ba = await query(
+        'SELECT "id", "accountNumber", "bankCode", "accountName", "bankName" FROM "BankAccount" WHERE "userId" = $1',
+        [userId]
+      ).catch(() => ({ rows: [] }));
+      if (ba.rows?.[0]) {
+        const row = ba.rows[0];
+        bankAccount = {
+          id: String(row.id),
+          accountName: row.accountName || '',
+          accountNumber: row.accountNumber || '',
+          bankCode: row.bankCode || '',
+          bankName: row.bankName || '',
+        };
+      }
+    }
+
+    return res.json({
+      kpi,
+      events,
+      withdrawals,
+      bankAccount,
+      isSuperAdmin,
+    });
+  } catch (err) {
+    console.error('getWithdrawPage', err);
+    return res.status(500).json({
+      kpi: { totalGross: 0, availableToWithdraw: 0, totalFees: 0 },
+      events: [],
+      withdrawals: [],
+      bankAccount: null,
+      isSuperAdmin: req.userRole === 'superadmin',
+    });
+  }
+}
+
 /** POST /api/admin/withdraw - body: eventId (optional) */
-/** GET /api/admin/withdraw, POST /api/admin/withdraw/:eventId */
+/** POST /api/admin/withdraw/:eventId */
 export async function listWithdrawals(req, res) {
   try {
     const result = await query(

@@ -16,8 +16,9 @@ CREATE TABLE IF NOT EXISTS "User" (
   "updatedAt" TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Ensure username exists (e.g. if User was created by an older schema)
+-- Ensure columns exist (e.g. if User was created by an older schema)
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "username" VARCHAR(255);
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "passwordHash" VARCHAR(255);
 CREATE INDEX IF NOT EXISTS "User_email_idx" ON "User" ("email");
 CREATE INDEX IF NOT EXISTS "User_role_idx" ON "User" ("role");
 CREATE UNIQUE INDEX IF NOT EXISTS "User_username_idx" ON "User" ("username") WHERE "username" IS NOT NULL;
@@ -210,3 +211,27 @@ ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "venue" VARCHAR(512);
 ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "category" VARCHAR(255);
 ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "currency" VARCHAR(10);
 ALTER TABLE "TopUser" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
+
+-- Ensure VerificationCode.id always has a default (app inserts without id)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns c
+    WHERE c.table_schema = 'public' AND c.table_name = 'VerificationCode' AND c.column_name = 'id'
+    AND c.data_type IN ('integer', 'bigint', 'smallint')
+  ) THEN
+    EXECUTE 'CREATE SEQUENCE IF NOT EXISTS "VerificationCode_id_seq"';
+    EXECUTE 'ALTER TABLE "VerificationCode" ALTER COLUMN "id" SET DEFAULT nextval(''"VerificationCode_id_seq"'')';
+    EXECUTE 'ALTER SEQUENCE "VerificationCode_id_seq" OWNED BY "VerificationCode"."id"';
+    EXECUTE 'SELECT setval(''"VerificationCode_id_seq"'', GREATEST(1, COALESCE((SELECT MAX("id") FROM "VerificationCode"), 0)::bigint))';
+  ELSIF EXISTS (
+    SELECT 1 FROM information_schema.columns c
+    WHERE c.table_schema = 'public' AND c.table_name = 'VerificationCode' AND c.column_name = 'id'
+  ) THEN
+    IF (SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'VerificationCode' AND column_name = 'id') = 'uuid' THEN
+      EXECUTE 'ALTER TABLE "VerificationCode" ALTER COLUMN "id" SET DEFAULT gen_random_uuid()';
+    ELSE
+      EXECUTE 'ALTER TABLE "VerificationCode" ALTER COLUMN "id" SET DEFAULT (gen_random_uuid()::text)';
+    END IF;
+  END IF;
+END $$;

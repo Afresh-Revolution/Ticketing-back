@@ -14,7 +14,7 @@ router.post('/verify-ticket', requireAuth, adminController.verifyTicket);
 router.get('/banks', requireAuth, adminController.getBanks);
 router.get('/bank-account', requireAuth, adminController.getBankAccount);
 router.post('/bank-account', requireAuth, adminController.saveBankAccount);
-router.get('/withdraw', requireAuth, adminController.listWithdrawals);
+router.get('/withdraw', requireAuth, adminController.getWithdrawPage);
 router.post('/withdraw/:eventId', requireAuth, adminController.createWithdrawal);
 router.get('/top-users', requireAuth, adminController.listTopUsers);
 router.post('/top-users', requireAuth, adminController.createTopUser);
