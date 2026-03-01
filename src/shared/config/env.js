@@ -2,7 +2,13 @@ import 'dotenv/config';
 
 const corsOrigin = process.env.CORS_ORIGIN || '';
 const frontendBaseUrl = (process.env.FRONTEND_BASE_URL || 'http://localhost:5173').replace(/\/$/, '');
-const defaultCorsOrigins = [frontendBaseUrl, 'http://localhost:5173', 'http://127.0.0.1:5173'];
+const defaultCorsOrigins = [
+  frontendBaseUrl,
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'https://gatewav.com',
+  'https://www.gatewav.com',
+];
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
