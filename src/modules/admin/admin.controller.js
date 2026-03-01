@@ -48,7 +48,7 @@ export async function getDashboard(req, res) {
 export async function listAdmins(req, res) {
   try {
     const result = await query(
-      'SELECT "id", "email", "name", "role", "emailVerified" FROM "User" WHERE "role" IN (\'admin\', \'superadmin\') ORDER BY "id"'
+      'SELECT "id", "email", "name", "role", "emailVerified", "createdAt", "updatedAt" FROM "User" WHERE "role" IN (\'admin\', \'superadmin\') ORDER BY "id"'
     ).catch(() => ({ rows: [] }));
     const list = (result.rows || []).map((row) => ({
       id: row.id,
@@ -56,6 +56,8 @@ export async function listAdmins(req, res) {
       name: row.name,
       role: row.role,
       emailVerified: !!row.emailVerified,
+      createdAt: row.createdAt != null ? row.createdAt : null,
+      updatedAt: row.updatedAt != null ? row.updatedAt : null,
     }));
     return res.json(list);
   } catch {
