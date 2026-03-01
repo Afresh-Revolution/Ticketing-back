@@ -60,3 +60,8 @@ Other auth: signin, signup, forgot-password, reset-password, resend-verification
 1. Deploy the repo and set env vars (including `DATABASE_URL`, `JWT_SECRET`, `RESEND_*`, `FRONTEND_BASE_URL`).
 2. Run the schema against the production DB (e.g. `psql $DATABASE_URL -f db/schema.sql`).
 3. After deploy, check `GET https://your-service/api/auth/health` – you should see `organizer-signup` and `organizer-verify-otp` in the list. If you get 404 on `POST /api/auth/organizer-signup`, redeploy so the latest routes are live.
+
+## Troubleshooting
+
+- **500 on organizer-signup** – If the database and signup logic succeed but sending the OTP email fails (e.g. Resend API or TLS error), the server now returns **201** with a message that the email could not be sent, so the flow continues. Check Render logs for `organizerSignup: email send failed` to debug email.
+- **Self-signed certificate in certificate chain** – This can happen when the **backend** calls Resend over HTTPS (e.g. on Render) or when the **frontend** calls the API. On the server: set `ALLOW_INSECURE_TLS_OUTBOUND=1` in your env only if you must (insecure). On the frontend: use a stable HTTPS URL for the API (e.g. Render’s default URL); if you’re behind a corporate proxy, you may need to add a certificate exception in your environment.

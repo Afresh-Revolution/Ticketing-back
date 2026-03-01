@@ -1,4 +1,11 @@
 import 'dotenv/config';
+
+// Optional: allow outbound HTTPS with self-signed/invalid certs (e.g. corporate proxy, Resend).
+// Set ALLOW_INSECURE_TLS_OUTBOUND=1 only if you get "self-signed certificate in certificate chain" from email/APIs.
+if (process.env.ALLOW_INSECURE_TLS_OUTBOUND === '1') {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
+
 import express from 'express';
 import cors from 'cors';
 import { config } from './shared/config/env.js';

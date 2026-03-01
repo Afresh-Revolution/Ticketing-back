@@ -258,9 +258,16 @@ export async function organizerSignup(req, res) {
     }
 
     const code = await createVerificationCode(em, CODE_TYPES.organizer);
-    await emailService.sendOrganizerVerificationOtp({ to: em, code });
 
-    return res.status(201).json({ message: 'Verification code sent to your email.' });
+    try {
+      await emailService.sendOrganizerVerificationOtp({ to: em, code });
+      return res.status(201).json({ message: 'Verification code sent to your email.' });
+    } catch (emailErr) {
+      console.error('organizerSignup: email send failed', emailErr.message || emailErr);
+      return res.status(201).json({
+        message: 'Account created. We could not send the verification email right now (e.g. network or certificate issue). Please try again in a few minutes or contact support.',
+      });
+    }
   } catch (err) {
     console.error('organizerSignup', err);
     return res.status(500).json({ error: err.message || 'Failed to register as organizer' });
