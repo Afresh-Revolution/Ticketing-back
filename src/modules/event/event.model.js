@@ -216,6 +216,15 @@ export const eventModel = {
   async delete(id) {
     const { rows } = await query('SELECT * FROM "Event" WHERE id = $1', [id]);
     const deleted = rowToEvent(rows[0]);
+    if (!deleted) return null;
+
+    // Cascade delete: remove dependent rows so FK constraints don't block event delete
+    // Order: ScanLog -> OrderItem -> Order, Withdrawal, TicketType -> Event
+    await query('DELETE FROM "ScanLog" WHERE "orderId" IN (SELECT id FROM "Order" WHERE "eventId" = $1)', [id]);
+    await query('DELETE FROM "OrderItem" WHERE "orderId" IN (SELECT id FROM "Order" WHERE "eventId" = $1)', [id]);
+    await query('DELETE FROM "Order" WHERE "eventId" = $1', [id]);
+    await query('DELETE FROM "Withdrawal" WHERE "eventId" = $1', [id]);
+    await query('DELETE FROM "TicketType" WHERE "eventId" = $1', [id]);
     await query('DELETE FROM "Event" WHERE id = $1', [id]);
     return deleted;
   },

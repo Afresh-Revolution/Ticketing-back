@@ -1,7 +1,9 @@
+import bcrypt from 'bcryptjs';
 import { query, createId } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
 import { orderModel } from '../order/order.model.js';
 import { topUsersModel } from '../landing/topUsers/topUsers.model.js';
+import { authModel } from '../auth/auth.model.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -339,6 +341,93 @@ export const verifyTicket = async (req, res, next) => {
       totalQuantity,
       fullyUsed,
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const PASSWORD_CHANGE_COOLDOWN_DAYS = 30;
+
+/** GET /api/admin/password-change-status – when the admin can next change password (once per month). */
+export const getPasswordChangeStatus = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    if (userId === 0 || userId === '0') {
+      return res.json({ canChange: false, reason: 'super_admin', nextChangeAllowedAt: null });
+    }
+    const changedAt = await authModel.getPasswordChangedAt(userId);
+    const nextAllowed = changedAt
+      ? new Date(changedAt.getTime() + PASSWORD_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000)
+      : null;
+    const canChange = !changedAt || nextAllowed <= new Date();
+    res.json({
+      canChange,
+      nextChangeAllowedAt: nextAllowed ? nextAllowed.toISOString() : null,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** POST /api/admin/verify-password – verify current password before showing new password fields. */
+export const verifyAdminPassword = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    if (userId === 0 || userId === '0') {
+      return res.status(403).json({ error: 'Super admin cannot change password here.' });
+    }
+    const currentPassword = req.body.currentPassword;
+    if (!currentPassword || typeof currentPassword !== 'string') {
+      return res.status(400).json({ error: 'Current password is required' });
+    }
+    const user = await authModel.findUserByIdWithPassword(userId);
+    if (!user || !user.password) {
+      return res.status(401).json({ error: 'Invalid current password' });
+    }
+    const ok = await bcrypt.compare(currentPassword, user.password);
+    if (!ok) return res.status(401).json({ error: 'Invalid current password' });
+    res.json({ verified: true });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** POST /api/admin/change-password – set new password (after verify). Rate limit: once per 30 days. */
+export const changeAdminPassword = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    if (userId === 0 || userId === '0') {
+      return res.status(403).json({ error: 'Super admin cannot change password here.' });
+    }
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({ error: 'Current password, new password, and confirm password are required' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    }
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ error: 'New password and confirm password do not match' });
+    }
+    const changedAt = await authModel.getPasswordChangedAt(userId);
+    const nextAllowed = changedAt
+      ? new Date(changedAt.getTime() + PASSWORD_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000)
+      : null;
+    if (changedAt && nextAllowed > new Date()) {
+      return res.status(429).json({
+        error: 'You can only change your password once per month.',
+        nextChangeAllowedAt: nextAllowed.toISOString(),
+      });
+    }
+    const user = await authModel.findUserByIdWithPassword(userId);
+    if (!user || !user.password) {
+      return res.status(401).json({ error: 'Invalid current password' });
+    }
+    const ok = await bcrypt.compare(currentPassword, user.password);
+    if (!ok) return res.status(401).json({ error: 'Invalid current password' });
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await authModel.updatePasswordById(userId, hashed);
+    res.json({ success: true, message: 'Password changed successfully' });
   } catch (err) {
     next(err);
   }

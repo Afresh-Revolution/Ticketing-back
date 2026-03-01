@@ -129,11 +129,12 @@ export async function create(req, res, next) {
   }
 }
 
+/** PATCH /api/events/:id – Super admin can edit any event; other admins only events they created. */
 export async function update(req, res, next) {
   try {
     const existing = await eventModel.findById(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Event not found' });
-    if (!canModifyEvent(existing, req.user.id)) return res.status(403).json({ error: 'You do not own this event' });
+    if (!canModifyEvent(existing, req.user.id)) return res.status(403).json({ error: 'You can only edit events you created' });
 
     const {
       title,
@@ -167,6 +168,7 @@ export async function update(req, res, next) {
   }
 }
 
+/** DELETE /api/events/:id – Super admin can delete any event; other admins only events they created. */
 export async function remove(req, res, next) {
   try {
     const event = await eventModel.findById(req.params.id);
@@ -174,7 +176,7 @@ export async function remove(req, res, next) {
     const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0 || req.user.id === '0';
     if (!isSuperAdmin) {
       const ownsEvent = event.createdBy != null && String(event.createdBy) === String(req.user.id);
-      if (!ownsEvent) return res.status(403).json({ error: 'You do not own this event' });
+      if (!ownsEvent) return res.status(403).json({ error: 'You can only delete events you created' });
     }
     await eventModel.delete(req.params.id);
     res.status(204).send();

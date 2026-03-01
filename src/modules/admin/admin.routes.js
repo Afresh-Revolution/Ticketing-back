@@ -8,6 +8,9 @@ import {
   deleteAdmin,
   deleteEventOrders,
   verifyTicket,
+  getPasswordChangeStatus,
+  verifyAdminPassword,
+  changeAdminPassword,
   getWithdrawPage,
   withdrawEvent,
   getBankAccount,
@@ -40,6 +43,11 @@ router.delete('/events/:eventId/orders', authMiddleware, deleteEventOrders);
 
 // Verify ticket (scan) – all admins
 router.post('/verify-ticket', authMiddleware, verifyTicket);
+
+// Change password (once per month)
+router.get('/password-change-status', authMiddleware, getPasswordChangeStatus);
+router.post('/verify-password', authMiddleware, verifyAdminPassword);
+router.post('/change-password', authMiddleware, changeAdminPassword);
 
 // Withdraw page data
 router.get('/withdraw', authMiddleware, getWithdrawPage);

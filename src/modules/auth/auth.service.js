@@ -101,22 +101,23 @@ export async function signIn(email, password, otp) {
 
 export async function createAdmin(email, password, name) {
   try {
-    console.log('[auth.service] Starting admin creation for email:', email);
-    
-    const existing = await authModel.findUserByEmail(email);
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    console.log('[auth.service] Starting admin creation for email:', normalizedEmail);
+
+    const existing = await authModel.findUserByEmail(normalizedEmail);
     if (existing) {
-      console.log('[auth.service] Email already exists:', email);
+      console.log('[auth.service] Email already exists:', normalizedEmail);
       throw Object.assign(new Error('Email already registered'), { statusCode: 400 });
     }
-    
+
     console.log('[auth.service] Hashing password...');
     const hashed = await bcrypt.hash(password, SALT_ROUNDS);
-    
+
     console.log('[auth.service] Creating admin user in database...');
     const user = await authModel.createAdmin({
-      email,
+      email: normalizedEmail,
       password: hashed,
-      name,
+      name: name ? String(name).trim() : null,
     });
     
     console.log('[auth.service] Generating JWT token for new admin...');
