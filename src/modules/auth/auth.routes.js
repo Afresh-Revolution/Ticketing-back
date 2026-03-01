@@ -1,15 +1,16 @@
-import { Router } from 'express';
-import * as authController from './auth.controller.js';
-import { authMiddleware } from '../../shared/middleware/authMiddleware.js';
+const express = require('express');
+const authController = require('./auth.controller');
+const { requireAuth, requireSuperAdmin } = require('../../middleware/auth');
 
-const router = Router();
+const router = express.Router();
 
-router.get('/login-form', authController.getLoginForm);
-router.post('/signup', authController.signUp);
 router.post('/signin', authController.signIn);
+router.post('/signup', authController.signUp);
 router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password', authController.resetPassword);
 router.post('/resend-verification', authController.resendVerification);
-router.post('/create-admin', authMiddleware, authController.createAdmin);
+router.post('/create-admin', requireAuth, requireSuperAdmin, authController.createAdmin);
+router.post('/organizer-signup', authController.organizerSignup);
+router.post('/organizer-verify-otp', authController.organizerVerifyOtp);
 
-export default router;
+module.exports = router;

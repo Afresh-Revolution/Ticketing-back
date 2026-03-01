@@ -1,9 +1,9 @@
-import bcrypt from 'bcryptjs';
-import { query, createId } from '../../shared/config/db.js';
-import { config } from '../../shared/config/env.js';
-import { orderModel } from '../order/order.model.js';
-import { topUsersModel } from '../landing/topUsers/topUsers.model.js';
-import { authModel } from '../auth/auth.model.js';
+import bcrypt from "bcryptjs";
+import { query, createId } from "../../shared/config/db.js";
+import { config } from "../../shared/config/env.js";
+import { orderModel } from "../order/order.model.js";
+import { topUsersModel } from "../landing/topUsers/topUsers.model.js";
+import { authModel } from "../auth/auth.model.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -11,9 +11,12 @@ const PLATFORM_FEE_PCT = 0.15;
 
 /** Event scope: each admin (including super admin) sees only events they created. Super admin's events have createdBy NULL. */
 function eventScope(req) {
-  const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0 || req.user.id === '0';
+  const isSuperAdmin =
+    req.user.role === "superadmin" || req.user.id === 0 || req.user.id === "0";
   const adminId = req.user.id;
-  const whereClause = isSuperAdmin ? 'e."createdBy" IS NULL' : 'e."createdBy" = $1';
+  const whereClause = isSuperAdmin
+    ? 'e."createdBy" IS NULL'
+    : 'e."createdBy" = $1';
   const params = isSuperAdmin ? [] : [adminId];
   return { whereClause, params, isSuperAdmin, adminId };
 }
@@ -23,7 +26,7 @@ async function paystackRequest(method, path, body) {
     method,
     headers: {
       Authorization: `Bearer ${config.paystackSecretKey}`,
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -42,13 +45,13 @@ export const getDashboardStats = async (req, res, next) => {
 
     const totalEventsResult = await query(
       `SELECT COUNT(*) AS count FROM "Event" e WHERE ${whereClause}`,
-      params
+      params,
     );
     const totalEvents = parseInt(totalEventsResult.rows[0].count, 10);
 
     const activeEventsResult = await query(
       `SELECT COUNT(*) AS count FROM "Event" e WHERE ${whereClause} AND e.date >= NOW()`,
-      params
+      params,
     );
     const activeEvents = parseInt(activeEventsResult.rows[0].count, 10);
 
@@ -60,7 +63,7 @@ export const getDashboardStats = async (req, res, next) => {
        JOIN "Event" e ON o."eventId" = e.id
        LEFT JOIN "OrderItem" oi ON oi."orderId" = o.id
        WHERE o.status = 'paid' AND (${whereClause})`,
-      params
+      params,
     );
     const ticketRevenue = parseFloat(ticketStatsResult.rows[0].revenue);
     const ticketsSold = parseInt(ticketStatsResult.rows[0].tickets_sold, 10);
@@ -71,7 +74,7 @@ export const getDashboardStats = async (req, res, next) => {
         `SELECT COALESCE(SUM(mp.price), 0) AS revenue
          FROM "Membership" m
          JOIN "MembershipPlan" mp ON m."planId" = mp.id
-         WHERE m.status = 'active'`
+         WHERE m.status = 'active'`,
       );
       membershipRevenue = parseFloat(membershipResult.rows[0].revenue);
     }
@@ -93,11 +96,18 @@ export const getDashboardStats = async (req, res, next) => {
        WHERE (${whereClause})
        ORDER BY o."createdAt" DESC
        LIMIT 10`,
-      params
+      params,
     );
 
     res.json({
-      stats: { totalRevenue, ticketRevenue, membershipRevenue, ticketsSold, totalEvents, activeEvents },
+      stats: {
+        totalRevenue,
+        ticketRevenue,
+        membershipRevenue,
+        ticketsSold,
+        totalEvents,
+        activeEvents,
+      },
       recentSales: recentSalesResult.rows,
     });
   } catch (err) {
@@ -111,7 +121,7 @@ export const getDashboardStats = async (req, res, next) => {
  */
 export const getAdminEvents = async (req, res, next) => {
   try {
-    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
+    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
     const adminId = req.user.id;
 
     if (isSuperAdmin) {
@@ -120,7 +130,7 @@ export const getAdminEvents = async (req, res, next) => {
          u.name AS "createdByName"
          FROM "Event" e
          LEFT JOIN "User" u ON e."createdBy" = u.id
-         ORDER BY e.date ASC`
+         ORDER BY e.date ASC`,
       );
       const events = rows.map((r) => ({
         id: r.id,
@@ -135,7 +145,8 @@ export const getAdminEvents = async (req, res, next) => {
         currency: r.currency,
         isTrending: r.isTrending ?? false,
         location: r.location ?? r.venue,
-        createdByName: r.createdByName ?? (r.createdBy == null ? 'Super Admin' : null),
+        createdByName:
+          r.createdByName ?? (r.createdBy == null ? "Super Admin" : null),
       }));
       return res.json(events);
     }
@@ -143,7 +154,7 @@ export const getAdminEvents = async (req, res, next) => {
     const { rows } = await query(
       `SELECT id, title, description, date, venue, "imageUrl", category, "startTime", price, currency, "isTrending", location, "createdAt", "updatedAt"
        FROM "Event" WHERE "createdBy" = $1 ORDER BY date ASC`,
-      [adminId]
+      [adminId],
     );
     const events = rows.map((r) => ({
       id: r.id,
@@ -171,9 +182,9 @@ export const getAdminEvents = async (req, res, next) => {
  */
 export const getSales = async (req, res, next) => {
   try {
-    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
+    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
     const adminId = req.user.id;
-    const eventWhere = isSuperAdmin ? '' : 'WHERE e."createdBy" = $1';
+    const eventWhere = isSuperAdmin ? "" : 'WHERE e."createdBy" = $1';
     const params = isSuperAdmin ? [] : [adminId];
     const { rows } = await query(
       `SELECT o.id, o."eventId" AS event_id, o."fullName" AS buyer_name, o.email AS buyer_email, o."totalAmount" AS amount, o.status, o."createdAt" AS created_at, e.title AS event_title
@@ -181,7 +192,7 @@ export const getSales = async (req, res, next) => {
        JOIN "Event" e ON o."eventId" = e.id
        ${eventWhere}
        ORDER BY e.title ASC, o."createdAt" DESC`,
-      params
+      params,
     );
     res.json(rows);
   } catch (err) {
@@ -195,20 +206,26 @@ export const getSales = async (req, res, next) => {
  */
 export const deleteEventOrders = async (req, res, next) => {
   try {
-    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
+    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
     const adminId = req.user.id;
     const { eventId } = req.params;
 
-    const eventResult = await query('SELECT id, "createdBy" FROM "Event" WHERE id = $1', [eventId]);
-    if (eventResult.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
+    const eventResult = await query(
+      'SELECT id, "createdBy" FROM "Event" WHERE id = $1',
+      [eventId],
+    );
+    if (eventResult.rows.length === 0)
+      return res.status(404).json({ error: "Event not found" });
     const event = eventResult.rows[0];
     if (!isSuperAdmin) {
-      const owns = event.createdBy != null && String(event.createdBy) === String(adminId);
-      if (!owns) return res.status(403).json({ error: 'You do not own this event' });
+      const owns =
+        event.createdBy != null && String(event.createdBy) === String(adminId);
+      if (!owns)
+        return res.status(403).json({ error: "You do not own this event" });
     }
 
     await query('DELETE FROM "Order" WHERE "eventId" = $1', [eventId]);
-    res.json({ message: 'Sales history for this event has been deleted' });
+    res.json({ message: "Sales history for this event has been deleted" });
   } catch (err) {
     next(err);
   }
@@ -220,13 +237,14 @@ export const deleteEventOrders = async (req, res, next) => {
  */
 export const getAdmins = async (req, res, next) => {
   try {
-    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
-    if (!isSuperAdmin) return res.status(403).json({ error: 'Super admin only' });
+    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
+    if (!isSuperAdmin)
+      return res.status(403).json({ error: "Super admin only" });
     const { rows } = await query(
       `SELECT id, email, name, role, "emailVerified", "createdAt", "updatedAt"
        FROM "User"
        WHERE role IN ('admin', 'superadmin')
-       ORDER BY "createdAt" DESC`
+       ORDER BY "createdAt" DESC`,
     );
     res.json(rows);
   } catch (err) {
@@ -240,21 +258,34 @@ export const getAdmins = async (req, res, next) => {
  */
 export const deleteAdmin = async (req, res, next) => {
   try {
-    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
-    if (!isSuperAdmin) return res.status(403).json({ error: 'Super admin only' });
+    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
+    if (!isSuperAdmin)
+      return res.status(403).json({ error: "Super admin only" });
     const { userId } = req.params;
     const currentId = String(req.user.id);
-    if (userId === currentId) return res.status(400).json({ error: 'You cannot delete your own account' });
+    if (userId === currentId)
+      return res
+        .status(400)
+        .json({ error: "You cannot delete your own account" });
 
-    const userRow = await query('SELECT id, role FROM "User" WHERE id = $1 AND role IN (\'admin\', \'superadmin\')', [userId]);
-    if (userRow.rows.length === 0) return res.status(404).json({ error: 'Admin not found' });
+    const userRow = await query(
+      "SELECT id, role FROM \"User\" WHERE id = $1 AND role IN ('admin', 'superadmin')",
+      [userId],
+    );
+    if (userRow.rows.length === 0)
+      return res.status(404).json({ error: "Admin not found" });
 
-    await query('UPDATE "Event" SET "createdBy" = NULL WHERE "createdBy" = $1', [userId]);
-    await query('UPDATE "Order" SET "userId" = NULL WHERE "userId" = $1', [userId]);
+    await query(
+      'UPDATE "Event" SET "createdBy" = NULL WHERE "createdBy" = $1',
+      [userId],
+    );
+    await query('UPDATE "Order" SET "userId" = NULL WHERE "userId" = $1', [
+      userId,
+    ]);
     await query('DELETE FROM "BankAccount" WHERE "userId" = $1', [userId]);
     await query('DELETE FROM "User" WHERE id = $1', [userId]);
 
-    res.json({ message: 'Admin account deleted' });
+    res.json({ message: "Admin account deleted" });
   } catch (err) {
     next(err);
   }
@@ -268,53 +299,84 @@ export const deleteAdmin = async (req, res, next) => {
 export const verifyTicket = async (req, res, next) => {
   try {
     const { code } = req.body;
-    const codeStr = typeof code === 'string' ? code.trim() : '';
+    const codeStr = typeof code === "string" ? code.trim() : "";
     if (!codeStr) {
-      return res.status(400).json({ valid: false, reason: 'missing_code', message: 'Ticket code is required' });
+      return res
+        .status(400)
+        .json({
+          valid: false,
+          reason: "missing_code",
+          message: "Ticket code is required",
+        });
     }
 
     const order = await orderModel.findByTicketCode(codeStr);
     if (!order) {
-      return res.json({ valid: false, reason: 'not_found', message: 'Ticket not found' });
+      return res.json({
+        valid: false,
+        reason: "not_found",
+        message: "Ticket not found",
+      });
     }
-    if (order.status !== 'paid') {
-      return res.json({ valid: false, reason: 'not_paid', message: 'Payment not confirmed for this ticket' });
+    if (order.status !== "paid") {
+      return res.json({
+        valid: false,
+        reason: "not_paid",
+        message: "Payment not confirmed for this ticket",
+      });
     }
 
-    const eventRows = await query('SELECT id, "createdBy", title FROM "Event" WHERE id = $1', [order.eventId]);
+    const eventRows = await query(
+      'SELECT id, "createdBy", title FROM "Event" WHERE id = $1',
+      [order.eventId],
+    );
     const event = eventRows.rows[0];
     if (!event) {
-      return res.json({ valid: false, reason: 'not_found', message: 'Event not found' });
+      return res.json({
+        valid: false,
+        reason: "not_found",
+        message: "Event not found",
+      });
     }
-    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0 || req.user.id === '0';
+    const isSuperAdmin =
+      req.user.role === "superadmin" ||
+      req.user.id === 0 ||
+      req.user.id === "0";
     const adminId = String(req.user.id);
     if (!isSuperAdmin) {
-      const eventCreator = event.createdBy == null ? null : String(event.createdBy);
+      const eventCreator =
+        event.createdBy == null ? null : String(event.createdBy);
       if (eventCreator !== adminId) {
         return res.status(403).json({
           valid: false,
-          reason: 'not_authorized',
-          message: 'You can only scan tickets for events you created.',
-          eventTitle: event.title || 'Event',
+          reason: "not_authorized",
+          message: "You can only scan tickets for events you created.",
+          eventTitle: event.title || "Event",
         });
       }
     }
 
     const qtyRows = await query(
       'SELECT COALESCE(SUM(quantity), 0) AS total FROM "OrderItem" WHERE "orderId" = $1',
-      [order.id]
+      [order.id],
     );
     const totalQuantity = parseInt(qtyRows.rows[0].total, 10) || 1;
-    const scanRows = await query('SELECT COUNT(*) AS cnt FROM "ScanLog" WHERE "orderId" = $1', [order.id]);
+    const scanRows = await query(
+      'SELECT COUNT(*) AS cnt FROM "ScanLog" WHERE "orderId" = $1',
+      [order.id],
+    );
     const scanCount = parseInt(scanRows.rows[0].cnt, 10) || 0;
 
     if (scanCount >= totalQuantity) {
-      const eventTitleRows = await query('SELECT title FROM "Event" WHERE id = $1', [order.eventId]);
-      const eventTitle = eventTitleRows.rows[0]?.title || 'Event';
+      const eventTitleRows = await query(
+        'SELECT title FROM "Event" WHERE id = $1',
+        [order.eventId],
+      );
+      const eventTitle = eventTitleRows.rows[0]?.title || "Event";
       return res.json({
         valid: false,
-        reason: 'already_used',
-        message: 'This ticket has already been used',
+        reason: "already_used",
+        message: "This ticket has already been used",
         fullName: order.fullName,
         eventTitle,
         scanCount,
@@ -325,16 +387,19 @@ export const verifyTicket = async (req, res, next) => {
     const scanId = createId();
     await query(
       'INSERT INTO "ScanLog" (id, "orderId", "eventId", "scannedBy") VALUES ($1, $2, $3, $4)',
-      [scanId, order.id, order.eventId, adminId]
+      [scanId, order.id, order.eventId, adminId],
     );
-    const eventTitleRows = await query('SELECT title FROM "Event" WHERE id = $1', [order.eventId]);
-    const eventTitle = eventTitleRows.rows[0]?.title || 'Event';
+    const eventTitleRows = await query(
+      'SELECT title FROM "Event" WHERE id = $1',
+      [order.eventId],
+    );
+    const eventTitle = eventTitleRows.rows[0]?.title || "Event";
     const newScanCount = scanCount + 1;
     const fullyUsed = newScanCount >= totalQuantity;
 
     return res.json({
       valid: true,
-      message: fullyUsed ? 'Ticket verified (fully used)' : 'Ticket verified',
+      message: fullyUsed ? "Ticket verified (fully used)" : "Ticket verified",
       fullName: order.fullName,
       eventTitle,
       scanCount: newScanCount,
@@ -352,12 +417,19 @@ const PASSWORD_CHANGE_COOLDOWN_DAYS = 30;
 export const getPasswordChangeStatus = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    if (userId === 0 || userId === '0') {
-      return res.json({ canChange: false, reason: 'super_admin', nextChangeAllowedAt: null });
+    if (userId === 0 || userId === "0") {
+      return res.json({
+        canChange: false,
+        reason: "super_admin",
+        nextChangeAllowedAt: null,
+      });
     }
     const changedAt = await authModel.getPasswordChangedAt(userId);
     const nextAllowed = changedAt
-      ? new Date(changedAt.getTime() + PASSWORD_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000)
+      ? new Date(
+          changedAt.getTime() +
+            PASSWORD_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000,
+        )
       : null;
     const canChange = !changedAt || nextAllowed <= new Date();
     res.json({
@@ -373,19 +445,21 @@ export const getPasswordChangeStatus = async (req, res, next) => {
 export const verifyAdminPassword = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    if (userId === 0 || userId === '0') {
-      return res.status(403).json({ error: 'Super admin cannot change password here.' });
+    if (userId === 0 || userId === "0") {
+      return res
+        .status(403)
+        .json({ error: "Super admin cannot change password here." });
     }
     const currentPassword = req.body.currentPassword;
-    if (!currentPassword || typeof currentPassword !== 'string') {
-      return res.status(400).json({ error: 'Current password is required' });
+    if (!currentPassword || typeof currentPassword !== "string") {
+      return res.status(400).json({ error: "Current password is required" });
     }
     const user = await authModel.findUserByIdWithPassword(userId);
     if (!user || !user.password) {
-      return res.status(401).json({ error: 'Invalid current password' });
+      return res.status(401).json({ error: "Invalid current password" });
     }
     const ok = await bcrypt.compare(currentPassword, user.password);
-    if (!ok) return res.status(401).json({ error: 'Invalid current password' });
+    if (!ok) return res.status(401).json({ error: "Invalid current password" });
     res.json({ verified: true });
   } catch (err) {
     next(err);
@@ -396,38 +470,52 @@ export const verifyAdminPassword = async (req, res, next) => {
 export const changeAdminPassword = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    if (userId === 0 || userId === '0') {
-      return res.status(403).json({ error: 'Super admin cannot change password here.' });
+    if (userId === 0 || userId === "0") {
+      return res
+        .status(403)
+        .json({ error: "Super admin cannot change password here." });
     }
     const { currentPassword, newPassword, confirmPassword } = req.body;
     if (!currentPassword || !newPassword || !confirmPassword) {
-      return res.status(400).json({ error: 'Current password, new password, and confirm password are required' });
+      return res
+        .status(400)
+        .json({
+          error:
+            "Current password, new password, and confirm password are required",
+        });
     }
     if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+      return res
+        .status(400)
+        .json({ error: "New password must be at least 6 characters" });
     }
     if (newPassword !== confirmPassword) {
-      return res.status(400).json({ error: 'New password and confirm password do not match' });
+      return res
+        .status(400)
+        .json({ error: "New password and confirm password do not match" });
     }
     const changedAt = await authModel.getPasswordChangedAt(userId);
     const nextAllowed = changedAt
-      ? new Date(changedAt.getTime() + PASSWORD_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000)
+      ? new Date(
+          changedAt.getTime() +
+            PASSWORD_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000,
+        )
       : null;
     if (changedAt && nextAllowed > new Date()) {
       return res.status(429).json({
-        error: 'You can only change your password once per month.',
+        error: "You can only change your password once per month.",
         nextChangeAllowedAt: nextAllowed.toISOString(),
       });
     }
     const user = await authModel.findUserByIdWithPassword(userId);
     if (!user || !user.password) {
-      return res.status(401).json({ error: 'Invalid current password' });
+      return res.status(401).json({ error: "Invalid current password" });
     }
     const ok = await bcrypt.compare(currentPassword, user.password);
-    if (!ok) return res.status(401).json({ error: 'Invalid current password' });
+    if (!ok) return res.status(401).json({ error: "Invalid current password" });
     const hashed = await bcrypt.hash(newPassword, 10);
     await authModel.updatePasswordById(userId, hashed);
-    res.json({ success: true, message: 'Password changed successfully' });
+    res.json({ success: true, message: "Password changed successfully" });
   } catch (err) {
     next(err);
   }
@@ -462,7 +550,7 @@ export const getWithdrawPage = async (req, res, next) => {
        WHERE (${whereClause})
        GROUP BY e.id
        ORDER BY e.date DESC`,
-      params
+      params,
     );
 
     // Withdrawal history for this admin's events only
@@ -477,7 +565,7 @@ export const getWithdrawPage = async (req, res, next) => {
        LEFT JOIN "User" u ON w."adminId" = u.id
        WHERE (${whereClause})
        ORDER BY w."createdAt" DESC`,
-      params
+      params,
     );
 
     // KPI totals for this admin's events only
@@ -490,7 +578,7 @@ export const getWithdrawPage = async (req, res, next) => {
        LEFT JOIN "Order" o ON o."eventId" = e.id
        LEFT JOIN "Withdrawal" w ON w."eventId" = e.id
        WHERE (${whereClause})`,
-      params
+      params,
     );
 
     let membershipRevenue = 0;
@@ -499,7 +587,7 @@ export const getWithdrawPage = async (req, res, next) => {
         `SELECT COALESCE(SUM(mp.price), 0) AS revenue
          FROM "Membership" m
          JOIN "MembershipPlan" mp ON m."planId" = mp.id
-         WHERE m.status = 'active'`
+         WHERE m.status = 'active'`,
       );
       membershipRevenue = parseFloat(mr.rows[0].revenue);
     }
@@ -508,7 +596,9 @@ export const getWithdrawPage = async (req, res, next) => {
     const totalGross = parseFloat(kpi.total_gross);
     const totalWithdrawn = parseFloat(kpi.total_withdrawn);
     const totalFees = parseFloat(kpi.total_fees);
-    const availableToWithdraw = (totalGross - totalWithdrawn / (1 - PLATFORM_FEE_PCT)) * (1 - PLATFORM_FEE_PCT);
+    const availableToWithdraw =
+      (totalGross - totalWithdrawn / (1 - PLATFORM_FEE_PCT)) *
+      (1 - PLATFORM_FEE_PCT);
 
     // Bank account for this admin (not applicable for superadmin)
     let bankAccount = null;
@@ -516,7 +606,7 @@ export const getWithdrawPage = async (req, res, next) => {
       const baResult = await query(
         `SELECT id, "accountName", "accountNumber", "bankCode", "bankName", "recipientCode"
          FROM "BankAccount" WHERE "userId" = $1`,
-        [adminId]
+        [adminId],
       );
       bankAccount = baResult.rows[0] || null;
     }
@@ -545,21 +635,24 @@ export const getWithdrawPage = async (req, res, next) => {
  */
 export const withdrawEvent = async (req, res, next) => {
   try {
-    const isSuperAdmin = req.user.role === 'superadmin' || req.user.id === 0;
+    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
     const adminId = req.user.id;
     const { eventId } = req.params;
 
     // 1. Fetch event
-    const eventResult = await query(`SELECT * FROM "Event" WHERE id = $1`, [eventId]);
-    if (eventResult.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
+    const eventResult = await query(`SELECT * FROM "Event" WHERE id = $1`, [
+      eventId,
+    ]);
+    if (eventResult.rows.length === 0)
+      return res.status(404).json({ error: "Event not found" });
     const event = eventResult.rows[0];
 
     // 2. Ownership check: each admin can only withdraw from events they created
     const ownsEvent = isSuperAdmin
-      ? (event.createdBy === null || event.createdBy === undefined)
-      : (String(event.createdBy) === String(adminId));
+      ? event.createdBy === null || event.createdBy === undefined
+      : String(event.createdBy) === String(adminId);
     if (!ownsEvent) {
-      return res.status(403).json({ error: 'You do not own this event' });
+      return res.status(403).json({ error: "You do not own this event" });
     }
 
     // 3. Timing check — event must have started (date <= now)
@@ -567,26 +660,35 @@ export const withdrawEvent = async (req, res, next) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     if (eventDate > today) {
-      return res.status(400).json({ error: 'Withdrawals are only available on or after the event date' });
+      return res
+        .status(400)
+        .json({
+          error: "Withdrawals are only available on or after the event date",
+        });
     }
 
     // 4. One withdrawal per event
     const existingResult = await query(
       `SELECT id FROM "Withdrawal" WHERE "eventId" = $1 AND status = 'completed'`,
-      [eventId]
+      [eventId],
     );
     if (existingResult.rows.length > 0) {
-      return res.status(400).json({ error: 'This event has already been withdrawn' });
+      return res
+        .status(400)
+        .json({ error: "This event has already been withdrawn" });
     }
 
     // 5. Calculate revenue
     const revenueResult = await query(
       `SELECT COALESCE(SUM("totalAmount"), 0) AS gross FROM "Order"
        WHERE "eventId" = $1 AND status = 'paid'`,
-      [eventId]
+      [eventId],
     );
     const gross = parseFloat(revenueResult.rows[0].gross);
-    if (gross <= 0) return res.status(400).json({ error: 'No paid revenue to withdraw for this event' });
+    if (gross <= 0)
+      return res
+        .status(400)
+        .json({ error: "No paid revenue to withdraw for this event" });
 
     const platformFee = parseFloat((gross * PLATFORM_FEE_PCT).toFixed(2));
     const net = parseFloat((gross - platformFee).toFixed(2));
@@ -596,10 +698,14 @@ export const withdrawEvent = async (req, res, next) => {
     if (!isSuperAdmin) {
       const baResult = await query(
         `SELECT "recipientCode" FROM "BankAccount" WHERE "userId" = $1`,
-        [adminId]
+        [adminId],
       );
       if (baResult.rows.length === 0 || !baResult.rows[0].recipientCode) {
-        return res.status(400).json({ error: 'Please set up your bank account before withdrawing' });
+        return res
+          .status(400)
+          .json({
+            error: "Please set up your bank account before withdrawing",
+          });
       }
       recipientCode = baResult.rows[0].recipientCode;
     }
@@ -609,43 +715,48 @@ export const withdrawEvent = async (req, res, next) => {
     await query(
       `INSERT INTO "Withdrawal" (id, "eventId", "adminId", "grossAmount", "platformFee", "netAmount", status)
        VALUES ($1, $2, $3, $4, $5, $6, 'pending')`,
-      [withdrawalId, eventId, String(adminId), gross, platformFee, net]
+      [withdrawalId, eventId, String(adminId), gross, platformFee, net],
     );
 
     // 8. Initiate Paystack transfer (skip for superadmin — platform retains the fee)
     let paystackRef = null;
     if (!isSuperAdmin && config.paystackSecretKey) {
-      const transferRes = await paystackRequest('POST', '/transfer', {
-        source: 'balance',
+      const transferRes = await paystackRequest("POST", "/transfer", {
+        source: "balance",
         amount: Math.round(net * 100), // kobo
         recipient: recipientCode,
         reason: `Withdrawal for event: ${event.title}`,
       });
 
       if (transferRes.status) {
-        paystackRef = transferRes.data?.transfer_code || transferRes.data?.reference || null;
+        paystackRef =
+          transferRes.data?.transfer_code ||
+          transferRes.data?.reference ||
+          null;
         await query(
           `UPDATE "Withdrawal" SET status = 'completed', "paystackReference" = $1, "updatedAt" = now()
            WHERE id = $2`,
-          [paystackRef, withdrawalId]
+          [paystackRef, withdrawalId],
         );
       } else {
         await query(
           `UPDATE "Withdrawal" SET status = 'failed', "updatedAt" = now() WHERE id = $1`,
-          [withdrawalId]
+          [withdrawalId],
         );
-        return res.status(502).json({ error: transferRes.message || 'Paystack transfer failed' });
+        return res
+          .status(502)
+          .json({ error: transferRes.message || "Paystack transfer failed" });
       }
     } else {
       // No Paystack key configured or superadmin — mark completed immediately
       await query(
         `UPDATE "Withdrawal" SET status = 'completed', "updatedAt" = now() WHERE id = $1`,
-        [withdrawalId]
+        [withdrawalId],
       );
     }
 
     res.json({
-      message: 'Withdrawal successful',
+      message: "Withdrawal successful",
       withdrawal: { id: withdrawalId, gross, platformFee, net, paystackRef },
     });
   } catch (err) {
@@ -663,7 +774,7 @@ export const getBankAccount = async (req, res, next) => {
     const result = await query(
       `SELECT id, "accountName", "accountNumber", "bankCode", "bankName"
        FROM "BankAccount" WHERE "userId" = $1`,
-      [req.user.id]
+      [req.user.id],
     );
     res.json(result.rows[0] || null);
   } catch (err) {
@@ -679,18 +790,23 @@ export const saveBankAccount = async (req, res, next) => {
   try {
     const { accountNumber, bankCode, accountName, bankName } = req.body;
     if (!accountNumber || !bankCode || !accountName || !bankName) {
-      return res.status(400).json({ error: 'accountNumber, bankCode, accountName, and bankName are required' });
+      return res
+        .status(400)
+        .json({
+          error:
+            "accountNumber, bankCode, accountName, and bankName are required",
+        });
     }
 
     // Create Paystack transfer recipient
     let recipientCode = null;
     if (config.paystackSecretKey) {
-      const recipientRes = await paystackRequest('POST', '/transferrecipient', {
-        type: 'nuban',
+      const recipientRes = await paystackRequest("POST", "/transferrecipient", {
+        type: "nuban",
         name: accountName,
         account_number: accountNumber,
         bank_code: bankCode,
-        currency: 'NGN',
+        currency: "NGN",
       });
       if (recipientRes.status) {
         recipientCode = recipientRes.data?.recipient_code || null;
@@ -698,27 +814,45 @@ export const saveBankAccount = async (req, res, next) => {
     }
 
     // Upsert BankAccount
-    const existing = await query(`SELECT id FROM "BankAccount" WHERE "userId" = $1`, [req.user.id]);
+    const existing = await query(
+      `SELECT id FROM "BankAccount" WHERE "userId" = $1`,
+      [req.user.id],
+    );
     if (existing.rows.length > 0) {
       await query(
         `UPDATE "BankAccount"
          SET "accountName" = $1, "accountNumber" = $2, "bankCode" = $3, "bankName" = $4, "recipientCode" = $5, "updatedAt" = now()
          WHERE "userId" = $6`,
-        [accountName, accountNumber, bankCode, bankName, recipientCode, req.user.id]
+        [
+          accountName,
+          accountNumber,
+          bankCode,
+          bankName,
+          recipientCode,
+          req.user.id,
+        ],
       );
     } else {
       const id = createId();
       await query(
         `INSERT INTO "BankAccount" (id, "userId", "accountName", "accountNumber", "bankCode", "bankName", "recipientCode")
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [id, req.user.id, accountName, accountNumber, bankCode, bankName, recipientCode]
+        [
+          id,
+          req.user.id,
+          accountName,
+          accountNumber,
+          bankCode,
+          bankName,
+          recipientCode,
+        ],
       );
     }
 
     const result = await query(
       `SELECT id, "accountName", "accountNumber", "bankCode", "bankName"
        FROM "BankAccount" WHERE "userId" = $1`,
-      [req.user.id]
+      [req.user.id],
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -735,24 +869,28 @@ export const getPaystackBanks = async (req, res, next) => {
     if (!config.paystackSecretKey) {
       // Return a small hardcoded list as fallback
       return res.json([
-        { name: 'Access Bank', code: '044' },
-        { name: 'First Bank of Nigeria', code: '011' },
-        { name: 'Guaranty Trust Bank', code: '058' },
-        { name: 'United Bank for Africa', code: '033' },
-        { name: 'Zenith Bank', code: '057' },
-        { name: 'Opay', code: '999992' },
-        { name: 'Kuda Bank', code: '090267' },
-        { name: 'Palmpay', code: '999991' },
-        { name: 'Moniepoint', code: '50515' },
-        { name: 'Wema Bank', code: '035' },
-        { name: 'Fidelity Bank', code: '070' },
-        { name: 'Sterling Bank', code: '232' },
-        { name: 'Stanbic IBTC Bank', code: '221' },
-        { name: 'Union Bank of Nigeria', code: '032' },
-        { name: 'Ecobank Nigeria', code: '050' },
+        { name: "Access Bank", code: "044" },
+        { name: "First Bank of Nigeria", code: "011" },
+        { name: "Guaranty Trust Bank", code: "058" },
+        { name: "United Bank for Africa", code: "033" },
+        { name: "Zenith Bank", code: "057" },
+        { name: "Opay", code: "999992" },
+        { name: "Kuda Bank", code: "090267" },
+        { name: "Palmpay", code: "999991" },
+        { name: "Moniepoint", code: "50515" },
+        { name: "Wema Bank", code: "035" },
+        { name: "Fidelity Bank", code: "070" },
+        { name: "Sterling Bank", code: "232" },
+        { name: "Stanbic IBTC Bank", code: "221" },
+        { name: "Union Bank of Nigeria", code: "032" },
+        { name: "Ecobank Nigeria", code: "050" },
       ]);
     }
-    const data = await paystackRequest('GET', '/bank?currency=NGN&perPage=100', null);
+    const data = await paystackRequest(
+      "GET",
+      "/bank?currency=NGN&perPage=100",
+      null,
+    );
     res.json(data.data || []);
   } catch (err) {
     next(err);
@@ -773,10 +911,15 @@ export const getTopUsersAdmin = async (req, res, next) => {
 export const createTopUser = async (req, res, next) => {
   try {
     const { name, title, imageUrl, sortOrder } = req.body;
-    if (!name || String(name).trim() === '') {
-      return res.status(400).json({ error: 'Name is required' });
+    if (!name || String(name).trim() === "") {
+      return res.status(400).json({ error: "Name is required" });
     }
-    const created = await topUsersModel.create({ name: String(name).trim(), title: title ? String(title).trim() : null, imageUrl: imageUrl || null, sortOrder: sortOrder != null ? Number(sortOrder) : 0 });
+    const created = await topUsersModel.create({
+      name: String(name).trim(),
+      title: title ? String(title).trim() : null,
+      imageUrl: imageUrl || null,
+      sortOrder: sortOrder != null ? Number(sortOrder) : 0,
+    });
     res.status(201).json(created);
   } catch (err) {
     next(err);
@@ -789,11 +932,12 @@ export const updateTopUser = async (req, res, next) => {
     const { name, title, imageUrl, sortOrder } = req.body;
     const updated = await topUsersModel.update(id, {
       name: name !== undefined ? String(name).trim() : undefined,
-      title: title !== undefined ? (title ? String(title).trim() : null) : undefined,
+      title:
+        title !== undefined ? (title ? String(title).trim() : null) : undefined,
       imageUrl: imageUrl !== undefined ? imageUrl || null : undefined,
       sortOrder: sortOrder !== undefined ? Number(sortOrder) : undefined,
     });
-    if (!updated) return res.status(404).json({ error: 'Top user not found' });
+    if (!updated) return res.status(404).json({ error: "Top user not found" });
     res.json(updated);
   } catch (err) {
     next(err);
@@ -804,7 +948,7 @@ export const deleteTopUser = async (req, res, next) => {
   try {
     const { id } = req.params;
     const deleted = await topUsersModel.delete(id);
-    if (!deleted) return res.status(404).json({ error: 'Top user not found' });
+    if (!deleted) return res.status(404).json({ error: "Top user not found" });
     res.status(204).send();
   } catch (err) {
     next(err);
