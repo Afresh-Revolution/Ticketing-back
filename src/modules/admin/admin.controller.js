@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs';
-import { query } from '../../shared/db.js';
+import { query } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
 
 /** GET /api/admin/dashboard */

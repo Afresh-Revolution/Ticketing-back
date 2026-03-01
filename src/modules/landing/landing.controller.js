@@ -1,4 +1,4 @@
-import { query } from '../../shared/db.js';
+import { query } from '../../shared/config/db.js';
 
 /** GET /api/landing/top-users - returns array of { id, name, title, imageUrl, sortOrder } */
 export async function getTopUsers(req, res) {

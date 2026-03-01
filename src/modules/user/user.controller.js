@@ -1,4 +1,4 @@
-import { query } from '../../shared/db.js';
+import { query } from '../../shared/config/db.js';
 
 /** GET /api/user/orders - current user's orders (tickets) */
 export async function getMyOrders(req, res) {

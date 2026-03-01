@@ -1,6 +1,6 @@
-const { query } = require('../../shared/db');
-const config = require('../../shared/config/env');
-const emailService = require('../../services/email');
+import { query } from '../../shared/config/db.js';
+import { config } from '../../shared/config/env.js';
+import * as emailService from '../../services/email.js';
 
 // GET /api/memberships/plans (public; optional ?all=true for admin to see inactive)
 async function getPlans(req, res) {
@@ -264,7 +264,7 @@ async function resubscribeMembership(req, res) {
   }
 }
 
-module.exports = {
+export {
   getPlans,
   createPlan,
   updatePlan,

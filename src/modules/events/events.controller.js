@@ -1,4 +1,4 @@
-import { query } from '../../shared/db.js';
+import { query } from '../../shared/config/db.js';
 
 /** GET /api/events - list events (?trending=true&take=3) */
 export async function listEvents(req, res) {

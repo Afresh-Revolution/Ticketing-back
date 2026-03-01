@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { query } from '../../shared/db.js';
+import { query } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
 import * as emailService from '../../services/email.js';
 

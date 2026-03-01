@@ -1,4 +1,4 @@
-import { query } from '../../shared/db.js';
+import { query } from '../../shared/config/db.js';
 
 /** POST /api/orders - create order (eventId, items, totalAmount, fullName, email, phone?, address?) */
 export async function createOrder(req, res) {

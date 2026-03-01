@@ -15,13 +15,12 @@ const poolConfig = config.databaseUrl
   ? {
       connectionString: connectionString || config.databaseUrl,
       ssl: isRemoteDb ? { rejectUnauthorized: false } : false,
-      // Cloud DBs (e.g. Render) can be slow to accept first connection; avoid ETIMEDOUT
       connectionTimeoutMillis: 20000,
       idleTimeoutMillis: 30000,
     }
   : {};
 
-const pool = new Pool(poolConfig);
+const pool = config.databaseUrl ? new Pool(poolConfig) : null;
 
 /**
  * Run a parameterized query. Usage: query('SELECT * FROM "User" WHERE id = $1', [id])
@@ -30,6 +29,7 @@ const pool = new Pool(poolConfig);
  * @returns {Promise<pg.QueryResult>}
  */
 export async function query(text, params = []) {
+  if (!pool) throw new Error('DATABASE_URL is not set');
   const client = await pool.connect();
   try {
     return await client.query(text, params);
@@ -49,6 +49,7 @@ export function createId() {
 }
 
 export async function connectDb() {
+  if (!pool) return false;
   try {
     await query('SELECT 1');
     return true;
@@ -59,5 +60,7 @@ export async function connectDb() {
 }
 
 export async function disconnectDb() {
-  await pool.end();
+  if (pool) await pool.end();
 }
+
+export { pool };
