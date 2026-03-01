@@ -1,16 +1,10 @@
-const express = require('express');
-const { optionalAuth } = require('../../middleware/auth');
+import express from 'express';
+import * as ordersController from './orders.controller.js';
+import { optionalAuth } from '../../middleware/auth.js';
 
 const router = express.Router();
 
-// POST /api/orders (create order; optional auth)
-router.post('/', optionalAuth, (req, res) => {
-  res.status(501).json({ error: 'Orders not implemented; add Order table and controller' });
-});
+router.post('/', optionalAuth, ordersController.createOrder);
+router.post('/verify', ordersController.verifyOrder);
 
-// POST /api/orders/verify
-router.post('/verify', (req, res) => {
-  res.status(501).json({ error: 'Not implemented' });
-});
-
-module.exports = router;
+export default router;

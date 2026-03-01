@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "db:schema": "node -e \"require('dotenv').config(); const { execSync } = require('child_process'); const url = process.env.DATABASE_URL; if (!url) { console.error('DATABASE_URL required'); process.exit(1); } execSync(`psql '${url}' -f db/schema.sql', { stdio: 'inherit' });\""
+    "db:schema": "node scripts/run-schema.js"
   },
   "engines": {
     "node": ">=18"

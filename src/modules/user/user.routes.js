@@ -1,15 +1,9 @@
-import { Router } from "express";
-import * as userPageController from "./userPage/userPage.controller.js";
-import * as footerController from "./footer/footer.controller.js";
-import { authMiddleware } from "../../shared/middleware/authMiddleware.js";
+import express from 'express';
+import * as userController from './user.controller.js';
+import { requireAuth } from '../../middleware/auth.js';
 
-const router = Router();
+const router = express.Router();
 
-router.use(authMiddleware);
-
-router.get("/profile", userPageController.getProfile);
-router.get("/tickets", userPageController.getMyTickets);
-router.get("/orders", userPageController.getMyOrders);
-router.get("/footer", footerController.getFooter);
+router.get('/orders', requireAuth, userController.getMyOrders);
 
 export default router;

@@ -1,10 +1,7 @@
-const jwt = require('jsonwebtoken');
-const config = require('../shared/config/env');
+import jwt from 'jsonwebtoken';
+import { config } from '../shared/config/env.js';
 
-/**
- * Optional: attach user from JWT if present (for routes that work with or without auth).
- */
-function optionalAuth(req, res, next) {
+export function optionalAuth(req, res, next) {
   const auth = req.headers.authorization;
   const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
   if (!token) return next();
@@ -18,10 +15,7 @@ function optionalAuth(req, res, next) {
   }
 }
 
-/**
- * Require valid JWT (admin/organizer). Used for create-admin, membership creation, etc.
- */
-function requireAuth(req, res, next) {
+export function requireAuth(req, res, next) {
   const auth = req.headers.authorization;
   const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
   if (!token) {
@@ -37,14 +31,9 @@ function requireAuth(req, res, next) {
   }
 }
 
-/**
- * Require superadmin role (e.g. for create-admin, edit plans).
- */
-function requireSuperAdmin(req, res, next) {
+export function requireSuperAdmin(req, res, next) {
   if (req.userRole !== 'superadmin') {
     return res.status(403).json({ error: 'Forbidden' });
   }
   next();
 }
-
-module.exports = { optionalAuth, requireAuth, requireSuperAdmin };

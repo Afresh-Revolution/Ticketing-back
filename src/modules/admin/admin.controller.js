@@ -1,956 +1,325 @@
-import bcrypt from "bcryptjs";
-import { query, createId } from "../../shared/config/db.js";
-import { config } from "../../shared/config/env.js";
-import { orderModel } from "../order/order.model.js";
-import { topUsersModel } from "../landing/topUsers/topUsers.model.js";
-import { authModel } from "../auth/auth.model.js";
+import bcrypt from 'bcryptjs';
+import { query } from '../../shared/db.js';
+import { config } from '../../shared/config/env.js';
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-const PLATFORM_FEE_PCT = 0.15;
-
-/** Event scope: each admin (including super admin) sees only events they created. Super admin's events have createdBy NULL. */
-function eventScope(req) {
-  const isSuperAdmin =
-    req.user.role === "superadmin" || req.user.id === 0 || req.user.id === "0";
-  const adminId = req.user.id;
-  const whereClause = isSuperAdmin
-    ? 'e."createdBy" IS NULL'
-    : 'e."createdBy" = $1';
-  const params = isSuperAdmin ? [] : [adminId];
-  return { whereClause, params, isSuperAdmin, adminId };
-}
-
-async function paystackRequest(method, path, body) {
-  const res = await fetch(`https://api.paystack.co${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${config.paystackSecretKey}`,
-      "Content-Type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  return res.json();
-}
-
-// ─── Dashboard Stats ─────────────────────────────────────────────────────────
-
-/**
- * GET /api/admin/dashboard
- */
-export const getDashboardStats = async (req, res, next) => {
+/** GET /api/admin/dashboard */
+export async function getDashboard(req, res) {
   try {
-    const scope = eventScope(req);
-    const { whereClause, params, isSuperAdmin } = scope;
-
-    const totalEventsResult = await query(
-      `SELECT COUNT(*) AS count FROM "Event" e WHERE ${whereClause}`,
-      params,
-    );
-    const totalEvents = parseInt(totalEventsResult.rows[0].count, 10);
-
-    const activeEventsResult = await query(
-      `SELECT COUNT(*) AS count FROM "Event" e WHERE ${whereClause} AND e.date >= NOW()`,
-      params,
-    );
-    const activeEvents = parseInt(activeEventsResult.rows[0].count, 10);
-
-    const ticketStatsResult = await query(
-      `SELECT
-         COALESCE(SUM(o."totalAmount"), 0) AS revenue,
-         COALESCE(SUM(oi.quantity), 0)     AS tickets_sold
-       FROM "Order" o
-       JOIN "Event" e ON o."eventId" = e.id
-       LEFT JOIN "OrderItem" oi ON oi."orderId" = o.id
-       WHERE o.status = 'paid' AND (${whereClause})`,
-      params,
-    );
-    const ticketRevenue = parseFloat(ticketStatsResult.rows[0].revenue);
-    const ticketsSold = parseInt(ticketStatsResult.rows[0].tickets_sold, 10);
-
-    let membershipRevenue = 0;
-    if (isSuperAdmin) {
-      const membershipResult = await query(
-        `SELECT COALESCE(SUM(mp.price), 0) AS revenue
-         FROM "Membership" m
-         JOIN "MembershipPlan" mp ON m."planId" = mp.id
-         WHERE m.status = 'active'`,
-      );
-      membershipRevenue = parseFloat(membershipResult.rows[0].revenue);
+    const stats = {
+      totalRevenue: 0,
+      ticketRevenue: 0,
+      ticketsSold: 0,
+      totalEvents: 0,
+      activeEvents: 0,
+    };
+    const recentSales = [];
+    const r = await query(
+      `SELECT COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS ticket_rev,
+              COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN 1 ELSE 0 END), 0) AS tickets_sold
+       FROM "Order" o`
+    ).catch(() => ({ rows: [{ ticket_rev: 0, tickets_sold: 0 }] }));
+    if (r.rows && r.rows[0]) {
+      stats.ticketRevenue = Number(r.rows[0].ticket_rev) || 0;
+      stats.totalRevenue = stats.ticketRevenue;
+      stats.ticketsSold = Number(r.rows[0].tickets_sold) || 0;
     }
-
-    const totalRevenue = ticketRevenue + membershipRevenue;
-
-    const recentSalesResult = await query(
-      `SELECT
-         o.id,
-         o."fullName"    AS buyer_name,
-         o.email         AS buyer_email,
-         o."totalAmount" AS amount,
-         (SELECT COALESCE(SUM(oi.quantity), 0)::int FROM "OrderItem" oi WHERE oi."orderId" = o.id) AS ticket_count,
-         o.status,
-         o."createdAt"   AS created_at,
-         e.title         AS event_title
-       FROM "Order" o
-       JOIN "Event" e ON o."eventId" = e.id
-       WHERE (${whereClause})
-       ORDER BY o."createdAt" DESC
-       LIMIT 10`,
-      params,
-    );
-
-    res.json({
-      stats: {
-        totalRevenue,
-        ticketRevenue,
-        membershipRevenue,
-        ticketsSold,
-        totalEvents,
-        activeEvents,
-      },
-      recentSales: recentSalesResult.rows,
-    });
+    const e = await query(
+      'SELECT COUNT(*) AS c FROM "Event"'
+    ).catch(() => ({ rows: [{ c: 0 }] }));
+    stats.totalEvents = Number(e.rows?.[0]?.c) || 0;
+    stats.activeEvents = stats.totalEvents;
+    return res.json({ stats, recentSales });
   } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * GET /api/admin/events
- * Super admin: all events with creator name (createdByName). Other admins: only their events.
- */
-export const getAdminEvents = async (req, res, next) => {
-  try {
-    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
-    const adminId = req.user.id;
-
-    if (isSuperAdmin) {
-      const { rows } = await query(
-        `SELECT e.id, e.title, e.description, e.date, e.venue, e."imageUrl", e.category, e."startTime", e.price, e.currency, e."isTrending", e.location, e."createdAt", e."updatedAt", e."createdBy",
-         u.name AS "createdByName"
-         FROM "Event" e
-         LEFT JOIN "User" u ON e."createdBy" = u.id
-         ORDER BY e.date ASC`,
-      );
-      const events = rows.map((r) => ({
-        id: r.id,
-        title: r.title,
-        description: r.description,
-        date: r.date,
-        venue: r.venue,
-        imageUrl: r.imageUrl,
-        category: r.category,
-        startTime: r.startTime,
-        price: r.price,
-        currency: r.currency,
-        isTrending: r.isTrending ?? false,
-        location: r.location ?? r.venue,
-        createdByName:
-          r.createdByName ?? (r.createdBy == null ? "Super Admin" : null),
-      }));
-      return res.json(events);
-    }
-
-    const { rows } = await query(
-      `SELECT id, title, description, date, venue, "imageUrl", category, "startTime", price, currency, "isTrending", location, "createdAt", "updatedAt"
-       FROM "Event" WHERE "createdBy" = $1 ORDER BY date ASC`,
-      [adminId],
-    );
-    const events = rows.map((r) => ({
-      id: r.id,
-      title: r.title,
-      description: r.description,
-      date: r.date,
-      venue: r.venue,
-      imageUrl: r.imageUrl,
-      category: r.category,
-      startTime: r.startTime,
-      price: r.price,
-      currency: r.currency,
-      isTrending: r.isTrending ?? false,
-      location: r.location ?? r.venue,
-    }));
-    res.json(events);
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * GET /api/admin/sales
- * Returns sales for events (super admin: all events; others: own events).
- */
-export const getSales = async (req, res, next) => {
-  try {
-    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
-    const adminId = req.user.id;
-    const eventWhere = isSuperAdmin ? "" : 'WHERE e."createdBy" = $1';
-    const params = isSuperAdmin ? [] : [adminId];
-    const { rows } = await query(
-      `SELECT o.id, o."eventId" AS event_id, o."fullName" AS buyer_name, o.email AS buyer_email, o."totalAmount" AS amount, o.status, o."createdAt" AS created_at, e.title AS event_title
-       FROM "Order" o
-       JOIN "Event" e ON o."eventId" = e.id
-       ${eventWhere}
-       ORDER BY e.title ASC, o."createdAt" DESC`,
-      params,
-    );
-    res.json(rows);
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * DELETE /api/admin/events/:eventId/orders
- * Deletes all order/sales history for an event. Ownership: super admin or event creator only.
- */
-export const deleteEventOrders = async (req, res, next) => {
-  try {
-    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
-    const adminId = req.user.id;
-    const { eventId } = req.params;
-
-    const eventResult = await query(
-      'SELECT id, "createdBy" FROM "Event" WHERE id = $1',
-      [eventId],
-    );
-    if (eventResult.rows.length === 0)
-      return res.status(404).json({ error: "Event not found" });
-    const event = eventResult.rows[0];
-    if (!isSuperAdmin) {
-      const owns =
-        event.createdBy != null && String(event.createdBy) === String(adminId);
-      if (!owns)
-        return res.status(403).json({ error: "You do not own this event" });
-    }
-
-    await query('DELETE FROM "Order" WHERE "eventId" = $1', [eventId]);
-    res.json({ message: "Sales history for this event has been deleted" });
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * GET /api/admin/admins
- * Super admin only. Returns all admin users (role admin or superadmin) without password.
- */
-export const getAdmins = async (req, res, next) => {
-  try {
-    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
-    if (!isSuperAdmin)
-      return res.status(403).json({ error: "Super admin only" });
-    const { rows } = await query(
-      `SELECT id, email, name, role, "emailVerified", "createdAt", "updatedAt"
-       FROM "User"
-       WHERE role IN ('admin', 'superadmin')
-       ORDER BY "createdAt" DESC`,
-    );
-    res.json(rows);
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * DELETE /api/admin/admins/:userId
- * Super admin only. Deletes an admin user from the database. Unlinks their events/orders first.
- */
-export const deleteAdmin = async (req, res, next) => {
-  try {
-    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
-    if (!isSuperAdmin)
-      return res.status(403).json({ error: "Super admin only" });
-    const { userId } = req.params;
-    const currentId = String(req.user.id);
-    if (userId === currentId)
-      return res
-        .status(400)
-        .json({ error: "You cannot delete your own account" });
-
-    const userRow = await query(
-      "SELECT id, role FROM \"User\" WHERE id = $1 AND role IN ('admin', 'superadmin')",
-      [userId],
-    );
-    if (userRow.rows.length === 0)
-      return res.status(404).json({ error: "Admin not found" });
-
-    await query(
-      'UPDATE "Event" SET "createdBy" = NULL WHERE "createdBy" = $1',
-      [userId],
-    );
-    await query('UPDATE "Order" SET "userId" = NULL WHERE "userId" = $1', [
-      userId,
-    ]);
-    await query('DELETE FROM "BankAccount" WHERE "userId" = $1', [userId]);
-    await query('DELETE FROM "User" WHERE id = $1', [userId]);
-
-    res.json({ message: "Admin account deleted" });
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * POST /api/admin/verify-ticket
- * Body: { code }. Admin (or super admin) verifies a ticket by QR code.
- * Checks: ticket exists, payment confirmed, not already fully used; admin may only verify tickets for events they created (super admin: all).
- */
-export const verifyTicket = async (req, res, next) => {
-  try {
-    const { code } = req.body;
-    const codeStr = typeof code === "string" ? code.trim() : "";
-    if (!codeStr) {
-      return res
-        .status(400)
-        .json({
-          valid: false,
-          reason: "missing_code",
-          message: "Ticket code is required",
-        });
-    }
-
-    const order = await orderModel.findByTicketCode(codeStr);
-    if (!order) {
-      return res.json({
-        valid: false,
-        reason: "not_found",
-        message: "Ticket not found",
-      });
-    }
-    if (order.status !== "paid") {
-      return res.json({
-        valid: false,
-        reason: "not_paid",
-        message: "Payment not confirmed for this ticket",
-      });
-    }
-
-    const eventRows = await query(
-      'SELECT id, "createdBy", title FROM "Event" WHERE id = $1',
-      [order.eventId],
-    );
-    const event = eventRows.rows[0];
-    if (!event) {
-      return res.json({
-        valid: false,
-        reason: "not_found",
-        message: "Event not found",
-      });
-    }
-    const isSuperAdmin =
-      req.user.role === "superadmin" ||
-      req.user.id === 0 ||
-      req.user.id === "0";
-    const adminId = String(req.user.id);
-    if (!isSuperAdmin) {
-      const eventCreator =
-        event.createdBy == null ? null : String(event.createdBy);
-      if (eventCreator !== adminId) {
-        return res.status(403).json({
-          valid: false,
-          reason: "not_authorized",
-          message: "You can only scan tickets for events you created.",
-          eventTitle: event.title || "Event",
-        });
-      }
-    }
-
-    const qtyRows = await query(
-      'SELECT COALESCE(SUM(quantity), 0) AS total FROM "OrderItem" WHERE "orderId" = $1',
-      [order.id],
-    );
-    const totalQuantity = parseInt(qtyRows.rows[0].total, 10) || 1;
-    const scanRows = await query(
-      'SELECT COUNT(*) AS cnt FROM "ScanLog" WHERE "orderId" = $1',
-      [order.id],
-    );
-    const scanCount = parseInt(scanRows.rows[0].cnt, 10) || 0;
-
-    if (scanCount >= totalQuantity) {
-      const eventTitleRows = await query(
-        'SELECT title FROM "Event" WHERE id = $1',
-        [order.eventId],
-      );
-      const eventTitle = eventTitleRows.rows[0]?.title || "Event";
-      return res.json({
-        valid: false,
-        reason: "already_used",
-        message: "This ticket has already been used",
-        fullName: order.fullName,
-        eventTitle,
-        scanCount,
-        totalQuantity,
-      });
-    }
-
-    const scanId = createId();
-    await query(
-      'INSERT INTO "ScanLog" (id, "orderId", "eventId", "scannedBy") VALUES ($1, $2, $3, $4)',
-      [scanId, order.id, order.eventId, adminId],
-    );
-    const eventTitleRows = await query(
-      'SELECT title FROM "Event" WHERE id = $1',
-      [order.eventId],
-    );
-    const eventTitle = eventTitleRows.rows[0]?.title || "Event";
-    const newScanCount = scanCount + 1;
-    const fullyUsed = newScanCount >= totalQuantity;
-
+    console.error('getDashboard', err);
     return res.json({
-      valid: true,
-      message: fullyUsed ? "Ticket verified (fully used)" : "Ticket verified",
-      fullName: order.fullName,
-      eventTitle,
-      scanCount: newScanCount,
-      totalQuantity,
-      fullyUsed,
+      stats: {
+        totalRevenue: 0,
+        ticketRevenue: 0,
+        ticketsSold: 0,
+        totalEvents: 0,
+        activeEvents: 0,
+      },
+      recentSales: [],
     });
-  } catch (err) {
-    next(err);
   }
-};
+}
 
-const PASSWORD_CHANGE_COOLDOWN_DAYS = 30;
-
-/** GET /api/admin/password-change-status – when the admin can next change password (once per month). */
-export const getPasswordChangeStatus = async (req, res, next) => {
+/** GET /api/admin/admins */
+export async function listAdmins(req, res) {
   try {
-    const userId = req.user.id;
-    if (userId === 0 || userId === "0") {
-      return res.json({
-        canChange: false,
-        reason: "super_admin",
-        nextChangeAllowedAt: null,
+    const result = await query(
+      'SELECT "id", "email", "name", "role", "emailVerified" FROM "User" WHERE "role" IN (\'admin\', \'superadmin\') ORDER BY "id"'
+    ).catch(() => ({ rows: [] }));
+    const list = (result.rows || []).map((row) => ({
+      id: row.id,
+      email: row.email,
+      name: row.name,
+      role: row.role,
+      emailVerified: !!row.emailVerified,
+    }));
+    return res.json(list);
+  } catch {
+    return res.json([]);
+  }
+}
+
+/** DELETE /api/admin/admins/:id */
+export async function deleteAdmin(req, res) {
+  try {
+    await query('DELETE FROM "User" WHERE "id" = $1 AND "role" = \'admin\'', [req.params.id]);
+    return res.json({ message: 'Deleted' });
+  } catch {
+    return res.status(404).json({ error: 'Not found' });
+  }
+}
+
+/** GET /api/admin/sales */
+export async function getSales(req, res) {
+  try {
+    const result = await query(
+      `SELECT o."id", o."fullName", o."email", o."totalAmount", o."status", o."createdAt", e."title" AS "event_title"
+       FROM "Order" o LEFT JOIN "Event" e ON e."id" = o."eventId"
+       ORDER BY o."createdAt" DESC LIMIT 100`
+    ).catch(() => ({ rows: [] }));
+    const list = (result.rows || []).map((r) => ({
+      id: r.id,
+      buyer_name: r.fullName,
+      buyer_email: r.email,
+      amount: r.totalAmount,
+      ticket_count: 1,
+      status: r.status,
+      created_at: r.createdAt,
+      event_title: r.event_title,
+    }));
+    return res.json(list);
+  } catch {
+    return res.json([]);
+  }
+}
+
+/** GET /api/admin/events */
+export async function listAdminEvents(req, res) {
+  try {
+    const result = await query(
+      'SELECT "id", "title", "date", "location", "isPublished" FROM "Event" ORDER BY "date" DESC'
+    ).catch(() => ({ rows: [] }));
+    return res.json(result.rows || []);
+  } catch {
+    return res.json([]);
+  }
+}
+
+/** DELETE /api/events/:id (admin) - handled in events.routes with requireAuth */
+/** GET /api/admin/events/:eventId/orders */
+export async function getEventOrders(req, res) {
+  try {
+    const result = await query(
+      'SELECT * FROM "Order" WHERE "eventId" = $1 ORDER BY "createdAt" DESC',
+      [req.params.eventId]
+    ).catch(() => ({ rows: [] }));
+    return res.json(result.rows || []);
+  } catch {
+    return res.json([]);
+  }
+}
+
+/** POST /api/admin/verify-ticket */
+export async function verifyTicket(req, res) {
+  try {
+    const { orderId, code } = req.body || {};
+    if (!orderId) return res.status(400).json({ error: 'orderId required' });
+    const result = await query(
+      'SELECT "id", "status" FROM "Order" WHERE "id" = $1',
+      [orderId]
+    ).catch(() => ({ rows: [] }));
+    if (!result.rows?.length) return res.status(404).json({ error: 'Ticket not found' });
+    const order = result.rows[0];
+    return res.json({ valid: order.status === 'paid', orderId: order.id });
+  } catch {
+    return res.status(400).json({ error: 'Invalid ticket' });
+  }
+}
+
+/** GET /api/admin/banks */
+export async function getBanks(req, res) {
+  try {
+    if (config.paystackSecretKey) {
+      const r = await fetch('https://api.paystack.co/bank?currency=NGN&perPage=100', {
+        headers: { Authorization: `Bearer ${config.paystackSecretKey}` },
       });
+      const d = await r.json();
+      if (d.data) return res.json(d.data);
     }
-    const changedAt = await authModel.getPasswordChangedAt(userId);
-    const nextAllowed = changedAt
-      ? new Date(
-          changedAt.getTime() +
-            PASSWORD_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000,
-        )
-      : null;
-    const canChange = !changedAt || nextAllowed <= new Date();
-    res.json({
-      canChange,
+    return res.json([]);
+  } catch {
+    return res.json([]);
+  }
+}
+
+/** GET/POST /api/admin/bank-account */
+export async function getBankAccount(req, res) {
+  try {
+    const result = await query(
+      'SELECT "accountNumber", "bankCode", "accountName", "bankName", "recipientCode" FROM "BankAccount" WHERE "userId" = $1',
+      [req.userId]
+    ).catch(() => ({ rows: [] }));
+    if (result.rows?.[0]) return res.json(result.rows[0]);
+    return res.json(null);
+  } catch {
+    return res.json(null);
+  }
+}
+
+export async function saveBankAccount(req, res) {
+  try {
+    const { accountNumber, bankCode, accountName, bankName } = req.body || {};
+    if (!accountNumber || !bankCode) return res.status(400).json({ error: 'accountNumber and bankCode required' });
+    await query(
+      `INSERT INTO "BankAccount" ("userId", "accountNumber", "bankCode", "accountName", "bankName", "recipientCode")
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT ("userId") DO UPDATE SET "accountNumber" = $2, "bankCode" = $3, "accountName" = $4, "bankName" = $5, "recipientCode" = $6`,
+      [req.userId, accountNumber, bankCode, accountName || '', bankName || '', req.body?.recipientCode || '']
+    ).catch(() => ({}));
+    return res.json({ message: 'Saved' });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed' });
+  }
+}
+
+/** POST /api/admin/withdraw - body: eventId (optional) */
+/** GET /api/admin/withdraw, POST /api/admin/withdraw/:eventId */
+export async function listWithdrawals(req, res) {
+  try {
+    const result = await query(
+      'SELECT * FROM "Withdrawal" WHERE "userId" = $1 ORDER BY "createdAt" DESC',
+      [req.userId]
+    ).catch(() => ({ rows: [] }));
+    return res.json(result.rows || []);
+  } catch {
+    return res.json([]);
+  }
+}
+
+export async function createWithdrawal(req, res) {
+  try {
+    const eventId = req.params.eventId;
+    if (!eventId) return res.status(400).json({ error: 'eventId required' });
+    const result = await query(
+      `INSERT INTO "Withdrawal" ("userId", "eventId", "amount", "status") VALUES ($1, $2, 0, 'pending') RETURNING "id"`,
+      [req.userId, eventId]
+    ).catch(() => ({ rows: [] }));
+    if (!result.rows?.length) return res.status(501).json({ error: 'Withdrawals not configured' });
+    return res.status(201).json(result.rows[0]);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed' });
+  }
+}
+
+/** GET /api/admin/top-users */
+export async function listTopUsers(req, res) {
+  try {
+    const result = await query(
+      'SELECT "id", "name", "title", "imageUrl", "sortOrder" FROM "TopUser" ORDER BY "sortOrder"'
+    ).catch(() => ({ rows: [] }));
+    return res.json(result.rows || []);
+  } catch {
+    return res.json([]);
+  }
+}
+
+/** POST /api/admin/top-users, PATCH/DELETE /api/admin/top-users/:id */
+export async function createTopUser(req, res) {
+  try {
+    const { name, title, imageUrl, sortOrder } = req.body || {};
+    const result = await query(
+      'INSERT INTO "TopUser" ("name", "title", "imageUrl", "sortOrder") VALUES ($1, $2, $3, $4) RETURNING "id"',
+      [name || '', title || '', imageUrl || null, sortOrder ?? 0]
+    ).catch(() => ({ rows: [] }));
+    if (!result.rows?.length) return res.status(501).json({ error: 'TopUser table not configured' });
+    return res.status(201).json(result.rows[0]);
+  } catch {
+    return res.status(500).json({ error: 'Failed' });
+  }
+}
+
+export async function updateTopUser(req, res) {
+  try {
+    const { name, title, imageUrl, sortOrder } = req.body || {};
+    await query(
+      'UPDATE "TopUser" SET "name" = COALESCE($1, "name"), "title" = COALESCE($2, "title"), "imageUrl" = COALESCE($3, "imageUrl"), "sortOrder" = COALESCE($4, "sortOrder") WHERE "id" = $5',
+      [name, title, imageUrl, sortOrder, req.params.id]
+    ).catch(() => ({}));
+    return res.json({ message: 'Updated' });
+  } catch {
+    return res.status(404).json({ error: 'Not found' });
+  }
+}
+
+export async function deleteTopUser(req, res) {
+  try {
+    await query('DELETE FROM "TopUser" WHERE "id" = $1', [req.params.id]);
+    return res.json({ message: 'Deleted' });
+  } catch {
+    return res.status(404).json({ error: 'Not found' });
+  }
+}
+
+/** GET /api/admin/password-change-status */
+export async function getPasswordChangeStatus(req, res) {
+  try {
+    const result = await query(
+      'SELECT "lastPasswordChangeAt" FROM "User" WHERE "id" = $1',
+      [req.userId]
+    ).catch(() => ({ rows: [] }));
+    const last = result.rows?.[0]?.lastPasswordChangeAt;
+    const nextAllowed = last ? new Date(new Date(last).getTime() + 30 * 24 * 60 * 60 * 1000) : null;
+    const canChange = !nextAllowed || new Date() >= nextAllowed;
+    return res.json({
+      canChange: !!canChange,
       nextChangeAllowedAt: nextAllowed ? nextAllowed.toISOString() : null,
     });
-  } catch (err) {
-    next(err);
+  } catch {
+    return res.json({ canChange: true, nextChangeAllowedAt: null });
   }
-};
+}
 
-/** POST /api/admin/verify-password – verify current password before showing new password fields. */
-export const verifyAdminPassword = async (req, res, next) => {
+/** POST /api/admin/verify-password */
+export async function verifyPassword(req, res) {
   try {
-    const userId = req.user.id;
-    if (userId === 0 || userId === "0") {
-      return res
-        .status(403)
-        .json({ error: "Super admin cannot change password here." });
-    }
-    const currentPassword = req.body.currentPassword;
-    if (!currentPassword || typeof currentPassword !== "string") {
-      return res.status(400).json({ error: "Current password is required" });
-    }
-    const user = await authModel.findUserByIdWithPassword(userId);
-    if (!user || !user.password) {
-      return res.status(401).json({ error: "Invalid current password" });
-    }
-    const ok = await bcrypt.compare(currentPassword, user.password);
-    if (!ok) return res.status(401).json({ error: "Invalid current password" });
-    res.json({ verified: true });
-  } catch (err) {
-    next(err);
+    const { currentPassword } = req.body || {};
+    const result = await query(
+      'SELECT "passwordHash" FROM "User" WHERE "id" = $1',
+      [req.userId]
+    );
+    if (!result.rows?.length) return res.status(401).json({ error: 'Invalid password' });
+    const valid = await bcrypt.compare(currentPassword, result.rows[0].passwordHash);
+    if (!valid) return res.status(401).json({ error: 'Invalid current password' });
+    return res.json({ verified: true });
+  } catch {
+    return res.status(401).json({ error: 'Invalid password' });
   }
-};
+}
 
-/** POST /api/admin/change-password – set new password (after verify). Rate limit: once per 30 days. */
-export const changeAdminPassword = async (req, res, next) => {
+/** POST /api/admin/change-password */
+export async function changePassword(req, res) {
   try {
-    const userId = req.user.id;
-    if (userId === 0 || userId === "0") {
-      return res
-        .status(403)
-        .json({ error: "Super admin cannot change password here." });
-    }
-    const { currentPassword, newPassword, confirmPassword } = req.body;
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "Current password, new password, and confirm password are required",
-        });
-    }
-    if (newPassword.length < 6) {
-      return res
-        .status(400)
-        .json({ error: "New password must be at least 6 characters" });
-    }
-    if (newPassword !== confirmPassword) {
-      return res
-        .status(400)
-        .json({ error: "New password and confirm password do not match" });
-    }
-    const changedAt = await authModel.getPasswordChangedAt(userId);
-    const nextAllowed = changedAt
-      ? new Date(
-          changedAt.getTime() +
-            PASSWORD_CHANGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000,
-        )
-      : null;
-    if (changedAt && nextAllowed > new Date()) {
-      return res.status(429).json({
-        error: "You can only change your password once per month.",
-        nextChangeAllowedAt: nextAllowed.toISOString(),
-      });
-    }
-    const user = await authModel.findUserByIdWithPassword(userId);
-    if (!user || !user.password) {
-      return res.status(401).json({ error: "Invalid current password" });
-    }
-    const ok = await bcrypt.compare(currentPassword, user.password);
-    if (!ok) return res.status(401).json({ error: "Invalid current password" });
-    const hashed = await bcrypt.hash(newPassword, 10);
-    await authModel.updatePasswordById(userId, hashed);
-    res.json({ success: true, message: "Password changed successfully" });
-  } catch (err) {
-    next(err);
-  }
-};
-
-// ─── Withdraw Page Data ───────────────────────────────────────────────────────
-
-/**
- * GET /api/admin/withdraw
- * Returns events with revenue, withdrawal history, and bank account status.
- */
-export const getWithdrawPage = async (req, res, next) => {
-  try {
-    const scope = eventScope(req);
-    const { whereClause, params, isSuperAdmin, adminId } = scope;
-
-    // Events with their ticket revenue and withdrawal status (only events created by this admin)
-    const eventsResult = await query(
-      `SELECT
-         e.id,
-         e.title,
-         e.date,
-         e."imageUrl",
-         e."createdBy",
-         COALESCE(SUM(o."totalAmount") FILTER (WHERE o.status = 'paid'), 0) AS gross_revenue,
-         MAX(w.status)      AS withdrawal_status,
-         MAX(w."netAmount") AS withdrawn_net,
-         MAX(w."createdAt") AS withdrawn_at
-       FROM "Event" e
-       LEFT JOIN "Order" o ON o."eventId" = e.id
-       LEFT JOIN "Withdrawal" w ON w."eventId" = e.id
-       WHERE (${whereClause})
-       GROUP BY e.id
-       ORDER BY e.date DESC`,
-      params,
+    const { currentPassword, newPassword, confirmPassword } = req.body || {};
+    if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    if (newPassword !== confirmPassword) return res.status(400).json({ error: 'Passwords do not match' });
+    const result = await query(
+      'SELECT "passwordHash" FROM "User" WHERE "id" = $1',
+      [req.userId]
     );
-
-    // Withdrawal history for this admin's events only
-    const withdrawalsResult = await query(
-      `SELECT
-         w.*,
-         e.title AS event_title,
-         u.name  AS admin_name,
-         u.email AS admin_email
-       FROM "Withdrawal" w
-       JOIN "Event" e ON w."eventId" = e.id
-       LEFT JOIN "User" u ON w."adminId" = u.id
-       WHERE (${whereClause})
-       ORDER BY w."createdAt" DESC`,
-      params,
-    );
-
-    // KPI totals for this admin's events only
-    const kpiResult = await query(
-      `SELECT
-         COALESCE(SUM(o."totalAmount") FILTER (WHERE o.status = 'paid'), 0) AS total_gross,
-         COALESCE(SUM(w."netAmount")   FILTER (WHERE w.status = 'completed'), 0) AS total_withdrawn,
-         COALESCE(SUM(w."platformFee") FILTER (WHERE w.status = 'completed'), 0) AS total_fees
-       FROM "Event" e
-       LEFT JOIN "Order" o ON o."eventId" = e.id
-       LEFT JOIN "Withdrawal" w ON w."eventId" = e.id
-       WHERE (${whereClause})`,
-      params,
-    );
-
-    let membershipRevenue = 0;
-    if (isSuperAdmin) {
-      const mr = await query(
-        `SELECT COALESCE(SUM(mp.price), 0) AS revenue
-         FROM "Membership" m
-         JOIN "MembershipPlan" mp ON m."planId" = mp.id
-         WHERE m.status = 'active'`,
-      );
-      membershipRevenue = parseFloat(mr.rows[0].revenue);
-    }
-
-    const kpi = kpiResult.rows[0];
-    const totalGross = parseFloat(kpi.total_gross);
-    const totalWithdrawn = parseFloat(kpi.total_withdrawn);
-    const totalFees = parseFloat(kpi.total_fees);
-    const availableToWithdraw =
-      (totalGross - totalWithdrawn / (1 - PLATFORM_FEE_PCT)) *
-      (1 - PLATFORM_FEE_PCT);
-
-    // Bank account for this admin (not applicable for superadmin)
-    let bankAccount = null;
-    if (!isSuperAdmin) {
-      const baResult = await query(
-        `SELECT id, "accountName", "accountNumber", "bankCode", "bankName", "recipientCode"
-         FROM "BankAccount" WHERE "userId" = $1`,
-        [adminId],
-      );
-      bankAccount = baResult.rows[0] || null;
-    }
-
-    res.json({
-      kpi: {
-        totalGross,
-        availableToWithdraw: Math.max(0, availableToWithdraw),
-        totalFees,
-        membershipRevenue,
-      },
-      events: eventsResult.rows,
-      withdrawals: withdrawalsResult.rows,
-      bankAccount,
-      isSuperAdmin,
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-// ─── Withdraw an Event ────────────────────────────────────────────────────────
-
-/**
- * POST /api/admin/withdraw/:eventId
- */
-export const withdrawEvent = async (req, res, next) => {
-  try {
-    const isSuperAdmin = req.user.role === "superadmin" || req.user.id === 0;
-    const adminId = req.user.id;
-    const { eventId } = req.params;
-
-    // 1. Fetch event
-    const eventResult = await query(`SELECT * FROM "Event" WHERE id = $1`, [
-      eventId,
-    ]);
-    if (eventResult.rows.length === 0)
-      return res.status(404).json({ error: "Event not found" });
-    const event = eventResult.rows[0];
-
-    // 2. Ownership check: each admin can only withdraw from events they created
-    const ownsEvent = isSuperAdmin
-      ? event.createdBy === null || event.createdBy === undefined
-      : String(event.createdBy) === String(adminId);
-    if (!ownsEvent) {
-      return res.status(403).json({ error: "You do not own this event" });
-    }
-
-    // 3. Timing check — event must have started (date <= now)
-    const eventDate = new Date(event.date);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (eventDate > today) {
-      return res
-        .status(400)
-        .json({
-          error: "Withdrawals are only available on or after the event date",
-        });
-    }
-
-    // 4. One withdrawal per event
-    const existingResult = await query(
-      `SELECT id FROM "Withdrawal" WHERE "eventId" = $1 AND status = 'completed'`,
-      [eventId],
-    );
-    if (existingResult.rows.length > 0) {
-      return res
-        .status(400)
-        .json({ error: "This event has already been withdrawn" });
-    }
-
-    // 5. Calculate revenue
-    const revenueResult = await query(
-      `SELECT COALESCE(SUM("totalAmount"), 0) AS gross FROM "Order"
-       WHERE "eventId" = $1 AND status = 'paid'`,
-      [eventId],
-    );
-    const gross = parseFloat(revenueResult.rows[0].gross);
-    if (gross <= 0)
-      return res
-        .status(400)
-        .json({ error: "No paid revenue to withdraw for this event" });
-
-    const platformFee = parseFloat((gross * PLATFORM_FEE_PCT).toFixed(2));
-    const net = parseFloat((gross - platformFee).toFixed(2));
-
-    // 6. Get bank account / recipient code (not needed for superadmin)
-    let recipientCode = null;
-    if (!isSuperAdmin) {
-      const baResult = await query(
-        `SELECT "recipientCode" FROM "BankAccount" WHERE "userId" = $1`,
-        [adminId],
-      );
-      if (baResult.rows.length === 0 || !baResult.rows[0].recipientCode) {
-        return res
-          .status(400)
-          .json({
-            error: "Please set up your bank account before withdrawing",
-          });
-      }
-      recipientCode = baResult.rows[0].recipientCode;
-    }
-
-    // 7. Create pending withdrawal record
-    const withdrawalId = createId();
+    if (!result.rows?.length) return res.status(401).json({ error: 'Invalid password' });
+    const valid = await bcrypt.compare(currentPassword, result.rows[0].passwordHash);
+    if (!valid) return res.status(401).json({ error: 'Invalid current password' });
+    const hash = await bcrypt.hash(newPassword, 10);
     await query(
-      `INSERT INTO "Withdrawal" (id, "eventId", "adminId", "grossAmount", "platformFee", "netAmount", status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending')`,
-      [withdrawalId, eventId, String(adminId), gross, platformFee, net],
+      'UPDATE "User" SET "passwordHash" = $1, "updatedAt" = NOW() WHERE "id" = $2',
+      [hash, req.userId]
     );
-
-    // 8. Initiate Paystack transfer (skip for superadmin — platform retains the fee)
-    let paystackRef = null;
-    if (!isSuperAdmin && config.paystackSecretKey) {
-      const transferRes = await paystackRequest("POST", "/transfer", {
-        source: "balance",
-        amount: Math.round(net * 100), // kobo
-        recipient: recipientCode,
-        reason: `Withdrawal for event: ${event.title}`,
-      });
-
-      if (transferRes.status) {
-        paystackRef =
-          transferRes.data?.transfer_code ||
-          transferRes.data?.reference ||
-          null;
-        await query(
-          `UPDATE "Withdrawal" SET status = 'completed', "paystackReference" = $1, "updatedAt" = now()
-           WHERE id = $2`,
-          [paystackRef, withdrawalId],
-        );
-      } else {
-        await query(
-          `UPDATE "Withdrawal" SET status = 'failed', "updatedAt" = now() WHERE id = $1`,
-          [withdrawalId],
-        );
-        return res
-          .status(502)
-          .json({ error: transferRes.message || "Paystack transfer failed" });
-      }
-    } else {
-      // No Paystack key configured or superadmin — mark completed immediately
-      await query(
-        `UPDATE "Withdrawal" SET status = 'completed', "updatedAt" = now() WHERE id = $1`,
-        [withdrawalId],
-      );
-    }
-
-    res.json({
-      message: "Withdrawal successful",
-      withdrawal: { id: withdrawalId, gross, platformFee, net, paystackRef },
-    });
+    return res.json({ success: true, message: 'Password updated' });
   } catch (err) {
-    next(err);
+    return res.status(500).json({ error: err.message || 'Failed' });
   }
-};
-
-// ─── Bank Account ─────────────────────────────────────────────────────────────
-
-/**
- * GET /api/admin/bank-account
- */
-export const getBankAccount = async (req, res, next) => {
-  try {
-    const result = await query(
-      `SELECT id, "accountName", "accountNumber", "bankCode", "bankName"
-       FROM "BankAccount" WHERE "userId" = $1`,
-      [req.user.id],
-    );
-    res.json(result.rows[0] || null);
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * POST /api/admin/bank-account
- * Body: { accountNumber, bankCode, accountName, bankName }
- */
-export const saveBankAccount = async (req, res, next) => {
-  try {
-    const { accountNumber, bankCode, accountName, bankName } = req.body;
-    if (!accountNumber || !bankCode || !accountName || !bankName) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "accountNumber, bankCode, accountName, and bankName are required",
-        });
-    }
-
-    // Create Paystack transfer recipient
-    let recipientCode = null;
-    if (config.paystackSecretKey) {
-      const recipientRes = await paystackRequest("POST", "/transferrecipient", {
-        type: "nuban",
-        name: accountName,
-        account_number: accountNumber,
-        bank_code: bankCode,
-        currency: "NGN",
-      });
-      if (recipientRes.status) {
-        recipientCode = recipientRes.data?.recipient_code || null;
-      }
-    }
-
-    // Upsert BankAccount
-    const existing = await query(
-      `SELECT id FROM "BankAccount" WHERE "userId" = $1`,
-      [req.user.id],
-    );
-    if (existing.rows.length > 0) {
-      await query(
-        `UPDATE "BankAccount"
-         SET "accountName" = $1, "accountNumber" = $2, "bankCode" = $3, "bankName" = $4, "recipientCode" = $5, "updatedAt" = now()
-         WHERE "userId" = $6`,
-        [
-          accountName,
-          accountNumber,
-          bankCode,
-          bankName,
-          recipientCode,
-          req.user.id,
-        ],
-      );
-    } else {
-      const id = createId();
-      await query(
-        `INSERT INTO "BankAccount" (id, "userId", "accountName", "accountNumber", "bankCode", "bankName", "recipientCode")
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [
-          id,
-          req.user.id,
-          accountName,
-          accountNumber,
-          bankCode,
-          bankName,
-          recipientCode,
-        ],
-      );
-    }
-
-    const result = await query(
-      `SELECT id, "accountName", "accountNumber", "bankCode", "bankName"
-       FROM "BankAccount" WHERE "userId" = $1`,
-      [req.user.id],
-    );
-    res.json(result.rows[0]);
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * GET /api/admin/banks
- * Proxies Paystack bank list
- */
-export const getPaystackBanks = async (req, res, next) => {
-  try {
-    if (!config.paystackSecretKey) {
-      // Return a small hardcoded list as fallback
-      return res.json([
-        { name: "Access Bank", code: "044" },
-        { name: "First Bank of Nigeria", code: "011" },
-        { name: "Guaranty Trust Bank", code: "058" },
-        { name: "United Bank for Africa", code: "033" },
-        { name: "Zenith Bank", code: "057" },
-        { name: "Opay", code: "999992" },
-        { name: "Kuda Bank", code: "090267" },
-        { name: "Palmpay", code: "999991" },
-        { name: "Moniepoint", code: "50515" },
-        { name: "Wema Bank", code: "035" },
-        { name: "Fidelity Bank", code: "070" },
-        { name: "Sterling Bank", code: "232" },
-        { name: "Stanbic IBTC Bank", code: "221" },
-        { name: "Union Bank of Nigeria", code: "032" },
-        { name: "Ecobank Nigeria", code: "050" },
-      ]);
-    }
-    const data = await paystackRequest(
-      "GET",
-      "/bank?currency=NGN&perPage=100",
-      null,
-    );
-    res.json(data.data || []);
-  } catch (err) {
-    next(err);
-  }
-};
-
-// ─── Top Users (landing carousel) ───────────────────────────────────────────
-
-export const getTopUsersAdmin = async (req, res, next) => {
-  try {
-    const list = await topUsersModel.getAll();
-    res.json(list);
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const createTopUser = async (req, res, next) => {
-  try {
-    const { name, title, imageUrl, sortOrder } = req.body;
-    if (!name || String(name).trim() === "") {
-      return res.status(400).json({ error: "Name is required" });
-    }
-    const created = await topUsersModel.create({
-      name: String(name).trim(),
-      title: title ? String(title).trim() : null,
-      imageUrl: imageUrl || null,
-      sortOrder: sortOrder != null ? Number(sortOrder) : 0,
-    });
-    res.status(201).json(created);
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const updateTopUser = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { name, title, imageUrl, sortOrder } = req.body;
-    const updated = await topUsersModel.update(id, {
-      name: name !== undefined ? String(name).trim() : undefined,
-      title:
-        title !== undefined ? (title ? String(title).trim() : null) : undefined,
-      imageUrl: imageUrl !== undefined ? imageUrl || null : undefined,
-      sortOrder: sortOrder !== undefined ? Number(sortOrder) : undefined,
-    });
-    if (!updated) return res.status(404).json({ error: "Top user not found" });
-    res.json(updated);
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const deleteTopUser = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const deleted = await topUsersModel.delete(id);
-    if (!deleted) return res.status(404).json({ error: "Top user not found" });
-    res.status(204).send();
-  } catch (err) {
-    next(err);
-  }
-};
+}

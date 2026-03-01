@@ -1,71 +1,27 @@
-import { Router } from "express";
-import { authMiddleware } from "../../shared/middleware/authMiddleware.js";
-import {
-  getDashboardStats,
-  getAdminEvents,
-  getSales,
-  getAdmins,
-  deleteAdmin,
-  deleteEventOrders,
-  verifyTicket,
-  getPasswordChangeStatus,
-  verifyAdminPassword,
-  changeAdminPassword,
-  getWithdrawPage,
-  withdrawEvent,
-  getBankAccount,
-  saveBankAccount,
-  getPaystackBanks,
-  getTopUsersAdmin,
-  createTopUser,
-  updateTopUser,
-  deleteTopUser,
-} from "./admin.controller.js";
+import express from 'express';
+import * as adminController from './admin.controller.js';
+import { requireAuth } from '../../middleware/auth.js';
 
-const router = Router();
+const router = express.Router();
 
-// Dashboard
-router.get("/dashboard", authMiddleware, getDashboardStats);
-
-// Events (super admin: all + creator name; others: own only)
-router.get("/events", authMiddleware, getAdminEvents);
-
-// Sales
-router.get("/sales", authMiddleware, getSales);
-
-// Admins list (super admin only)
-router.get("/admins", authMiddleware, getAdmins);
-// Delete an admin account (super admin only)
-router.delete("/admins/:userId", authMiddleware, deleteAdmin);
-
-// Delete all sales/orders for an event
-router.delete("/events/:eventId/orders", authMiddleware, deleteEventOrders);
-
-// Verify ticket (scan) – all admins
-router.post("/verify-ticket", authMiddleware, verifyTicket);
-
-// Change password (once per month)
-router.get("/password-change-status", authMiddleware, getPasswordChangeStatus);
-router.post("/verify-password", authMiddleware, verifyAdminPassword);
-router.post("/change-password", authMiddleware, changeAdminPassword);
-
-// Withdraw page data
-router.get("/withdraw", authMiddleware, getWithdrawPage);
-
-// Initiate withdrawal for an event
-router.post("/withdraw/:eventId", authMiddleware, withdrawEvent);
-
-// Bank account management
-router.get("/bank-account", authMiddleware, getBankAccount);
-router.post("/bank-account", authMiddleware, saveBankAccount);
-
-// Paystack bank list (for dropdown)
-router.get("/banks", authMiddleware, getPaystackBanks);
-
-// Top users (landing carousel)
-router.get("/top-users", authMiddleware, getTopUsersAdmin);
-router.post("/top-users", authMiddleware, createTopUser);
-router.patch("/top-users/:id", authMiddleware, updateTopUser);
-router.delete("/top-users/:id", authMiddleware, deleteTopUser);
+router.get('/dashboard', requireAuth, adminController.getDashboard);
+router.get('/admins', requireAuth, adminController.listAdmins);
+router.delete('/admins/:id', requireAuth, adminController.deleteAdmin);
+router.get('/sales', requireAuth, adminController.getSales);
+router.get('/events', requireAuth, adminController.listAdminEvents);
+router.get('/events/:eventId/orders', requireAuth, adminController.getEventOrders);
+router.post('/verify-ticket', requireAuth, adminController.verifyTicket);
+router.get('/banks', requireAuth, adminController.getBanks);
+router.get('/bank-account', requireAuth, adminController.getBankAccount);
+router.post('/bank-account', requireAuth, adminController.saveBankAccount);
+router.get('/withdraw', requireAuth, adminController.listWithdrawals);
+router.post('/withdraw/:eventId', requireAuth, adminController.createWithdrawal);
+router.get('/top-users', requireAuth, adminController.listTopUsers);
+router.post('/top-users', requireAuth, adminController.createTopUser);
+router.patch('/top-users/:id', requireAuth, adminController.updateTopUser);
+router.delete('/top-users/:id', requireAuth, adminController.deleteTopUser);
+router.get('/password-change-status', requireAuth, adminController.getPasswordChangeStatus);
+router.post('/verify-password', requireAuth, adminController.verifyPassword);
+router.post('/change-password', requireAuth, adminController.changePassword);
 
 export default router;

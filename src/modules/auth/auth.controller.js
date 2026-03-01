@@ -1,8 +1,8 @@
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { query } = require('../../shared/db');
-const config = require('../../shared/config/env');
-const emailService = require('../../services/email');
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { query } from '../../shared/db.js';
+import { config } from '../../shared/config/env.js';
+import * as emailService from '../../services/email.js';
 
 const OTP_EXIRY_MINUTES = 10;
 const CODE_TYPES = { signup: 'signup_verify', reset: 'password_reset', organizer: 'organizer_verify' };
@@ -36,8 +36,7 @@ async function verifyCode(email, code, type) {
   return true;
 }
 
-// POST /api/auth/signin
-async function signIn(req, res) {
+export async function signIn(req, res) {
   try {
     const { email, password, otp } = req.body || {};
     const em = (email || '').trim().toLowerCase();
@@ -91,8 +90,7 @@ async function signIn(req, res) {
   }
 }
 
-// POST /api/auth/signup
-async function signUp(req, res) {
+export async function signUp(req, res) {
   try {
     const { email, password, name } = req.body || {};
     const em = (email || '').trim().toLowerCase();
@@ -124,8 +122,7 @@ async function signUp(req, res) {
   }
 }
 
-// POST /api/auth/forgot-password
-async function forgotPassword(req, res) {
+export async function forgotPassword(req, res) {
   try {
     const { email } = req.body || {};
     const em = (email || '').trim().toLowerCase();
@@ -141,8 +138,7 @@ async function forgotPassword(req, res) {
   }
 }
 
-// POST /api/auth/reset-password
-async function resetPassword(req, res) {
+export async function resetPassword(req, res) {
   try {
     const { email, code, newPassword } = req.body || {};
     const em = (email || '').trim().toLowerCase();
@@ -171,8 +167,7 @@ async function resetPassword(req, res) {
   }
 }
 
-// POST /api/auth/resend-verification
-async function resendVerification(req, res) {
+export async function resendVerification(req, res) {
   try {
     const { email } = req.body || {};
     const em = (email || '').trim().toLowerCase();
@@ -188,8 +183,7 @@ async function resendVerification(req, res) {
   }
 }
 
-// POST /api/auth/create-admin (requires superadmin JWT)
-async function createAdmin(req, res) {
+export async function createAdmin(req, res) {
   try {
     const { name, email, password } = req.body || {};
     const em = (email || '').trim().toLowerCase();
@@ -226,8 +220,7 @@ async function createAdmin(req, res) {
   }
 }
 
-// POST /api/auth/organizer-signup (no auth; requires active membership by email)
-async function organizerSignup(req, res) {
+export async function organizerSignup(req, res) {
   try {
     const { username, email, password } = req.body || {};
     const em = (email || '').trim().toLowerCase();
@@ -248,17 +241,6 @@ async function organizerSignup(req, res) {
 
     if (user && user.role === 'admin' && user.emailVerified) {
       return res.status(400).json({ error: 'An account with this email already exists. Sign in at the admin login.' });
-    }
-
-    const membershipResult = await query(
-      `SELECT m."id" FROM "Membership" m
-       JOIN "User" u ON u."id" = m."userId"
-       WHERE LOWER(u."email") = $1 AND m."status" = 'active' AND m."endDate" >= CURRENT_DATE
-       LIMIT 1`,
-      [em]
-    );
-    if (membershipResult.rows.length === 0) {
-      return res.status(400).json({ error: 'No active membership found for this email. Purchase a plan first.' });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -285,8 +267,7 @@ async function organizerSignup(req, res) {
   }
 }
 
-// POST /api/auth/organizer-verify-otp
-async function organizerVerifyOtp(req, res) {
+export async function organizerVerifyOtp(req, res) {
   try {
     const { email, otp } = req.body || {};
     const em = (email || '').trim().toLowerCase();
@@ -313,14 +294,3 @@ async function organizerVerifyOtp(req, res) {
     return res.status(500).json({ error: 'Invalid or expired code' });
   }
 }
-
-module.exports = {
-  signIn,
-  signUp,
-  forgotPassword,
-  resetPassword,
-  resendVerification,
-  createAdmin,
-  organizerSignup,
-  organizerVerifyOtp,
-};
