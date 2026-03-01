@@ -2,6 +2,7 @@
   "name": "ticketing-back",
   "version": "1.0.0",
   "description": "Backend for Gatewav Ticketing - auth, memberships, organizer flow",
+  "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -18,6 +19,7 @@
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.11.3",
+    "qrcode": "^1.5.4",
     "resend": "^3.0.0"
   }
 }
