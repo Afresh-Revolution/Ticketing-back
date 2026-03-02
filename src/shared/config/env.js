@@ -15,7 +15,7 @@ export const config = {
   databaseUrl: process.env.DATABASE_URL,
   jwtSecret: process.env.JWT_SECRET || 'dev-jwt-secret-change-in-production',
   resendApiKey: process.env.RESEND_API_KEY || '',
-  resendFrom: process.env.RESEND_FROM || 'Gatewave <onboarding@resend.dev>',
+  resendFrom: process.env.RESEND_FROM || 'Gatewav <onboarding@gatewav.com>',
   frontendBaseUrl,
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || '',
   corsOrigins: corsOrigin
