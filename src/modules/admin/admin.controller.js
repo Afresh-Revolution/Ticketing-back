@@ -72,25 +72,29 @@ export async function listAdminEvents(req, res) {
     const superAdmin = isSuperAdmin(req);
     const userId = req.user?.id;
 
+    // Event table columns (match event.model): id, title, date, venue, imageUrl, category, startTime, price, isTrending, location, createdBy (no isPublished)
     const sql = superAdmin
-      ? `SELECT id, title, date, location, venue, "imageUrl", "isPublished", "isTrending", price, "createdBy"
+      ? `SELECT id, title, date, location, venue, "imageUrl", "isTrending", price, "createdBy", category, "startTime"
          FROM "Event"
          ORDER BY date DESC NULLS LAST`
-      : `SELECT id, title, date, location, venue, "imageUrl", "isPublished", "isTrending", price, "createdBy"
+      : `SELECT id, title, date, location, venue, "imageUrl", "isTrending", price, "createdBy", category, "startTime"
          FROM "Event"
          WHERE "createdBy" = $1 OR ("createdBy" IS NULL AND ($1 = 0 OR $1 = '0'))
          ORDER BY date DESC NULLS LAST`;
     const params = superAdmin ? [] : [userId];
-    const result = await query(sql, params).catch(() => ({ rows: [] }));
+    const result = await query(sql, params).catch((err) => {
+      console.error('listAdminEvents query', err?.message || err);
+      return { rows: [] };
+    });
     const rows = result.rows || [];
     const list = rows.map((row) => ({
       id: String(row.id),
       title: row.title,
       date: row.date,
       location: row.location || row.venue,
-      isPublished: row.isPublished,
-      isTrending: row.isTrending,
-      price: row.price,
+      isPublished: row.isPublished ?? true,
+      isTrending: row.isTrending ?? false,
+      price: row.price ?? 0,
       createdBy: row.createdBy,
     }));
     return res.json(list);
