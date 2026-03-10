@@ -59,6 +59,30 @@ export async function connectDb() {
   }
 }
 
+/**
+ * Ensure "User"."id" has a sequence and default so INSERTs without id don't violate not-null.
+ * Safe to run on every startup; fixes DBs where User was created without SERIAL default.
+ * Only runs when the "User" table exists.
+ */
+export async function ensureUserSequence() {
+  if (!pool) return;
+  try {
+    const tableCheck = await query(
+      `SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'User'`
+    );
+    if (tableCheck.rows.length === 0) return;
+
+    await query('CREATE SEQUENCE IF NOT EXISTS "User_id_seq"');
+    const maxResult = await query('SELECT COALESCE(MAX("id"), 0)::bigint AS mx FROM "User"');
+    const maxId = Number(maxResult.rows[0]?.mx ?? 0);
+    await query('SELECT setval(\'"User_id_seq"\', $1)', [Math.max(1, maxId + 1)]);
+    await query('ALTER SEQUENCE "User_id_seq" OWNED BY "User"."id"');
+    await query('ALTER TABLE "User" ALTER COLUMN "id" SET DEFAULT nextval(\'"User_id_seq"\')');
+  } catch (err) {
+    console.warn('[db] ensureUserSequence:', err.message);
+  }
+}
+
 export async function disconnectDb() {
   if (pool) await pool.end();
 }

@@ -5,6 +5,9 @@ import { config } from '../../shared/config/env.js';
 /** GET /api/admin/dashboard */
 export async function getDashboard(req, res) {
   try {
+    const isSuperAdmin = req.userRole === 'superadmin';
+    const userId = req.userId;
+
     const stats = {
       totalRevenue: 0,
       ticketRevenue: 0,
@@ -16,15 +19,20 @@ export async function getDashboard(req, res) {
     const r = await query(
       `SELECT COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS ticket_rev,
               COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN 1 ELSE 0 END), 0) AS tickets_sold
-       FROM "Order" o`
-    ).catch(() => ({ rows: [{ ticket_rev: 0, tickets_sold: 0 }] }));
+       FROM "Order" o
+       JOIN "Event" e ON e."id" = o."eventId"
+       ${isSuperAdmin ? '' : 'WHERE e."createdBy" = $1'}`
+    , isSuperAdmin ? [] : [userId]).catch(() => ({ rows: [{ ticket_rev: 0, tickets_sold: 0 }] }));
     if (r.rows && r.rows[0]) {
       stats.ticketRevenue = Number(r.rows[0].ticket_rev) || 0;
       stats.totalRevenue = stats.ticketRevenue;
       stats.ticketsSold = Number(r.rows[0].tickets_sold) || 0;
     }
     const e = await query(
-      'SELECT COUNT(*) AS c FROM "Event"'
+      isSuperAdmin
+        ? 'SELECT COUNT(*) AS c FROM "Event"'
+        : 'SELECT COUNT(*) AS c FROM "Event" WHERE "createdBy" = $1',
+      isSuperAdmin ? [] : [userId]
     ).catch(() => ({ rows: [{ c: 0 }] }));
     stats.totalEvents = Number(e.rows?.[0]?.c) || 0;
     stats.activeEvents = stats.totalEvents;
@@ -78,10 +86,16 @@ export async function deleteAdmin(req, res) {
 /** GET /api/admin/sales */
 export async function getSales(req, res) {
   try {
+    const isSuperAdmin = req.userRole === 'superadmin';
+    const userId = req.userId;
+
     const result = await query(
       `SELECT o."id", o."fullName", o."email", o."totalAmount", o."status", o."createdAt", e."title" AS "event_title"
-       FROM "Order" o LEFT JOIN "Event" e ON e."id" = o."eventId"
-       ORDER BY o."createdAt" DESC LIMIT 100`
+       FROM "Order" o
+       LEFT JOIN "Event" e ON e."id" = o."eventId"
+       ${isSuperAdmin ? '' : 'WHERE e."createdBy" = $1'}
+       ORDER BY o."createdAt" DESC LIMIT 100`,
+      isSuperAdmin ? [] : [userId]
     ).catch(() => ({ rows: [] }));
     const list = (result.rows || []).map((r) => ({
       id: r.id,
@@ -102,8 +116,14 @@ export async function getSales(req, res) {
 /** GET /api/admin/events */
 export async function listAdminEvents(req, res) {
   try {
+    const isSuperAdmin = req.userRole === 'superadmin';
+    const userId = req.userId;
+
     const result = await query(
-      'SELECT "id", "title", "date", "location", "isPublished" FROM "Event" ORDER BY "date" DESC'
+      isSuperAdmin
+        ? 'SELECT "id", "title", "date", "location", "isPublished" FROM "Event" ORDER BY "date" DESC'
+        : 'SELECT "id", "title", "date", "location", "isPublished" FROM "Event" WHERE "createdBy" = $1 ORDER BY "date" DESC',
+      isSuperAdmin ? [] : [userId]
     ).catch(() => ({ rows: [] }));
     return res.json(result.rows || []);
   } catch {
@@ -115,9 +135,18 @@ export async function listAdminEvents(req, res) {
 /** GET /api/admin/events/:eventId/orders */
 export async function getEventOrders(req, res) {
   try {
+    const isSuperAdmin = req.userRole === 'superadmin';
+    const userId = req.userId;
+
     const result = await query(
-      'SELECT * FROM "Order" WHERE "eventId" = $1 ORDER BY "createdAt" DESC',
-      [req.params.eventId]
+      isSuperAdmin
+        ? 'SELECT o.* FROM "Order" o WHERE o."eventId" = $1 ORDER BY o."createdAt" DESC'
+        : `SELECT o.*
+           FROM "Order" o
+           JOIN "Event" e ON e."id" = o."eventId"
+           WHERE o."eventId" = $1 AND e."createdBy" = $2
+           ORDER BY o."createdAt" DESC`,
+      isSuperAdmin ? [req.params.eventId] : [req.params.eventId, userId]
     ).catch(() => ({ rows: [] }));
     return res.json(result.rows || []);
   } catch {
