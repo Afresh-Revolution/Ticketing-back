@@ -191,23 +191,101 @@ export async function getSales(req, res) {
     }));
     return res.json(list);
   } catch (err) {
-    console.error('getSales', err);
+    console.error('getWithdrawPage', err);
+    return res.status(500).json({
+      kpi: { totalGross: 0, availableToWithdraw: 0, totalFees: 0 },
+      events: [],
+      withdrawals: [],
+      bankAccount: null,
+      isSuperAdmin: req.userRole === 'superadmin',
+    });
+  }
+}
+
+/** POST /api/admin/withdraw - body: eventId (optional) */
+/** POST /api/admin/withdraw/:eventId */
+export async function listWithdrawals(req, res) {
+  try {
+    const result = await query(
+      'SELECT * FROM "Withdrawal" WHERE "userId" = $1 ORDER BY "createdAt" DESC',
+      [req.userId]
+    ).catch(() => ({ rows: [] }));
+    return res.json(result.rows || []);
+  } catch {
     return res.json([]);
   }
 }
 
-// --- Super-admin-only and shared admin ---
+export async function createWithdrawal(req, res) {
+  try {
+    const eventId = req.params.eventId;
+    if (!eventId) return res.status(400).json({ error: 'eventId required' });
+    const result = await query(
+      `INSERT INTO "Withdrawal" ("userId", "eventId", "amount", "status") VALUES ($1, $2, 0, 'pending') RETURNING "id"`,
+      [req.userId, eventId]
+    ).catch(() => ({ rows: [] }));
+    if (!result.rows?.length) return res.status(501).json({ error: 'Withdrawals not configured' });
+    return res.status(201).json(result.rows[0]);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed' });
+  }
+}
 
-/** GET /api/admin/password-change-status – any authenticated admin. */
+/** GET /api/admin/top-users */
+export async function listTopUsers(req, res) {
+  try {
+    const result = await query(
+      'SELECT "id", "name", "title", "imageUrl", "sortOrder" FROM "TopUser" ORDER BY "sortOrder"'
+    ).catch(() => ({ rows: [] }));
+    return res.json(result.rows || []);
+  } catch {
+    return res.json([]);
+  }
+}
+
+/** POST /api/admin/top-users, PATCH/DELETE /api/admin/top-users/:id */
+export async function createTopUser(req, res) {
+  try {
+    const { name, title, imageUrl, sortOrder } = req.body || {};
+    const result = await query(
+      'INSERT INTO "TopUser" ("name", "title", "imageUrl", "sortOrder") VALUES ($1, $2, $3, $4) RETURNING "id"',
+      [name || '', title || '', imageUrl || null, sortOrder ?? 0]
+    ).catch(() => ({ rows: [] }));
+    if (!result.rows?.length) return res.status(501).json({ error: 'TopUser table not configured' });
+    return res.status(201).json(result.rows[0]);
+  } catch {
+    return res.status(500).json({ error: 'Failed' });
+  }
+}
+
+export async function updateTopUser(req, res) {
+  try {
+    const { name, title, imageUrl, sortOrder } = req.body || {};
+    await query(
+      'UPDATE "TopUser" SET "name" = COALESCE($1, "name"), "title" = COALESCE($2, "title"), "imageUrl" = COALESCE($3, "imageUrl"), "sortOrder" = COALESCE($4, "sortOrder") WHERE "id" = $5',
+      [name, title, imageUrl, sortOrder, req.params.id]
+    ).catch(() => ({}));
+    return res.json({ message: 'Updated' });
+  } catch {
+    return res.status(404).json({ error: 'Not found' });
+  }
+}
+
+export async function deleteTopUser(req, res) {
+  try {
+    await query('DELETE FROM "TopUser" WHERE "id" = $1', [req.params.id]);
+    return res.json({ message: 'Deleted' });
+  } catch {
+    return res.status(404).json({ error: 'Not found' });
+  }
+}
+
+/** GET /api/admin/password-change-status */
 export async function getPasswordChangeStatus(req, res) {
   try {
-    const userId = req.user?.id;
-    if (userId == null || userId === 0 || userId === '0') {
-      return res.json({ canChange: true, nextChangeAllowedAt: null });
-    }
     const result = await query(
       'SELECT "lastPasswordChangeAt" FROM "User" WHERE "id" = $1',
-      [userId]
+      [req.userId]
     ).catch(() => ({ rows: [] }));
     const last = result.rows?.[0]?.lastPasswordChangeAt;
     const nextAllowed = last ? new Date(new Date(last).getTime() + 30 * 24 * 60 * 60 * 1000) : null;
@@ -221,128 +299,43 @@ export async function getPasswordChangeStatus(req, res) {
   }
 }
 
-/** GET /api/admin/admins – super admin only; list users with role admin or superadmin. */
-export async function listAdmins(req, res) {
+/** POST /api/admin/verify-password */
+export async function verifyPassword(req, res) {
   try {
+    const { currentPassword } = req.body || {};
     const result = await query(
-      `SELECT "id", "email", "name", "role", "emailVerified", "createdAt", "updatedAt"
-       FROM "User"
-       WHERE "role" IN ('admin', 'superadmin')
-       ORDER BY "id"`,
-      []
-    ).catch(() => ({ rows: [] }));
-    const list = (result.rows || []).map((row) => ({
-      id: String(row.id),
-      email: row.email,
-      name: row.name,
-      role: row.role || 'admin',
-      emailVerified: !!row.emailVerified,
-      createdAt: row.createdAt ?? null,
-      updatedAt: row.updatedAt ?? null,
-    }));
-    return res.json(list);
-  } catch (err) {
-    console.error('listAdmins', err);
-    return res.json([]);
-  }
-}
-
-/** DELETE /api/admin/admins/:id – super admin only; do not delete super admins. */
-export async function deleteAdmin(req, res) {
-  try {
-    const id = req.params.id;
-    if (id === '0' || id === 0) {
-      return res.status(403).json({ error: 'Cannot delete super admin.' });
-    }
-    await query('DELETE FROM "User" WHERE "id" = $1 AND "role" = \'admin\'', [id]).catch(() => ({}));
-    return res.json({ message: 'Deleted' });
+      'SELECT "passwordHash" FROM "User" WHERE "id" = $1',
+      [req.userId]
+    );
+    if (!result.rows?.length) return res.status(401).json({ error: 'Invalid password' });
+    const valid = await bcrypt.compare(currentPassword, result.rows[0].passwordHash);
+    if (!valid) return res.status(401).json({ error: 'Invalid current password' });
+    return res.json({ verified: true });
   } catch {
-    return res.status(404).json({ error: 'Not found' });
+    return res.status(401).json({ error: 'Invalid password' });
   }
 }
 
-/** GET /api/admin/top-users – super admin only. */
-export async function listTopUsers(req, res) {
+/** POST /api/admin/change-password */
+export async function changePassword(req, res) {
   try {
+    const { currentPassword, newPassword, confirmPassword } = req.body || {};
+    if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    if (newPassword !== confirmPassword) return res.status(400).json({ error: 'Passwords do not match' });
     const result = await query(
-      `SELECT "id", "name", "title", "imageUrl", "sortOrder"
-       FROM "TopUser"
-       ORDER BY "sortOrder" ASC NULLS LAST, "id" ASC`,
-      []
-    ).catch(() => ({ rows: [] }));
-    const list = (result.rows || []).map((row) => ({
-      id: String(row.id),
-      name: row.name || '',
-      title: row.title || '',
-      imageUrl: row.imageUrl ?? null,
-      sortOrder: row.sortOrder ?? 0,
-    }));
-    return res.json(list);
+      'SELECT "passwordHash" FROM "User" WHERE "id" = $1',
+      [req.userId]
+    );
+    if (!result.rows?.length) return res.status(401).json({ error: 'Invalid password' });
+    const valid = await bcrypt.compare(currentPassword, result.rows[0].passwordHash);
+    if (!valid) return res.status(401).json({ error: 'Invalid current password' });
+    const hash = await bcrypt.hash(newPassword, 10);
+    await query(
+      'UPDATE "User" SET "passwordHash" = $1, "updatedAt" = NOW() WHERE "id" = $2',
+      [hash, req.userId]
+    );
+    return res.json({ success: true, message: 'Password updated' });
   } catch (err) {
-    console.error('listTopUsers', err);
-    return res.json([]);
-  }
-}
-
-/** POST /api/admin/top-users – super admin only. */
-export async function createTopUser(req, res) {
-  try {
-    const { name, title, imageUrl, sortOrder } = req.body || {};
-    const result = await query(
-      `INSERT INTO "TopUser" ("name", "title", "imageUrl", "sortOrder")
-       VALUES ($1, $2, $3, $4)
-       RETURNING "id", "name", "title", "imageUrl", "sortOrder"`,
-      [name ?? '', title ?? '', imageUrl ?? null, sortOrder ?? 0]
-    ).catch((e) => {
-      if (e.code === '42P01') return { rows: [] };
-      throw e;
-    });
-    if (!result.rows?.length) {
-      return res.status(501).json({ error: 'TopUser table not configured' });
-    }
-    const row = result.rows[0];
-    return res.status(201).json({
-      id: String(row.id),
-      name: row.name || '',
-      title: row.title || '',
-      imageUrl: row.imageUrl ?? null,
-      sortOrder: row.sortOrder ?? 0,
-    });
-  } catch (err) {
-    console.error('createTopUser', err);
     return res.status(500).json({ error: err.message || 'Failed' });
-  }
-}
-
-/** PATCH /api/admin/top-users/:id – super admin only. */
-export async function updateTopUser(req, res) {
-  try {
-    const { id } = req.params;
-    const { name, title, imageUrl } = req.body || {};
-    const result = await query(
-      `UPDATE "TopUser"
-       SET "name" = COALESCE($1, "name"),
-           "title" = COALESCE($2, "title"),
-           "imageUrl" = COALESCE($3, "imageUrl")
-       WHERE "id" = $4
-       RETURNING "id"`,
-      [name, title, imageUrl, id]
-    ).catch(() => ({ rows: [] }));
-    if (!result.rows?.length) return res.status(404).json({ error: 'Not found' });
-    return res.json({ message: 'Updated' });
-  } catch (err) {
-    console.error('updateTopUser', err);
-    return res.status(500).json({ error: 'Failed' });
-  }
-}
-
-/** DELETE /api/admin/top-users/:id – super admin only. */
-export async function deleteTopUser(req, res) {
-  try {
-    const { id } = req.params;
-    await query('DELETE FROM "TopUser" WHERE "id" = $1', [id]).catch(() => ({}));
-    return res.json({ message: 'Deleted' });
-  } catch {
-    return res.status(404).json({ error: 'Not found' });
   }
 }
