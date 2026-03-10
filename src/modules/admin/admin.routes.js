@@ -1,11 +1,8 @@
 import { Router } from 'express';
-import { authMiddleware } from '../../shared/middleware/authMiddleware.js';
-import { Router } from 'express';
-import { authMiddleware } from '../../shared/middleware/authMiddleware.js';
 import * as adminController from './admin.controller.js';
 import { requireAuth } from '../../middleware/auth.js';
 
-const router = express.Router();
+const router = Router();
 
 router.get('/dashboard', requireAuth, adminController.getDashboard);
 router.get('/admins', requireAuth, adminController.listAdmins);
