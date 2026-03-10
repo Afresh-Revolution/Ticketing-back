@@ -1,6 +1,3 @@
--- Schema reference: Order, OrderItem, and ticket count per order
--- Used for admin dashboard "Recent sales" and any reporting that needs tickets bought per order.
-
 -- Order: one per purchase (one per user/checkout per event).
 -- Columns used in admin recent sales: id, eventId, fullName, email, totalAmount, status, createdAt.
 CREATE TABLE IF NOT EXISTS "Order" (

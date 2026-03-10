@@ -24,7 +24,11 @@ export function requireAuth(req, res, next) {
   const auth = req.headers.authorization;
   const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
   if (!token) {
-    return res.status(401).json({ error: 'Unauthorized' });
+    return res.status(401).json({
+      error: 'Unauthorized',
+      code: 'AUTH_REQUIRED',
+      message: 'Send Authorization: Bearer <token> to access this endpoint.',
+    });
   }
   // Frontend superadmin login uses a special token; accept it so admin endpoints work
   if (token.startsWith('superadmin-token-')) {
@@ -38,7 +42,11 @@ export function requireAuth(req, res, next) {
     req.userRole = payload.role || 'admin';
     next();
   } catch {
-    return res.status(401).json({ error: 'Invalid or expired token' });
+    return res.status(401).json({
+      error: 'Invalid or expired token',
+      code: 'TOKEN_INVALID',
+      message: 'Your session may have expired. Please sign in again.',
+    });
   }
 }
 
