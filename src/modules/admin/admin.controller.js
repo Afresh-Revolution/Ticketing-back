@@ -1,12 +1,18 @@
-import bcrypt from 'bcryptjs';
 import { query } from '../../shared/config/db.js';
-import { config } from '../../shared/config/env.js';
 
-/** GET /api/admin/dashboard */
+/** True if current user is super admin (sees all events in Supabase). */
+function isSuperAdmin(req) {
+  if (!req.user) return false;
+  const role = (req.user.role || '').toLowerCase();
+  const id = req.user.id;
+  return role === 'superadmin' || id === 0 || id === '0';
+}
+
+/** GET /api/admin/dashboard – stats and recent sales from Supabase; super admin sees all, others only their events. */
 export async function getDashboard(req, res) {
   try {
-    const isSuperAdmin = req.userRole === 'superadmin';
-    const userId = req.userId;
+    const superAdmin = isSuperAdmin(req);
+    const userId = req.user?.id;
 
     const stats = {
       totalRevenue: 0,
@@ -16,26 +22,34 @@ export async function getDashboard(req, res) {
       activeEvents: 0,
     };
     const recentSales = [];
-    const r = await query(
-      `SELECT COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS ticket_rev,
-              COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN 1 ELSE 0 END), 0) AS tickets_sold
-       FROM "Order" o
-       JOIN "Event" e ON e."id" = o."eventId"
-       ${isSuperAdmin ? '' : 'WHERE e."createdBy" = $1'}`
-    , isSuperAdmin ? [] : [userId]).catch(() => ({ rows: [{ ticket_rev: 0, tickets_sold: 0 }] }));
-    if (r.rows && r.rows[0]) {
+
+    // Revenue/sales: join Order -> Event; super admin sees all, others only their events (createdBy = userId)
+    const revSql = superAdmin
+      ? `SELECT COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS ticket_rev,
+                COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN 1 ELSE 0 END), 0) AS tickets_sold
+         FROM "Order" o
+         LEFT JOIN "Event" e ON e.id = o."eventId"`
+      : `SELECT COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS ticket_rev,
+                COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN 1 ELSE 0 END), 0) AS tickets_sold
+         FROM "Order" o
+         INNER JOIN "Event" e ON e.id = o."eventId" AND (e."createdBy" = $1 OR (e."createdBy" IS NULL AND ($1 = 0 OR $1 = '0')))`;
+    const revParams = superAdmin ? [] : [userId];
+    const r = await query(revSql, revParams).catch(() => ({ rows: [{ ticket_rev: 0, tickets_sold: 0 }] }));
+    if (r.rows?.[0]) {
       stats.ticketRevenue = Number(r.rows[0].ticket_rev) || 0;
       stats.totalRevenue = stats.ticketRevenue;
       stats.ticketsSold = Number(r.rows[0].tickets_sold) || 0;
     }
-    const e = await query(
-      isSuperAdmin
-        ? 'SELECT COUNT(*) AS c FROM "Event"'
-        : 'SELECT COUNT(*) AS c FROM "Event" WHERE "createdBy" = $1',
-      isSuperAdmin ? [] : [userId]
-    ).catch(() => ({ rows: [{ c: 0 }] }));
+
+    // Event counts: all for super admin, else only events created by this admin (or createdBy IS NULL = super admin’s)
+    const countSql = superAdmin
+      ? 'SELECT COUNT(*) AS c FROM "Event"'
+      : 'SELECT COUNT(*) AS c FROM "Event" WHERE "createdBy" = $1 OR ("createdBy" IS NULL AND ($1 = 0 OR $1 = \'0\'))';
+    const countParams = superAdmin ? [] : [userId];
+    const e = await query(countSql, countParams).catch(() => ({ rows: [{ c: 0 }] }));
     stats.totalEvents = Number(e.rows?.[0]?.c) || 0;
     stats.activeEvents = stats.totalEvents;
+
     return res.json({ stats, recentSales });
   } catch (err) {
     console.error('getDashboard', err);
@@ -52,103 +66,60 @@ export async function getDashboard(req, res) {
   }
 }
 
-/** GET /api/admin/admins */
-export async function listAdmins(req, res) {
-  try {
-    const result = await query(
-      'SELECT "id", "email", "name", "role", "emailVerified", "createdAt", "updatedAt" FROM "User" WHERE "role" IN (\'admin\', \'superadmin\') ORDER BY "id"'
-    ).catch(() => ({ rows: [] }));
-    const list = (result.rows || []).map((row) => ({
-      id: row.id,
-      email: row.email,
-      name: row.name,
-      role: row.role,
-      emailVerified: !!row.emailVerified,
-      createdAt: row.createdAt != null ? row.createdAt : null,
-      updatedAt: row.updatedAt != null ? row.updatedAt : null,
-    }));
-    return res.json(list);
-  } catch {
-    return res.json([]);
-  }
-}
-
-/** DELETE /api/admin/admins/:id */
-export async function deleteAdmin(req, res) {
-  try {
-    await query('DELETE FROM "User" WHERE "id" = $1 AND "role" = \'admin\'', [req.params.id]);
-    return res.json({ message: 'Deleted' });
-  } catch {
-    return res.status(404).json({ error: 'Not found' });
-  }
-}
-
-/** GET /api/admin/sales */
-export async function getSales(req, res) {
-  try {
-    const isSuperAdmin = req.userRole === 'superadmin';
-    const userId = req.userId;
-
-    const result = await query(
-      `SELECT o."id", o."fullName", o."email", o."totalAmount", o."status", o."createdAt", e."title" AS "event_title"
-       FROM "Order" o
-       LEFT JOIN "Event" e ON e."id" = o."eventId"
-       ${isSuperAdmin ? '' : 'WHERE e."createdBy" = $1'}
-       ORDER BY o."createdAt" DESC LIMIT 100`,
-      isSuperAdmin ? [] : [userId]
-    ).catch(() => ({ rows: [] }));
-    const list = (result.rows || []).map((r) => ({
-      id: r.id,
-      buyer_name: r.fullName,
-      buyer_email: r.email,
-      amount: r.totalAmount,
-      ticket_count: 1,
-      status: r.status,
-      created_at: r.createdAt,
-      event_title: r.event_title,
-    }));
-    return res.json(list);
-  } catch {
-    return res.json([]);
-  }
-}
-
-/** GET /api/admin/events */
+/** GET /api/admin/events – list events from Supabase; super admin sees all, others only their own. */
 export async function listAdminEvents(req, res) {
   try {
-    const isSuperAdmin = req.userRole === 'superadmin';
-    const userId = req.userId;
+    const superAdmin = isSuperAdmin(req);
+    const userId = req.user?.id;
 
-    const result = await query(
-      isSuperAdmin
-        ? 'SELECT "id", "title", "date", "location", "isPublished" FROM "Event" ORDER BY "date" DESC'
-        : 'SELECT "id", "title", "date", "location", "isPublished" FROM "Event" WHERE "createdBy" = $1 ORDER BY "date" DESC',
-      isSuperAdmin ? [] : [userId]
-    ).catch(() => ({ rows: [] }));
-    return res.json(result.rows || []);
-  } catch {
+    const sql = superAdmin
+      ? `SELECT id, title, date, location, venue, "imageUrl", "isPublished", "isTrending", price, "createdBy"
+         FROM "Event"
+         ORDER BY date DESC NULLS LAST`
+      : `SELECT id, title, date, location, venue, "imageUrl", "isPublished", "isTrending", price, "createdBy"
+         FROM "Event"
+         WHERE "createdBy" = $1 OR ("createdBy" IS NULL AND ($1 = 0 OR $1 = '0'))
+         ORDER BY date DESC NULLS LAST`;
+    const params = superAdmin ? [] : [userId];
+    const result = await query(sql, params).catch(() => ({ rows: [] }));
+    const rows = result.rows || [];
+    const list = rows.map((row) => ({
+      id: String(row.id),
+      title: row.title,
+      date: row.date,
+      location: row.location || row.venue,
+      isPublished: row.isPublished,
+      isTrending: row.isTrending,
+      price: row.price,
+      createdBy: row.createdBy,
+    }));
+    return res.json(list);
+  } catch (err) {
+    console.error('listAdminEvents', err);
     return res.json([]);
   }
 }
 
-/** GET /api/admin/events/:eventId - single event (only owner or superadmin) */
+/** GET /api/admin/events/:eventId – single event; 404 if not owner (unless super admin). */
 export async function getAdminEvent(req, res) {
   try {
-    const isSuperAdmin = req.userRole === 'superadmin';
-    const userId = req.userId;
-    const result = await query(
-      isSuperAdmin
-        ? 'SELECT * FROM "Event" WHERE "id" = $1'
-        : 'SELECT * FROM "Event" WHERE "id" = $1 AND "createdBy" = $2',
-      isSuperAdmin ? [req.params.eventId] : [req.params.eventId, userId]
-    ).catch(() => ({ rows: [] }));
+    const superAdmin = isSuperAdmin(req);
+    const userId = req.user?.id;
+    const eventId = req.params.eventId;
+
+    const sql = superAdmin
+      ? 'SELECT * FROM "Event" WHERE id = $1'
+      : 'SELECT * FROM "Event" WHERE id = $1 AND ("createdBy" = $2 OR ("createdBy" IS NULL AND ($2 = 0 OR $2 = \'0\')))';
+    const params = superAdmin ? [eventId] : [eventId, userId];
+    const result = await query(sql, params).catch(() => ({ rows: [] }));
     if (!result.rows?.length) return res.status(404).json({ error: 'Event not found' });
     const row = result.rows[0];
     return res.json({
       id: String(row.id),
       title: row.title,
       date: row.date,
-      location: row.location,
+      location: row.location || row.venue,
+      venue: row.venue,
       price: row.price,
       imageUrl: row.imageUrl,
       startTime: row.startTime,
@@ -163,297 +134,80 @@ export async function getAdminEvent(req, res) {
   }
 }
 
-/** GET /api/admin/events/:eventId/orders */
+/** GET /api/admin/events/:eventId/orders – orders for an event; only if user owns event or is super admin. */
 export async function getEventOrders(req, res) {
   try {
-    const isSuperAdmin = req.userRole === 'superadmin';
-    const userId = req.userId;
-
-    const result = await query(
-      isSuperAdmin
-        ? 'SELECT o.* FROM "Order" o WHERE o."eventId" = $1 ORDER BY o."createdAt" DESC'
-        : `SELECT o.*
-           FROM "Order" o
-           JOIN "Event" e ON e."id" = o."eventId"
-           WHERE o."eventId" = $1 AND e."createdBy" = $2
-           ORDER BY o."createdAt" DESC`,
-      isSuperAdmin ? [req.params.eventId] : [req.params.eventId, userId]
-    ).catch(() => ({ rows: [] }));
-    return res.json(result.rows || []);
-  } catch {
-    return res.json([]);
-  }
-}
-
-/** POST /api/admin/verify-ticket */
-export async function verifyTicket(req, res) {
-  try {
-    const { orderId, code } = req.body || {};
-    if (!orderId) return res.status(400).json({ error: 'orderId required' });
-    const result = await query(
-      'SELECT "id", "status" FROM "Order" WHERE "id" = $1',
-      [orderId]
-    ).catch(() => ({ rows: [] }));
-    if (!result.rows?.length) return res.status(404).json({ error: 'Ticket not found' });
-    const order = result.rows[0];
-    return res.json({ valid: order.status === 'paid', orderId: order.id });
-  } catch {
-    return res.status(400).json({ error: 'Invalid ticket' });
-  }
-}
-
-/** GET /api/admin/banks */
-export async function getBanks(req, res) {
-  try {
-    if (config.paystackSecretKey) {
-      const r = await fetch('https://api.paystack.co/bank?currency=NGN&perPage=100', {
-        headers: { Authorization: `Bearer ${config.paystackSecretKey}` },
-      });
-      const d = await r.json();
-      if (d.data) return res.json(d.data);
-    }
-    return res.json([]);
-  } catch {
-    return res.json([]);
-  }
-}
-
-/** GET/POST /api/admin/bank-account */
-export async function getBankAccount(req, res) {
-  try {
-    const result = await query(
-      'SELECT "accountNumber", "bankCode", "accountName", "bankName", "recipientCode" FROM "BankAccount" WHERE "userId" = $1',
-      [req.userId]
-    ).catch(() => ({ rows: [] }));
-    if (result.rows?.[0]) return res.json(result.rows[0]);
-    return res.json(null);
-  } catch {
-    return res.json(null);
-  }
-}
-
-export async function saveBankAccount(req, res) {
-  try {
-    const { accountNumber, bankCode, accountName, bankName } = req.body || {};
-    if (!accountNumber || !bankCode) return res.status(400).json({ error: 'accountNumber and bankCode required' });
-    await query(
-      `INSERT INTO "BankAccount" ("userId", "accountNumber", "bankCode", "accountName", "bankName", "recipientCode")
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT ("userId") DO UPDATE SET "accountNumber" = $2, "bankCode" = $3, "accountName" = $4, "bankName" = $5, "recipientCode" = $6`,
-      [req.userId, accountNumber, bankCode, accountName || '', bankName || '', req.body?.recipientCode || '']
-    ).catch(() => ({}));
-    return res.json({ message: 'Saved' });
-  } catch (err) {
-    return res.status(500).json({ error: err.message || 'Failed' });
-  }
-}
-
-/** GET /api/admin/withdraw – full withdraw page payload (kpi, events, withdrawals, bankAccount, isSuperAdmin) */
-export async function getWithdrawPage(req, res) {
-  try {
-    const isSuperAdmin = req.userRole === 'superadmin';
-    const userId = req.userId;
-
-    const kpi = { totalGross: 0, availableToWithdraw: 0, totalFees: 0 };
-
-    const revResult = await query(
-      `SELECT COALESCE(SUM(o."totalAmount"), 0) AS total
-       FROM "Order" o
-       JOIN "Event" e ON e."id" = o."eventId"
-       WHERE o."status" = 'paid' ${!isSuperAdmin ? 'AND e."createdBy" = $1' : ''}`,
-      isSuperAdmin ? [] : [userId]
-    ).catch(() => ({ rows: [{ total: 0 }] }));
-    kpi.totalGross = Number(revResult.rows?.[0]?.total) || 0;
-    kpi.totalFees = Math.round(kpi.totalGross * 0.15);
-    kpi.availableToWithdraw = kpi.totalGross - kpi.totalFees;
-
-    const eventsSql = isSuperAdmin
-      ? `
-      SELECT e."id", e."title", e."date", e."imageUrl", e."createdBy",
-             COALESCE(rev.gross, 0) AS "gross_revenue",
-             NULL::varchar AS "withdrawal_status", NULL::integer AS "withdrawn_net", NULL::timestamptz AS "withdrawn_at"
-      FROM "Event" e
-      LEFT JOIN (
-        SELECT o."eventId", SUM(o."totalAmount") AS gross
-        FROM "Order" o WHERE o."status" = 'paid'
-        GROUP BY o."eventId"
-      ) rev ON rev."eventId" = e."id"
-      ORDER BY e."date" DESC
-    `
-      : `
-      SELECT e."id", e."title", e."date", e."imageUrl", e."createdBy",
-             COALESCE(rev.gross, 0) AS "gross_revenue",
-             w."status" AS "withdrawal_status", w."amount" AS "withdrawn_net", w."createdAt" AS "withdrawn_at"
-      FROM "Event" e
-      LEFT JOIN (
-        SELECT o."eventId", SUM(o."totalAmount") AS gross
-        FROM "Order" o WHERE o."status" = 'paid'
-        GROUP BY o."eventId"
-      ) rev ON rev."eventId" = e."id"
-      LEFT JOIN LATERAL (
-        SELECT "status", "amount", "createdAt"
-        FROM "Withdrawal" WHERE "eventId" = e."id" AND "userId" = $1
-        ORDER BY "createdAt" DESC LIMIT 1
-      ) w ON true
-      WHERE e."createdBy" = $2
-      ORDER BY e."date" DESC
-    `;
-    const eventsResult = await query(
-      eventsSql,
-      isSuperAdmin ? [] : [userId, userId]
-    ).catch(() => ({ rows: [] }));
-    const events = (eventsResult.rows || []).map((r) => ({
-      id: String(r.id),
-      title: r.title || '',
-      date: r.date || '',
-      imageUrl: r.imageUrl || null,
-      createdBy: r.createdBy != null ? String(r.createdBy) : null,
-      gross_revenue: Number(r.gross_revenue) || 0,
-      withdrawal_status: r.withdrawal_status || null,
-      withdrawn_net: r.withdrawn_net != null ? Number(r.withdrawn_net) : null,
-      withdrawn_at: r.withdrawn_at || null,
-    }));
-
-    const withResult = await query(
-      'SELECT * FROM "Withdrawal" WHERE "userId" = $1 ORDER BY "createdAt" DESC',
-      [userId]
-    ).catch(() => ({ rows: [] }));
-    const withdrawals = (withResult.rows || []).map((w) => ({
-      id: String(w.id),
-      eventId: String(w.eventId),
-      adminId: String(w.userId),
-      grossAmount: 0,
-      platformFee: 0,
-      netAmount: w.amount || 0,
-      status: w.status || 'pending',
-      paystackReference: null,
-      createdAt: w.createdAt,
-      event_title: '',
-      admin_name: null,
-      admin_email: null,
-    }));
-
-    let bankAccount = null;
-    if (userId != null && userId !== 0) {
-      const ba = await query(
-        'SELECT "id", "accountNumber", "bankCode", "accountName", "bankName" FROM "BankAccount" WHERE "userId" = $1',
-        [userId]
-      ).catch(() => ({ rows: [] }));
-      if (ba.rows?.[0]) {
-        const row = ba.rows[0];
-        bankAccount = {
-          id: String(row.id),
-          accountName: row.accountName || '',
-          accountNumber: row.accountNumber || '',
-          bankCode: row.bankCode || '',
-          bankName: row.bankName || '',
-        };
-      }
-    }
-
-    return res.json({
-      kpi,
-      events,
-      withdrawals,
-      bankAccount,
-      isSuperAdmin,
-    });
-  } catch (err) {
-    console.error('getWithdrawPage', err);
-    return res.status(500).json({
-      kpi: { totalGross: 0, availableToWithdraw: 0, totalFees: 0 },
-      events: [],
-      withdrawals: [],
-      bankAccount: null,
-      isSuperAdmin: req.userRole === 'superadmin',
-    });
-  }
-}
-
-/** POST /api/admin/withdraw - body: eventId (optional) */
-/** POST /api/admin/withdraw/:eventId */
-export async function listWithdrawals(req, res) {
-  try {
-    const result = await query(
-      'SELECT * FROM "Withdrawal" WHERE "userId" = $1 ORDER BY "createdAt" DESC',
-      [req.userId]
-    ).catch(() => ({ rows: [] }));
-    return res.json(result.rows || []);
-  } catch {
-    return res.json([]);
-  }
-}
-
-export async function createWithdrawal(req, res) {
-  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = req.user?.id;
     const eventId = req.params.eventId;
-    if (!eventId) return res.status(400).json({ error: 'eventId required' });
-    const result = await query(
-      `INSERT INTO "Withdrawal" ("userId", "eventId", "amount", "status") VALUES ($1, $2, 0, 'pending') RETURNING "id"`,
-      [req.userId, eventId]
-    ).catch(() => ({ rows: [] }));
-    if (!result.rows?.length) return res.status(501).json({ error: 'Withdrawals not configured' });
-    return res.status(201).json(result.rows[0]);
-  } catch (err) {
-    return res.status(500).json({ error: err.message || 'Failed' });
-  }
-}
 
-/** GET /api/admin/top-users */
-export async function listTopUsers(req, res) {
-  try {
+    const checkSql = superAdmin
+      ? 'SELECT id FROM "Event" WHERE id = $1'
+      : 'SELECT id FROM "Event" WHERE id = $1 AND ("createdBy" = $2 OR ("createdBy" IS NULL AND ($2 = 0 OR $2 = \'0\')))';
+    const checkParams = superAdmin ? [eventId] : [eventId, userId];
+    const check = await query(checkSql, checkParams).catch(() => ({ rows: [] }));
+    if (!check.rows?.length) return res.status(404).json({ error: 'Event not found' });
+
     const result = await query(
-      'SELECT "id", "name", "title", "imageUrl", "sortOrder" FROM "TopUser" ORDER BY "sortOrder"'
+      'SELECT * FROM "Order" WHERE "eventId" = $1 ORDER BY "createdAt" DESC',
+      [eventId]
     ).catch(() => ({ rows: [] }));
     return res.json(result.rows || []);
-  } catch {
+  } catch (err) {
+    console.error('getEventOrders', err);
     return res.json([]);
   }
 }
 
-/** POST /api/admin/top-users, PATCH/DELETE /api/admin/top-users/:id */
-export async function createTopUser(req, res) {
+/** GET /api/admin/sales – sales from Supabase; super admin sees all, others only for their events. */
+export async function getSales(req, res) {
   try {
-    const { name, title, imageUrl, sortOrder } = req.body || {};
-    const result = await query(
-      'INSERT INTO "TopUser" ("name", "title", "imageUrl", "sortOrder") VALUES ($1, $2, $3, $4) RETURNING "id"',
-      [name || '', title || '', imageUrl || null, sortOrder ?? 0]
-    ).catch(() => ({ rows: [] }));
-    if (!result.rows?.length) return res.status(501).json({ error: 'TopUser table not configured' });
-    return res.status(201).json(result.rows[0]);
-  } catch {
-    return res.status(500).json({ error: 'Failed' });
+    const superAdmin = isSuperAdmin(req);
+    const userId = req.user?.id;
+
+    const sql = superAdmin
+      ? `SELECT o.id, o."fullName", o.email, o."totalAmount", o."status", o."createdAt", e.title AS event_title
+         FROM "Order" o
+         LEFT JOIN "Event" e ON e.id = o."eventId"
+         ORDER BY o."createdAt" DESC
+         LIMIT 100`
+      : `SELECT o.id, o."fullName", o.email, o."totalAmount", o."status", o."createdAt", e.title AS event_title
+         FROM "Order" o
+         LEFT JOIN "Event" e ON e.id = o."eventId"
+         WHERE e."createdBy" = $1 OR (e."createdBy" IS NULL AND ($1 = 0 OR $1 = '0'))
+         ORDER BY o."createdAt" DESC
+         LIMIT 100`;
+    const params = superAdmin ? [] : [userId];
+    const result = await query(sql, params).catch(() => ({ rows: [] }));
+    const list = (result.rows || []).map((r) => ({
+      id: r.id,
+      buyer_name: r.fullName,
+      buyer_email: r.email,
+      amount: r.totalAmount,
+      ticket_count: 1,
+      status: r.status,
+      created_at: r.createdAt,
+      event_title: r.event_title,
+    }));
+    return res.json(list);
+  } catch (err) {
+    console.error('getSales', err);
+    return res.json([]);
   }
 }
 
-export async function updateTopUser(req, res) {
-  try {
-    const { name, title, imageUrl, sortOrder } = req.body || {};
-    await query(
-      'UPDATE "TopUser" SET "name" = COALESCE($1, "name"), "title" = COALESCE($2, "title"), "imageUrl" = COALESCE($3, "imageUrl"), "sortOrder" = COALESCE($4, "sortOrder") WHERE "id" = $5',
-      [name, title, imageUrl, sortOrder, req.params.id]
-    ).catch(() => ({}));
-    return res.json({ message: 'Updated' });
-  } catch {
-    return res.status(404).json({ error: 'Not found' });
-  }
-}
+// --- Super-admin-only and shared admin ---
 
-export async function deleteTopUser(req, res) {
-  try {
-    await query('DELETE FROM "TopUser" WHERE "id" = $1', [req.params.id]);
-    return res.json({ message: 'Deleted' });
-  } catch {
-    return res.status(404).json({ error: 'Not found' });
-  }
-}
-
-/** GET /api/admin/password-change-status */
+/** GET /api/admin/password-change-status – any authenticated admin. */
 export async function getPasswordChangeStatus(req, res) {
   try {
+    const userId = req.user?.id;
+    if (userId == null || userId === 0 || userId === '0') {
+      return res.json({ canChange: true, nextChangeAllowedAt: null });
+    }
     const result = await query(
       'SELECT "lastPasswordChangeAt" FROM "User" WHERE "id" = $1',
-      [req.userId]
+      [userId]
     ).catch(() => ({ rows: [] }));
     const last = result.rows?.[0]?.lastPasswordChangeAt;
     const nextAllowed = last ? new Date(new Date(last).getTime() + 30 * 24 * 60 * 60 * 1000) : null;
@@ -467,43 +221,128 @@ export async function getPasswordChangeStatus(req, res) {
   }
 }
 
-/** POST /api/admin/verify-password */
-export async function verifyPassword(req, res) {
+/** GET /api/admin/admins – super admin only; list users with role admin or superadmin. */
+export async function listAdmins(req, res) {
   try {
-    const { currentPassword } = req.body || {};
     const result = await query(
-      'SELECT "passwordHash" FROM "User" WHERE "id" = $1',
-      [req.userId]
-    );
-    if (!result.rows?.length) return res.status(401).json({ error: 'Invalid password' });
-    const valid = await bcrypt.compare(currentPassword, result.rows[0].passwordHash);
-    if (!valid) return res.status(401).json({ error: 'Invalid current password' });
-    return res.json({ verified: true });
-  } catch {
-    return res.status(401).json({ error: 'Invalid password' });
+      `SELECT "id", "email", "name", "role", "emailVerified", "createdAt", "updatedAt"
+       FROM "User"
+       WHERE "role" IN ('admin', 'superadmin')
+       ORDER BY "id"`,
+      []
+    ).catch(() => ({ rows: [] }));
+    const list = (result.rows || []).map((row) => ({
+      id: String(row.id),
+      email: row.email,
+      name: row.name,
+      role: row.role || 'admin',
+      emailVerified: !!row.emailVerified,
+      createdAt: row.createdAt ?? null,
+      updatedAt: row.updatedAt ?? null,
+    }));
+    return res.json(list);
+  } catch (err) {
+    console.error('listAdmins', err);
+    return res.json([]);
   }
 }
 
-/** POST /api/admin/change-password */
-export async function changePassword(req, res) {
+/** DELETE /api/admin/admins/:id – super admin only; do not delete super admins. */
+export async function deleteAdmin(req, res) {
   try {
-    const { currentPassword, newPassword, confirmPassword } = req.body || {};
-    if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
-    if (newPassword !== confirmPassword) return res.status(400).json({ error: 'Passwords do not match' });
+    const id = req.params.id;
+    if (id === '0' || id === 0) {
+      return res.status(403).json({ error: 'Cannot delete super admin.' });
+    }
+    await query('DELETE FROM "User" WHERE "id" = $1 AND "role" = \'admin\'', [id]).catch(() => ({}));
+    return res.json({ message: 'Deleted' });
+  } catch {
+    return res.status(404).json({ error: 'Not found' });
+  }
+}
+
+/** GET /api/admin/top-users – super admin only. */
+export async function listTopUsers(req, res) {
+  try {
     const result = await query(
-      'SELECT "passwordHash" FROM "User" WHERE "id" = $1',
-      [req.userId]
-    );
-    if (!result.rows?.length) return res.status(401).json({ error: 'Invalid password' });
-    const valid = await bcrypt.compare(currentPassword, result.rows[0].passwordHash);
-    if (!valid) return res.status(401).json({ error: 'Invalid current password' });
-    const hash = await bcrypt.hash(newPassword, 10);
-    await query(
-      'UPDATE "User" SET "passwordHash" = $1, "updatedAt" = NOW() WHERE "id" = $2',
-      [hash, req.userId]
-    );
-    return res.json({ success: true, message: 'Password updated' });
+      `SELECT "id", "name", "title", "imageUrl", "sortOrder"
+       FROM "TopUser"
+       ORDER BY "sortOrder" ASC NULLS LAST, "id" ASC`,
+      []
+    ).catch(() => ({ rows: [] }));
+    const list = (result.rows || []).map((row) => ({
+      id: String(row.id),
+      name: row.name || '',
+      title: row.title || '',
+      imageUrl: row.imageUrl ?? null,
+      sortOrder: row.sortOrder ?? 0,
+    }));
+    return res.json(list);
   } catch (err) {
+    console.error('listTopUsers', err);
+    return res.json([]);
+  }
+}
+
+/** POST /api/admin/top-users – super admin only. */
+export async function createTopUser(req, res) {
+  try {
+    const { name, title, imageUrl, sortOrder } = req.body || {};
+    const result = await query(
+      `INSERT INTO "TopUser" ("name", "title", "imageUrl", "sortOrder")
+       VALUES ($1, $2, $3, $4)
+       RETURNING "id", "name", "title", "imageUrl", "sortOrder"`,
+      [name ?? '', title ?? '', imageUrl ?? null, sortOrder ?? 0]
+    ).catch((e) => {
+      if (e.code === '42P01') return { rows: [] };
+      throw e;
+    });
+    if (!result.rows?.length) {
+      return res.status(501).json({ error: 'TopUser table not configured' });
+    }
+    const row = result.rows[0];
+    return res.status(201).json({
+      id: String(row.id),
+      name: row.name || '',
+      title: row.title || '',
+      imageUrl: row.imageUrl ?? null,
+      sortOrder: row.sortOrder ?? 0,
+    });
+  } catch (err) {
+    console.error('createTopUser', err);
     return res.status(500).json({ error: err.message || 'Failed' });
+  }
+}
+
+/** PATCH /api/admin/top-users/:id – super admin only. */
+export async function updateTopUser(req, res) {
+  try {
+    const { id } = req.params;
+    const { name, title, imageUrl } = req.body || {};
+    const result = await query(
+      `UPDATE "TopUser"
+       SET "name" = COALESCE($1, "name"),
+           "title" = COALESCE($2, "title"),
+           "imageUrl" = COALESCE($3, "imageUrl")
+       WHERE "id" = $4
+       RETURNING "id"`,
+      [name, title, imageUrl, id]
+    ).catch(() => ({ rows: [] }));
+    if (!result.rows?.length) return res.status(404).json({ error: 'Not found' });
+    return res.json({ message: 'Updated' });
+  } catch (err) {
+    console.error('updateTopUser', err);
+    return res.status(500).json({ error: 'Failed' });
+  }
+}
+
+/** DELETE /api/admin/top-users/:id – super admin only. */
+export async function deleteTopUser(req, res) {
+  try {
+    const { id } = req.params;
+    await query('DELETE FROM "TopUser" WHERE "id" = $1', [id]).catch(() => ({}));
+    return res.json({ message: 'Deleted' });
+  } catch {
+    return res.status(404).json({ error: 'Not found' });
   }
 }
