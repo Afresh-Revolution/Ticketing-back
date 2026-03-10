@@ -56,14 +56,55 @@ export async function getEvent(req, res) {
   }
 }
 
-/** POST /api/events - create event (admin) */
+/** Resolve createdBy: null only for superadmin (id 0). Every other request must have a numeric userId from the token so the event is attributed to that admin. */
+function getCreatedBy(req) {
+  const raw = req.user?.id ?? req.userId;
+  if (raw == null || raw === '') return null;
+  const id = Number(raw);
+  if (Number.isNaN(id)) return null;
+  if (id === 0) return null; // superadmin synthetic id
+  return id;
+}
+
+/** POST /api/events - create event (admin). Event is registered to the creating admin's account. */
 export async function createEvent(req, res) {
   try {
     const body = req.body || {};
+    const createdBy = getCreatedBy(req);
+    const isSuperAdmin = req.userRole === 'superadmin' || req.user?.id === 0 || req.user?.id === '0';
+
+    if (!isSuperAdmin && createdBy == null) {
+      return res.status(401).json({ error: 'Unauthorized: could not determine admin account for this event' });
+    }
+
+    const clientCreatedBy = body.createdBy != null && body.createdBy !== '' ? Number(body.createdBy) : null;
+    if (clientCreatedBy != null && !Number.isNaN(clientCreatedBy) && clientCreatedBy !== 0) {
+      if (isSuperAdmin) {
+        return res.status(400).json({
+          error: 'You are logged in as Super Admin. To create events under your own account, log out and sign in with your admin email and password, then create the event again.',
+          code: 'USE_ADMIN_ACCOUNT',
+        });
+      }
+      if (createdBy !== null && Number(createdBy) !== clientCreatedBy) {
+        return res.status(400).json({
+          error: 'Account mismatch. Please log out and sign in with the admin account you want to create the event for.',
+          code: 'ACCOUNT_MISMATCH',
+        });
+      }
+    }
+
+    const finalCreatedBy = createdBy;
+    if (!isSuperAdmin && (finalCreatedBy == null || Number(finalCreatedBy) === 0)) {
+      return res.status(400).json({
+        error: 'Could not attribute event to your account. Log out and sign in again with your admin email and password, then try creating the event again.',
+        code: 'CREATED_BY_UNKNOWN',
+      });
+    }
+
     const result = await query(
       `INSERT INTO "Event" ("title", "date", "location", "price", "imageUrl", "startTime", "description", "createdBy", "isPublished", "isTrending")
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       RETURNING "id", "title", "date"`,
+       RETURNING "id", "title", "date", "createdBy"`,
       [
         body.title,
         body.date,
@@ -72,7 +113,7 @@ export async function createEvent(req, res) {
         body.imageUrl,
         body.startTime,
         body.description,
-        req.userId,
+        finalCreatedBy,
         body.isPublished ?? true,
         body.isTrending ?? false,
       ]
@@ -90,29 +131,37 @@ export async function createEvent(req, res) {
   }
 }
 
-/** PATCH /api/events/:id - only owner or superadmin can update */
+/** PATCH /api/events/:id – owner can edit; superadmin can only edit their own events (createdBy null), not another admin's. */
 export async function updateEvent(req, res) {
   try {
     const isSuperAdmin = req.userRole === 'superadmin';
     const userId = req.userId;
     const body = req.body || {};
-    const result = await query(
-      isSuperAdmin
-        ? `UPDATE "Event" SET "title" = COALESCE($1, "title"), "date" = COALESCE($2, "date"), "location" = COALESCE($3, "location"),
-           "price" = COALESCE($4, "price"), "imageUrl" = COALESCE($5, "imageUrl"), "startTime" = COALESCE($6, "startTime"),
-           "description" = COALESCE($7, "description"), "updatedAt" = NOW()
-           WHERE "id" = $8 RETURNING "id"`
-        : `UPDATE "Event" SET "title" = COALESCE($1, "title"), "date" = COALESCE($2, "date"), "location" = COALESCE($3, "location"),
-           "price" = COALESCE($4, "price"), "imageUrl" = COALESCE($5, "imageUrl"), "startTime" = COALESCE($6, "startTime"),
-           "description" = COALESCE($7, "description"), "updatedAt" = NOW()
-           WHERE "id" = $8 AND "createdBy" = $9 RETURNING "id"`,
-      isSuperAdmin
-        ? [body.title, body.date, body.location, body.price, body.imageUrl, body.startTime, body.description, req.params.id]
-        : [body.title, body.date, body.location, body.price, body.imageUrl, body.startTime, body.description, req.params.id, userId]
-    ).catch(() => ({ rows: [] }));
-    if (!result.rows || result.rows.length === 0) {
-      return res.status(404).json({ error: 'Event not found' });
+    const eventId = req.params.id;
+
+    const eventRows = await query('SELECT "id", "createdBy" FROM "Event" WHERE "id" = $1', [eventId]).catch(() => ({ rows: [] }));
+    if (!eventRows.rows?.length) return res.status(404).json({ error: 'Event not found' });
+    const event = eventRows.rows[0];
+    const createdBy = event.createdBy;
+
+    if (isSuperAdmin) {
+      if (createdBy != null && Number(createdBy) !== 0) {
+        return res.status(403).json({ error: 'Super admin cannot edit another admin\'s event' });
+      }
+    } else {
+      if (String(createdBy) !== String(userId)) {
+        return res.status(403).json({ error: 'You can only edit events you created' });
+      }
     }
+
+    const result = await query(
+      `UPDATE "Event" SET "title" = COALESCE($1, "title"), "date" = COALESCE($2, "date"), "location" = COALESCE($3, "location"),
+       "price" = COALESCE($4, "price"), "imageUrl" = COALESCE($5, "imageUrl"), "startTime" = COALESCE($6, "startTime"),
+       "description" = COALESCE($7, "description"), "updatedAt" = NOW()
+       WHERE "id" = $8 RETURNING "id"`,
+      [body.title, body.date, body.location, body.price, body.imageUrl, body.startTime, body.description, eventId]
+    ).catch(() => ({ rows: [] }));
+    if (!result.rows || result.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
     return res.json({ message: 'Updated' });
   } catch (err) {
     console.error('updateEvent', err);

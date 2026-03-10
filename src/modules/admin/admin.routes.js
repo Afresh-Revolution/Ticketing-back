@@ -4,6 +4,7 @@ import { requireAuth, requireSuperAdmin } from '../../middleware/auth.js';
 
 const router = Router();
 
+router.get('/me', requireAuth, adminController.getMe);
 router.get('/dashboard', requireAuth, adminController.getDashboard);
 router.get('/admins', requireAuth, requireSuperAdmin, adminController.listAdmins);
 router.delete('/admins/:id', requireAuth, requireSuperAdmin, adminController.deleteAdmin);

@@ -66,6 +66,21 @@ export async function getDashboard(req, res) {
   }
 }
 
+/** GET /api/admin/me – current admin from token (so frontend can use server identity for createdBy). */
+export async function getMe(req, res) {
+  try {
+    const id = req.user?.id ?? req.userId;
+    const role = (req.user?.role || req.userRole || 'admin').toLowerCase();
+    return res.json({
+      id: id === 0 || id === '0' ? 0 : Number(id) || null,
+      role: role === 'superadmin' ? 'superadmin' : 'admin',
+    });
+  } catch (err) {
+    console.error('getMe', err);
+    return res.status(500).json({ error: 'Not found' });
+  }
+}
+
 /** GET /api/admin/admins – list admin users (superadmin only). */
 export async function listAdmins(req, res) {
   try {
@@ -405,11 +420,29 @@ export async function listWithdrawals(req, res) {
   }
 }
 
+/** Withdrawals: admins can only withdraw from events they created; superadmin only from events with createdBy null. */
 export async function createWithdrawal(req, res) {
   try {
     const eventId = req.params.eventId;
     if (!eventId) return res.status(400).json({ error: 'eventId required' });
     const userId = getUserId(req);
+    const superAdmin = isSuperAdmin(req);
+
+    const eventRows = await query('SELECT "id", "createdBy" FROM "Event" WHERE "id" = $1', [eventId]).catch(() => ({ rows: [] }));
+    if (!eventRows.rows?.length) return res.status(404).json({ error: 'Event not found' });
+    const event = eventRows.rows[0];
+    const createdBy = event.createdBy;
+
+    if (superAdmin) {
+      if (createdBy != null && Number(createdBy) !== 0) {
+        return res.status(403).json({ error: 'Super admin can only withdraw from their own events, not another admin\'s' });
+      }
+    } else {
+      if (String(createdBy) !== String(userId)) {
+        return res.status(403).json({ error: 'You can only withdraw from events you created' });
+      }
+    }
+
     const result = await query(
       `INSERT INTO "Withdrawal" ("userId", "eventId", "amount", "status") VALUES ($1, $2, 0, 'pending') RETURNING "id", "amount"`,
       [userId, eventId]
