@@ -34,12 +34,14 @@ export function requireAuth(req, res, next) {
   if (token.startsWith('superadmin-token-')) {
     req.userId = 0;
     req.userRole = 'superadmin';
+    req.user = { id: 0, role: 'superadmin' };
     return next();
   }
   try {
     const payload = jwt.verify(token, config.jwtSecret);
     req.userId = payload.userId;
     req.userRole = payload.role || 'admin';
+    req.user = { id: payload.userId, role: req.userRole };
     next();
   } catch {
     return res.status(401).json({
