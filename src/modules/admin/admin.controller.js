@@ -72,25 +72,29 @@ export async function listAdminEvents(req, res) {
     const superAdmin = isSuperAdmin(req);
     const userId = req.user?.id;
 
+    // Event table columns (match event.model): include isPublished for visibility toggle
     const sql = superAdmin
-      ? `SELECT id, title, date, location, venue, "imageUrl", "isPublished", "isTrending", price, "createdBy"
+      ? `SELECT id, title, date, location, venue, "imageUrl", "isTrending", price, "createdBy", category, "startTime", "isPublished"
          FROM "Event"
          ORDER BY date DESC NULLS LAST`
-      : `SELECT id, title, date, location, venue, "imageUrl", "isPublished", "isTrending", price, "createdBy"
+      : `SELECT id, title, date, location, venue, "imageUrl", "isTrending", price, "createdBy", category, "startTime", "isPublished"
          FROM "Event"
          WHERE "createdBy" = $1 OR ("createdBy" IS NULL AND ($1 = 0 OR $1 = '0'))
          ORDER BY date DESC NULLS LAST`;
     const params = superAdmin ? [] : [userId];
-    const result = await query(sql, params).catch(() => ({ rows: [] }));
+    const result = await query(sql, params).catch((err) => {
+      console.error('listAdminEvents query', err?.message || err);
+      return { rows: [] };
+    });
     const rows = result.rows || [];
     const list = rows.map((row) => ({
       id: String(row.id),
       title: row.title,
       date: row.date,
       location: row.location || row.venue,
-      isPublished: row.isPublished,
-      isTrending: row.isTrending,
-      price: row.price,
+      isPublished: row.isPublished !== false,
+      isTrending: row.isTrending ?? false,
+      price: row.price ?? 0,
       createdBy: row.createdBy,
     }));
     return res.json(list);
@@ -131,6 +135,32 @@ export async function getAdminEvent(req, res) {
   } catch (err) {
     console.error('getAdminEvent', err);
     return res.status(500).json({ error: 'Not found' });
+  }
+}
+
+/** PATCH /api/admin/events/:eventId/visibility – toggle event visible on public side (isPublished). */
+export async function patchEventVisibility(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = req.user?.id;
+    const eventId = req.params.eventId;
+    const isPublished = req.body?.isPublished !== false;
+
+    const checkSql = superAdmin
+      ? 'SELECT id FROM "Event" WHERE id = $1'
+      : 'SELECT id FROM "Event" WHERE id = $1 AND ("createdBy" = $2 OR ("createdBy" IS NULL AND ($2 = 0 OR $2 = \'0\')))';
+    const checkParams = superAdmin ? [eventId] : [eventId, userId];
+    const check = await query(checkSql, checkParams).catch(() => ({ rows: [] }));
+    if (!check.rows?.length) return res.status(404).json({ error: 'Event not found' });
+
+    await query(
+      'UPDATE "Event" SET "isPublished" = $1, "updatedAt" = COALESCE("updatedAt", NOW()) WHERE id = $2',
+      [isPublished, eventId]
+    ).catch(() => ({}));
+    return res.json({ isPublished });
+  } catch (err) {
+    console.error('patchEventVisibility', err);
+    return res.status(500).json({ error: 'Failed to update visibility' });
   }
 }
 
@@ -191,24 +221,126 @@ export async function getSales(req, res) {
     }));
     return res.json(list);
   } catch (err) {
+    console.error('getSales', err);
+    return res.json([]);
+  }
+}
+
+/** Resolve current user id (requireAuth sets both req.user and req.userId). */
+function getUserId(req) {
+  return req.user?.id ?? req.userId;
+}
+
+/** GET /api/admin/withdraw – full withdraw page: kpi, events, withdrawals, bankAccount, isSuperAdmin. */
+export async function getWithdrawPage(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = getUserId(req);
+    if (userId == null && userId !== 0) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const kpi = { totalGross: 0, availableToWithdraw: 0, totalFees: 0 };
+
+    const revSql = superAdmin
+      ? `SELECT COALESCE(SUM(o."totalAmount"), 0) AS total FROM "Order" o JOIN "Event" e ON e.id = o."eventId" WHERE o."status" = 'paid'`
+      : `SELECT COALESCE(SUM(o."totalAmount"), 0) AS total FROM "Order" o JOIN "Event" e ON e.id = o."eventId" WHERE o."status" = 'paid' AND (e."createdBy" = $1 OR (e."createdBy" IS NULL AND ($1 = 0 OR $1 = '0')))`;
+    const revParams = superAdmin ? [] : [userId];
+    const revResult = await query(revSql, revParams).catch(() => ({ rows: [{ total: 0 }] }));
+    kpi.totalGross = Number(revResult.rows?.[0]?.total) || 0;
+    kpi.totalFees = Math.round(kpi.totalGross * 0.15);
+    kpi.availableToWithdraw = kpi.totalGross - kpi.totalFees;
+
+    const eventsSql = superAdmin
+      ? `SELECT e.id, e.title, e.date, e."imageUrl", e."createdBy",
+                COALESCE(rev.gross, 0) AS gross_revenue,
+                NULL::varchar AS withdrawal_status, NULL::numeric AS withdrawn_net, NULL::timestamptz AS withdrawn_at
+         FROM "Event" e
+         LEFT JOIN (SELECT o."eventId", SUM(o."totalAmount") AS gross FROM "Order" o WHERE o."status" = 'paid' GROUP BY o."eventId") rev ON rev."eventId" = e.id
+         ORDER BY e.date DESC NULLS LAST`
+      : `SELECT e.id, e.title, e.date, e."imageUrl", e."createdBy",
+                COALESCE(rev.gross, 0) AS gross_revenue,
+                w.status AS withdrawal_status, w.amount AS withdrawn_net, w."createdAt" AS withdrawn_at
+         FROM "Event" e
+         LEFT JOIN (SELECT o."eventId", SUM(o."totalAmount") AS gross FROM "Order" o WHERE o."status" = 'paid' GROUP BY o."eventId") rev ON rev."eventId" = e.id
+         LEFT JOIN LATERAL (SELECT status, amount, "createdAt" FROM "Withdrawal" WHERE "eventId" = e.id AND "userId" = $1 ORDER BY "createdAt" DESC LIMIT 1) w ON true
+         WHERE e."createdBy" = $2 OR (e."createdBy" IS NULL AND ($2 = 0 OR $2 = '0'))
+         ORDER BY e.date DESC NULLS LAST`;
+    const eventsParams = superAdmin ? [] : [userId, userId];
+    const eventsResult = await query(eventsSql, eventsParams).catch(() => ({ rows: [] }));
+    const events = (eventsResult.rows || []).map((r) => ({
+      id: String(r.id),
+      title: r.title || '',
+      date: r.date || '',
+      imageUrl: r.imageUrl ?? null,
+      createdBy: r.createdBy != null ? String(r.createdBy) : null,
+      gross_revenue: Number(r.gross_revenue) || 0,
+      withdrawal_status: r.withdrawal_status ?? null,
+      withdrawn_net: r.withdrawn_net != null ? Number(r.withdrawn_net) : null,
+      withdrawn_at: r.withdrawn_at ?? null,
+    }));
+
+    const withResult = await query(
+      'SELECT * FROM "Withdrawal" WHERE "userId" = $1 ORDER BY "createdAt" DESC',
+      [userId]
+    ).catch(() => ({ rows: [] }));
+    const withdrawals = (withResult.rows || []).map((w) => ({
+      id: String(w.id),
+      eventId: String(w.eventId),
+      adminId: String(w.userId ?? w.adminId ?? ''),
+      grossAmount: 0,
+      platformFee: 0,
+      netAmount: Number(w.amount) || 0,
+      status: w.status || 'pending',
+      paystackReference: w.paystackReference ?? null,
+      createdAt: w.createdAt ?? '',
+      event_title: '',
+      admin_name: null,
+      admin_email: null,
+    }));
+
+    let bankAccount = null;
+    const baResult = await query(
+      'SELECT "id", "accountNumber", "bankCode", "accountName", "bankName" FROM "BankAccount" WHERE "userId" = $1',
+      [userId]
+    ).catch(() => ({ rows: [] }));
+    if (baResult.rows?.[0]) {
+      const row = baResult.rows[0];
+      bankAccount = {
+        id: String(row.id),
+        accountName: row.accountName || '',
+        accountNumber: row.accountNumber || '',
+        bankCode: row.bankCode || '',
+        bankName: row.bankName || '',
+      };
+    }
+
+    return res.json({
+      kpi,
+      events,
+      withdrawals,
+      bankAccount,
+      isSuperAdmin: !!superAdmin,
+    });
+  } catch (err) {
     console.error('getWithdrawPage', err);
     return res.status(500).json({
       kpi: { totalGross: 0, availableToWithdraw: 0, totalFees: 0 },
       events: [],
       withdrawals: [],
       bankAccount: null,
-      isSuperAdmin: req.userRole === 'superadmin',
+      isSuperAdmin: false,
     });
   }
 }
 
-/** POST /api/admin/withdraw - body: eventId (optional) */
-/** POST /api/admin/withdraw/:eventId */
+/** GET /api/admin/withdraw (list) – kept for compatibility; prefer getWithdrawPage. */
 export async function listWithdrawals(req, res) {
   try {
+    const userId = getUserId(req);
     const result = await query(
       'SELECT * FROM "Withdrawal" WHERE "userId" = $1 ORDER BY "createdAt" DESC',
-      [req.userId]
+      [userId]
     ).catch(() => ({ rows: [] }));
     return res.json(result.rows || []);
   } catch {
@@ -220,12 +352,79 @@ export async function createWithdrawal(req, res) {
   try {
     const eventId = req.params.eventId;
     if (!eventId) return res.status(400).json({ error: 'eventId required' });
+    const userId = getUserId(req);
     const result = await query(
-      `INSERT INTO "Withdrawal" ("userId", "eventId", "amount", "status") VALUES ($1, $2, 0, 'pending') RETURNING "id"`,
-      [req.userId, eventId]
+      `INSERT INTO "Withdrawal" ("userId", "eventId", "amount", "status") VALUES ($1, $2, 0, 'pending') RETURNING "id", "amount"`,
+      [userId, eventId]
     ).catch(() => ({ rows: [] }));
     if (!result.rows?.length) return res.status(501).json({ error: 'Withdrawals not configured' });
-    return res.status(201).json(result.rows[0]);
+    const row = result.rows[0];
+    return res.status(201).json({
+      withdrawal: { id: row.id, net: Number(row.amount) || 0 },
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed' });
+  }
+}
+
+/** GET /api/admin/banks – list banks (e.g. Paystack). */
+export async function getBanks(req, res) {
+  try {
+    const { config } = await import('../../shared/config/env.js');
+    if (config.paystackSecretKey) {
+      const r = await fetch('https://api.paystack.co/bank?currency=NGN&perPage=100', {
+        headers: { Authorization: `Bearer ${config.paystackSecretKey}` },
+      });
+      const d = await r.json();
+      if (d.data) return res.json(d.data);
+    }
+    return res.json([]);
+  } catch {
+    return res.json([]);
+  }
+}
+
+/** GET /api/admin/bank-account – current user's bank account. */
+export async function getBankAccount(req, res) {
+  try {
+    const userId = getUserId(req);
+    const result = await query(
+      'SELECT "id", "accountNumber", "bankCode", "accountName", "bankName" FROM "BankAccount" WHERE "userId" = $1',
+      [userId]
+    ).catch(() => ({ rows: [] }));
+    if (result.rows?.[0]) return res.json(result.rows[0]);
+    return res.json(null);
+  } catch {
+    return res.json(null);
+  }
+}
+
+/** POST /api/admin/bank-account – save bank account. */
+export async function saveBankAccount(req, res) {
+  try {
+    const userId = getUserId(req);
+    const { accountNumber, bankCode, accountName, bankName } = req.body || {};
+    if (!accountNumber || !bankCode) return res.status(400).json({ error: 'accountNumber and bankCode required' });
+    const existing = await query(
+      'SELECT "id" FROM "BankAccount" WHERE "userId" = $1',
+      [userId]
+    ).catch(() => ({ rows: [] }));
+    if (existing.rows?.length > 0) {
+      await query(
+        `UPDATE "BankAccount" SET "accountNumber" = $1, "bankCode" = $2, "accountName" = $3, "bankName" = $4 WHERE "userId" = $5`,
+        [accountNumber, bankCode, accountName || '', bankName || '', userId]
+      ).catch(() => ({}));
+    } else {
+      await query(
+        `INSERT INTO "BankAccount" ("userId", "accountNumber", "bankCode", "accountName", "bankName") VALUES ($1, $2, $3, $4, $5)`,
+        [userId, accountNumber, bankCode, accountName || '', bankName || '']
+      ).catch(() => ({}));
+    }
+    const row = await query(
+      'SELECT "id", "accountNumber", "bankCode", "accountName", "bankName" FROM "BankAccount" WHERE "userId" = $1',
+      [userId]
+    ).then((r) => r.rows?.[0]).catch(() => null);
+    return res.json(row || { id: null, accountNumber, bankCode, accountName: accountName || '', bankName: bankName || '' });
   } catch (err) {
     return res.status(500).json({ error: err.message || 'Failed' });
   }
