@@ -6,6 +6,7 @@ const router = Router();
 
 router.get('/dashboard', requireAuth, adminController.getDashboard);
 router.get('/admins', requireAuth, requireSuperAdmin, adminController.listAdmins);
+router.delete('/admins/:id', requireAuth, requireSuperAdmin, adminController.deleteAdmin);
 router.get('/sales', requireAuth, adminController.getSales);
 router.get('/events', requireAuth, adminController.listAdminEvents);
 router.get('/events/:eventId/orders', requireAuth, adminController.getEventOrders);
