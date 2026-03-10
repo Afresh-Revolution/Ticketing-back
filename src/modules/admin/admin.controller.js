@@ -66,6 +66,33 @@ export async function getDashboard(req, res) {
   }
 }
 
+/** GET /api/admin/admins – list admin users (superadmin only). */
+export async function listAdmins(req, res) {
+  try {
+    if (req.userRole !== 'superadmin') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const result = await query(
+      `SELECT id, email, name, role, "emailVerified", "createdAt"
+       FROM "User"
+       WHERE role IN ('admin', 'superadmin')
+       ORDER BY "createdAt" DESC`
+    ).catch(() => ({ rows: [] }));
+    const list = (result.rows || []).map((row) => ({
+      id: row.id,
+      email: row.email,
+      name: row.name,
+      role: row.role || 'admin',
+      emailVerified: !!row.emailVerified,
+      createdAt: row.createdAt,
+    }));
+    return res.json(list);
+  } catch (err) {
+    console.error('listAdmins', err);
+    return res.status(500).json({ error: 'Failed to list admins' });
+  }
+}
+
 /** GET /api/admin/events – list events from Supabase; super admin sees all, others only their own. */
 export async function listAdminEvents(req, res) {
   try {

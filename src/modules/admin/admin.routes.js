@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import * as adminController from './admin.controller.js';
-import { requireAuth } from '../../middleware/auth.js';
+import { requireAuth, requireSuperAdmin } from '../../middleware/auth.js';
 
 const router = Router();
 
 router.get('/dashboard', requireAuth, adminController.getDashboard);
+router.get('/admins', requireAuth, requireSuperAdmin, adminController.listAdmins);
 router.get('/sales', requireAuth, adminController.getSales);
 router.get('/events', requireAuth, adminController.listAdminEvents);
 router.get('/events/:eventId/orders', requireAuth, adminController.getEventOrders);
