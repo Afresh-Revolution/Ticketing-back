@@ -86,6 +86,10 @@ export async function listAdminEvents(req, res) {
       console.error('listAdminEvents query', err?.message || err);
       return { rows: [] };
     });
+    const result = await query(sql, params).catch((err) => {
+      console.error('listAdminEvents query', err?.message || err);
+      return { rows: [] };
+    });
     const rows = result.rows || [];
     const list = rows.map((row) => ({
       id: String(row.id),
