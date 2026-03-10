@@ -90,16 +90,25 @@ export async function createEvent(req, res) {
   }
 }
 
-/** PATCH /api/events/:id */
+/** PATCH /api/events/:id - only owner or superadmin can update */
 export async function updateEvent(req, res) {
   try {
+    const isSuperAdmin = req.userRole === 'superadmin';
+    const userId = req.userId;
     const body = req.body || {};
     const result = await query(
-      `UPDATE "Event" SET "title" = COALESCE($1, "title"), "date" = COALESCE($2, "date"), "location" = COALESCE($3, "location"),
-        "price" = COALESCE($4, "price"), "imageUrl" = COALESCE($5, "imageUrl"), "startTime" = COALESCE($6, "startTime"),
-        "description" = COALESCE($7, "description"), "updatedAt" = NOW()
-       WHERE "id" = $8 RETURNING "id"`,
-      [body.title, body.date, body.location, body.price, body.imageUrl, body.startTime, body.description, req.params.id]
+      isSuperAdmin
+        ? `UPDATE "Event" SET "title" = COALESCE($1, "title"), "date" = COALESCE($2, "date"), "location" = COALESCE($3, "location"),
+           "price" = COALESCE($4, "price"), "imageUrl" = COALESCE($5, "imageUrl"), "startTime" = COALESCE($6, "startTime"),
+           "description" = COALESCE($7, "description"), "updatedAt" = NOW()
+           WHERE "id" = $8 RETURNING "id"`
+        : `UPDATE "Event" SET "title" = COALESCE($1, "title"), "date" = COALESCE($2, "date"), "location" = COALESCE($3, "location"),
+           "price" = COALESCE($4, "price"), "imageUrl" = COALESCE($5, "imageUrl"), "startTime" = COALESCE($6, "startTime"),
+           "description" = COALESCE($7, "description"), "updatedAt" = NOW()
+           WHERE "id" = $8 AND "createdBy" = $9 RETURNING "id"`,
+      isSuperAdmin
+        ? [body.title, body.date, body.location, body.price, body.imageUrl, body.startTime, body.description, req.params.id]
+        : [body.title, body.date, body.location, body.price, body.imageUrl, body.startTime, body.description, req.params.id, userId]
     ).catch(() => ({ rows: [] }));
     if (!result.rows || result.rows.length === 0) {
       return res.status(404).json({ error: 'Event not found' });
@@ -111,23 +120,35 @@ export async function updateEvent(req, res) {
   }
 }
 
-/** PATCH /api/events/:id/trending */
+/** PATCH /api/events/:id/trending - only owner or superadmin */
 export async function setTrending(req, res) {
   try {
-    await query(
-      'UPDATE "Event" SET "isTrending" = $1, "updatedAt" = NOW() WHERE "id" = $2',
-      [req.body?.isTrending ?? true, req.params.id]
-    ).catch(() => ({}));
+    const isSuperAdmin = req.userRole === 'superadmin';
+    const userId = req.userId;
+    const result = await query(
+      isSuperAdmin
+        ? 'UPDATE "Event" SET "isTrending" = $1, "updatedAt" = NOW() WHERE "id" = $2 RETURNING "id"'
+        : 'UPDATE "Event" SET "isTrending" = $1, "updatedAt" = NOW() WHERE "id" = $2 AND "createdBy" = $3 RETURNING "id"',
+      isSuperAdmin ? [req.body?.isTrending ?? true, req.params.id] : [req.body?.isTrending ?? true, req.params.id, userId]
+    ).catch(() => ({ rows: [] }));
+    if (!result.rows?.length) return res.status(404).json({ error: 'Not found' });
     return res.json({ message: 'Updated' });
   } catch {
     return res.status(404).json({ error: 'Not found' });
   }
 }
 
-/** DELETE /api/events/:id */
+/** DELETE /api/events/:id - only owner or superadmin can delete */
 export async function deleteEvent(req, res) {
   try {
-    const result = await query('DELETE FROM "Event" WHERE "id" = $1 RETURNING "id"', [req.params.id]).catch(() => ({ rows: [] }));
+    const isSuperAdmin = req.userRole === 'superadmin';
+    const userId = req.userId;
+    const result = await query(
+      isSuperAdmin
+        ? 'DELETE FROM "Event" WHERE "id" = $1 RETURNING "id"'
+        : 'DELETE FROM "Event" WHERE "id" = $1 AND "createdBy" = $2 RETURNING "id"',
+      isSuperAdmin ? [req.params.id] : [req.params.id, userId]
+    ).catch(() => ({ rows: [] }));
     if (!result.rows?.length) return res.status(404).json({ error: 'Event not found' });
     return res.json({ message: 'Deleted' });
   } catch {

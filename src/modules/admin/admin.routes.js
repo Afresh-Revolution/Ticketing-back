@@ -10,6 +10,7 @@ router.delete('/admins/:id', requireAuth, adminController.deleteAdmin);
 router.get('/sales', requireAuth, adminController.getSales);
 router.get('/events', requireAuth, adminController.listAdminEvents);
 router.get('/events/:eventId/orders', requireAuth, adminController.getEventOrders);
+router.get('/events/:eventId', requireAuth, adminController.getAdminEvent);
 router.post('/verify-ticket', requireAuth, adminController.verifyTicket);
 router.get('/banks', requireAuth, adminController.getBanks);
 router.get('/bank-account', requireAuth, adminController.getBankAccount);
