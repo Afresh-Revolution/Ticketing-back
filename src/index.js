@@ -9,6 +9,7 @@ if (process.env.ALLOW_INSECURE_TLS_OUTBOUND === '1') {
 import express from 'express';
 import cors from 'cors';
 import { config } from './shared/config/env.js';
+import { ensureUserSequence } from './shared/config/db.js';
 import * as authController from './modules/auth/auth.controller.js';
 import authRoutes from './modules/auth/auth.routes.js';
 import landingRoutes from './modules/landing/landing.routes.js';
@@ -46,6 +47,13 @@ app.use((err, req, res, next) => {
 });
 
 const port = config.port;
-app.listen(port, () => {
-  console.log(`Ticketing-back listening on port ${port}`);
-});
+ensureUserSequence()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`Ticketing-back listening on port ${port}`);
+    });
+  })
+  .catch((err) => {
+    console.error('Startup failed:', err);
+    process.exit(1);
+  });
