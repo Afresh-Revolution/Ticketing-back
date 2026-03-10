@@ -108,7 +108,7 @@ export async function signUp(req, res) {
 
     const passwordHash = await bcrypt.hash(password, 10);
     await query(
-      'INSERT INTO "User" ("email", "name", "passwordHash", "role", "emailVerified") VALUES ($1, $2, $3, $4, $5)',
+      'INSERT INTO "User" ("id", "email", "name", "passwordHash", "role", "emailVerified") VALUES (nextval(\'"User_id_seq"\'), $1, $2, $3, $4, $5)',
       [em, (name || '').trim() || null, passwordHash, 'user', false]
     );
 
@@ -201,7 +201,7 @@ export async function createAdmin(req, res) {
 
     const passwordHash = await bcrypt.hash(password, 10);
     const insert = await query(
-      'INSERT INTO "User" ("email", "name", "passwordHash", "role", "emailVerified") VALUES ($1, $2, $3, $4, $5) RETURNING "id", "email", "name", "role"',
+      'INSERT INTO "User" ("id", "email", "name", "passwordHash", "role", "emailVerified") VALUES (nextval(\'"User_id_seq"\'), $1, $2, $3, $4, $5) RETURNING "id", "email", "name", "role"',
       [em, (name || '').trim() || null, passwordHash, 'admin', true]
     );
     const user = insert.rows[0];
@@ -252,7 +252,7 @@ export async function organizerSignup(req, res) {
       );
     } else {
       await query(
-        'INSERT INTO "User" ("email", "name", "passwordHash", "role", "emailVerified") VALUES ($1, $2, $3, $4, $5)',
+        'INSERT INTO "User" ("id", "email", "name", "passwordHash", "role", "emailVerified") VALUES (nextval(\'"User_id_seq"\'), $1, $2, $3, $4, $5)',
         [em, un || null, passwordHash, 'admin', false]
       );
     }
