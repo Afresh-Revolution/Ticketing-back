@@ -8,6 +8,7 @@ router.get('/dashboard', requireAuth, adminController.getDashboard);
 router.get('/sales', requireAuth, adminController.getSales);
 router.get('/events', requireAuth, adminController.listAdminEvents);
 router.get('/events/:eventId/orders', requireAuth, adminController.getEventOrders);
+router.patch('/events/:eventId/visibility', requireAuth, adminController.patchEventVisibility);
 router.get('/events/:eventId', requireAuth, adminController.getAdminEvent);
 router.get('/withdraw', requireAuth, adminController.listWithdrawals);
 router.post('/withdraw/:eventId', requireAuth, adminController.createWithdrawal);

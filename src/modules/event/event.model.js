@@ -26,12 +26,10 @@ export const eventModel = {
     const limit = opts.take != null ? Math.max(0, opts.take) : null;
     let sql = 'SELECT * FROM "Event"';
     const params = [];
-    
-    // Handle trending filter
-    if (opts.trending) {
-      sql += ' WHERE "isTrending" = true';
-    }
-    
+    const where = [];
+    if (opts.trending) where.push('"isTrending" = true');
+    if (opts.published !== false) where.push('("isPublished" = true OR "isPublished" IS NULL)');
+    if (where.length) sql += ' WHERE ' + where.join(' AND ');
     sql += ' ORDER BY date ASC';
     
     if (limit != null) {
@@ -108,8 +106,8 @@ export const eventModel = {
     
     // 1. Create Event
     await query(
-      `INSERT INTO "Event" (id, title, description, date, venue, "imageUrl", category, "startTime", price, currency, "isTrending", location, "createdBy", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+      `INSERT INTO "Event" (id, title, description, date, venue, "imageUrl", category, "startTime", price, currency, "isTrending", location, "createdBy", "isPublished", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
       [
         id,
         data.title,
@@ -124,6 +122,7 @@ export const eventModel = {
         data.isTrending ?? false,
         data.location ?? null,
         data.createdBy ?? null,
+        data.isPublished !== false,
         now,
         now,
       ]
@@ -172,6 +171,7 @@ export const eventModel = {
       currency: 'currency',
       isTrending: 'isTrending',
       location: 'location',
+      isPublished: 'isPublished',
     };
     for (const [key, col] of Object.entries(map)) {
       if (data[key] !== undefined) {

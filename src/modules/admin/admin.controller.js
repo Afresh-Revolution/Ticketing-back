@@ -72,25 +72,29 @@ export async function listAdminEvents(req, res) {
     const superAdmin = isSuperAdmin(req);
     const userId = req.user?.id;
 
+    // Event table columns (match event.model): include isPublished for visibility toggle
     const sql = superAdmin
-      ? `SELECT id, title, date, location, venue, "imageUrl", "isPublished", "isTrending", price, "createdBy"
+      ? `SELECT id, title, date, location, venue, "imageUrl", "isTrending", price, "createdBy", category, "startTime", "isPublished"
          FROM "Event"
          ORDER BY date DESC NULLS LAST`
-      : `SELECT id, title, date, location, venue, "imageUrl", "isPublished", "isTrending", price, "createdBy"
+      : `SELECT id, title, date, location, venue, "imageUrl", "isTrending", price, "createdBy", category, "startTime", "isPublished"
          FROM "Event"
          WHERE "createdBy" = $1 OR ("createdBy" IS NULL AND ($1 = 0 OR $1 = '0'))
          ORDER BY date DESC NULLS LAST`;
     const params = superAdmin ? [] : [userId];
-    const result = await query(sql, params).catch(() => ({ rows: [] }));
+    const result = await query(sql, params).catch((err) => {
+      console.error('listAdminEvents query', err?.message || err);
+      return { rows: [] };
+    });
     const rows = result.rows || [];
     const list = rows.map((row) => ({
       id: String(row.id),
       title: row.title,
       date: row.date,
       location: row.location || row.venue,
-      isPublished: row.isPublished,
-      isTrending: row.isTrending,
-      price: row.price,
+      isPublished: row.isPublished !== false,
+      isTrending: row.isTrending ?? false,
+      price: row.price ?? 0,
       createdBy: row.createdBy,
     }));
     return res.json(list);
@@ -131,6 +135,32 @@ export async function getAdminEvent(req, res) {
   } catch (err) {
     console.error('getAdminEvent', err);
     return res.status(500).json({ error: 'Not found' });
+  }
+}
+
+/** PATCH /api/admin/events/:eventId/visibility – toggle event visible on public side (isPublished). */
+export async function patchEventVisibility(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = req.user?.id;
+    const eventId = req.params.eventId;
+    const isPublished = req.body?.isPublished !== false;
+
+    const checkSql = superAdmin
+      ? 'SELECT id FROM "Event" WHERE id = $1'
+      : 'SELECT id FROM "Event" WHERE id = $1 AND ("createdBy" = $2 OR ("createdBy" IS NULL AND ($2 = 0 OR $2 = \'0\')))';
+    const checkParams = superAdmin ? [eventId] : [eventId, userId];
+    const check = await query(checkSql, checkParams).catch(() => ({ rows: [] }));
+    if (!check.rows?.length) return res.status(404).json({ error: 'Event not found' });
+
+    await query(
+      'UPDATE "Event" SET "isPublished" = $1, "updatedAt" = COALESCE("updatedAt", NOW()) WHERE id = $2',
+      [isPublished, eventId]
+    ).catch(() => ({}));
+    return res.json({ isPublished });
+  } catch (err) {
+    console.error('patchEventVisibility', err);
+    return res.status(500).json({ error: 'Failed to update visibility' });
   }
 }
 
