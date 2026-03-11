@@ -73,6 +73,10 @@ CREATE TABLE IF NOT EXISTS "Order" (
 CREATE INDEX IF NOT EXISTS "Order_eventId_idx" ON "Order" ("eventId");
 CREATE INDEX IF NOT EXISTS "Order_userId_idx" ON "Order" ("userId");
 
+-- Events: index by creator for admin-scoped listing
+CREATE INDEX IF NOT EXISTS "Event_createdBy_idx" ON "Event" ("createdBy");
+CREATE INDEX IF NOT EXISTS "Event_isTrending_idx" ON "Event" ("isTrending") WHERE "isTrending" = TRUE;
+
 -- Top users (landing carousel)
 CREATE TABLE IF NOT EXISTS "TopUser" (
   "id" SERIAL PRIMARY KEY,
@@ -206,10 +210,14 @@ CREATE INDEX IF NOT EXISTS "ScanLog_orderId_idx" ON "ScanLog" ("orderId");
 -- Add missing columns to existing tables (safe for existing DBs)
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "passwordChangedAt" TIMESTAMPTZ;
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "lastPasswordChangeAt" TIMESTAMPTZ;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "suspended" BOOLEAN DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS "User_suspended_idx" ON "User" ("suspended") WHERE "suspended" = TRUE;
 ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "ticketCode" VARCHAR(255);
 ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "venue" VARCHAR(512);
 ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "category" VARCHAR(255);
 ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "currency" VARCHAR(10);
+ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "isPublished" BOOLEAN DEFAULT TRUE;
+ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "isTrending" BOOLEAN DEFAULT FALSE;
 ALTER TABLE "TopUser" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
 
 -- Ensure VerificationCode.id always has a default (app inserts without id)

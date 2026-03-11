@@ -66,7 +66,7 @@ function getCreatedBy(req) {
   return id;
 }
 
-/** POST /api/events - create event (admin). Event is registered to the creating admin's account. */
+/** POST /api/events - create event (admin). Event is tied to creating admin (createdBy); super admin uses null/0. */
 export async function createEvent(req, res) {
   try {
     const body = req.body || {};
@@ -79,12 +79,6 @@ export async function createEvent(req, res) {
 
     const clientCreatedBy = body.createdBy != null && body.createdBy !== '' ? Number(body.createdBy) : null;
     if (clientCreatedBy != null && !Number.isNaN(clientCreatedBy) && clientCreatedBy !== 0) {
-      if (isSuperAdmin) {
-        return res.status(400).json({
-          error: 'You are logged in as Super Admin. To create events under your own account, log out and sign in with your admin email and password, then create the event again.',
-          code: 'USE_ADMIN_ACCOUNT',
-        });
-      }
       if (createdBy !== null && Number(createdBy) !== clientCreatedBy) {
         return res.status(400).json({
           error: 'Account mismatch. Please log out and sign in with the admin account you want to create the event for.',
@@ -93,7 +87,7 @@ export async function createEvent(req, res) {
       }
     }
 
-    const finalCreatedBy = createdBy;
+    const finalCreatedBy = isSuperAdmin ? null : createdBy;
     if (!isSuperAdmin && (finalCreatedBy == null || Number(finalCreatedBy) === 0)) {
       return res.status(400).json({
         error: 'Could not attribute event to your account. Log out and sign in again with your admin email and password, then try creating the event again.',
@@ -131,7 +125,7 @@ export async function createEvent(req, res) {
   }
 }
 
-/** PATCH /api/events/:id – owner can edit; superadmin can only edit their own events (createdBy null), not another admin's. */
+/** PATCH /api/events/:id – owner can edit; super admin can edit any event. */
 export async function updateEvent(req, res) {
   try {
     const isSuperAdmin = req.userRole === 'superadmin';
@@ -144,14 +138,8 @@ export async function updateEvent(req, res) {
     const event = eventRows.rows[0];
     const createdBy = event.createdBy;
 
-    if (isSuperAdmin) {
-      if (createdBy != null && Number(createdBy) !== 0) {
-        return res.status(403).json({ error: 'Super admin cannot edit another admin\'s event' });
-      }
-    } else {
-      if (String(createdBy) !== String(userId)) {
-        return res.status(403).json({ error: 'You can only edit events you created' });
-      }
+    if (!isSuperAdmin && String(createdBy) !== String(userId)) {
+      return res.status(403).json({ error: 'You can only edit events you created' });
     }
 
     const result = await query(
@@ -169,21 +157,41 @@ export async function updateEvent(req, res) {
   }
 }
 
-/** PATCH /api/events/:id/trending - only owner or superadmin */
+/** PATCH /api/events/:id/trending – Super admin can set any event (any owner). Other admins only their own. Body: { isTrending: boolean }. */
 export async function setTrending(req, res) {
   try {
-    const isSuperAdmin = req.userRole === 'superadmin';
-    const userId = req.userId;
+    const eventId = req.params.id;
+    const isTrending = req.body && typeof req.body.isTrending === 'boolean' ? req.body.isTrending : true;
+    const role = (req.userRole || req.user?.role || '').toLowerCase();
+    const isSuperAdmin = role === 'superadmin' || req.userId === 0 || req.user?.id === 0 || String(req.userId) === '0' || String(req.user?.id) === '0';
+    const userId = req.userId != null ? Number(req.userId) : null;
+
+    if (!eventId) return res.status(400).json({ error: 'Event id required' });
+
+    if (isSuperAdmin) {
+      const result = await query(
+        'UPDATE "Event" SET "isTrending" = $1, "updatedAt" = NOW() WHERE "id"::text = $2 RETURNING "id"',
+        [isTrending, String(eventId)]
+      ).catch((e) => {
+        console.error('setTrending', e?.message || e);
+        return { rows: [] };
+      });
+      if (!result.rows?.length) return res.status(404).json({ error: 'Event not found' });
+      return res.json({ message: 'Updated', isTrending });
+    }
+
     const result = await query(
-      isSuperAdmin
-        ? 'UPDATE "Event" SET "isTrending" = $1, "updatedAt" = NOW() WHERE "id" = $2 RETURNING "id"'
-        : 'UPDATE "Event" SET "isTrending" = $1, "updatedAt" = NOW() WHERE "id" = $2 AND "createdBy" = $3 RETURNING "id"',
-      isSuperAdmin ? [req.body?.isTrending ?? true, req.params.id] : [req.body?.isTrending ?? true, req.params.id, userId]
-    ).catch(() => ({ rows: [] }));
-    if (!result.rows?.length) return res.status(404).json({ error: 'Not found' });
-    return res.json({ message: 'Updated' });
-  } catch {
-    return res.status(404).json({ error: 'Not found' });
+      'UPDATE "Event" SET "isTrending" = $1, "updatedAt" = NOW() WHERE "id"::text = $2 AND "createdBy" = $3 RETURNING "id"',
+      [isTrending, String(eventId), userId]
+    ).catch((e) => {
+      console.error('setTrending', e?.message || e);
+      return { rows: [] };
+    });
+    if (!result.rows?.length) return res.status(404).json({ error: 'Event not found or you can only set trending for events you created' });
+    return res.json({ message: 'Updated', isTrending });
+  } catch (err) {
+    console.error('setTrending', err);
+    return res.status(500).json({ error: 'Failed to update trending status' });
   }
 }
 

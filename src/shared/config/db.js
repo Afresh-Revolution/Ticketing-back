@@ -62,7 +62,7 @@ export async function connectDb() {
 /**
  * Ensure "User"."id" has a sequence and default so INSERTs without id don't violate not-null.
  * Safe to run on every startup; fixes DBs where User was created without SERIAL default.
- * Only runs when the "User" table exists.
+ * Only runs when the "User" table exists and "id" is an integer type (skip if UUID/text).
  */
 export async function ensureUserSequence() {
   if (!pool) return;
@@ -72,8 +72,16 @@ export async function ensureUserSequence() {
     );
     if (tableCheck.rows.length === 0) return;
 
+    const colCheck = await query(
+      `SELECT data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'User' AND column_name = 'id'`
+    );
+    const dataType = colCheck.rows[0]?.data_type;
+    if (dataType !== 'integer' && dataType !== 'bigint' && dataType !== 'smallint') {
+      return;
+    }
+
     await query('CREATE SEQUENCE IF NOT EXISTS "User_id_seq"');
-    const maxResult = await query('SELECT COALESCE(MAX("id"), 0)::bigint AS mx FROM "User"');
+    const maxResult = await query('SELECT COALESCE(MAX("id")::bigint, 0) AS mx FROM "User"');
     const maxId = Number(maxResult.rows[0]?.mx ?? 0);
     await query('SELECT setval(\'"User_id_seq"\', $1)', [Math.max(1, maxId + 1)]);
     await query('ALTER SEQUENCE "User_id_seq" OWNED BY "User"."id"');

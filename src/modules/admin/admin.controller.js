@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import { query } from '../../shared/config/db.js';
 
 /** True if current user is super admin (sees all events in Supabase). */
@@ -81,14 +82,14 @@ export async function getMe(req, res) {
   }
 }
 
-/** GET /api/admin/admins – list admin users (superadmin only). */
+/** GET /api/admin/admins – list admin users (superadmin only). Includes suspended. */
 export async function listAdmins(req, res) {
   try {
     if (req.userRole !== 'superadmin') {
       return res.status(403).json({ error: 'Forbidden' });
     }
     const result = await query(
-      `SELECT id, email, name, role, "emailVerified", "createdAt"
+      `SELECT id, email, name, role, "emailVerified", "createdAt", "suspended"
        FROM "User"
        WHERE role IN ('admin', 'superadmin')
        ORDER BY "createdAt" DESC`
@@ -100,11 +101,41 @@ export async function listAdmins(req, res) {
       role: row.role || 'admin',
       emailVerified: !!row.emailVerified,
       createdAt: row.createdAt,
+      suspended: !!row.suspended,
     }));
     return res.json(list);
   } catch (err) {
     console.error('listAdmins', err);
     return res.status(500).json({ error: 'Failed to list admins' });
+  }
+}
+
+/** PATCH /api/admin/admins/:id/suspend – set suspended flag (superadmin only). Cannot suspend self or another superadmin. */
+export async function suspendAdmin(req, res) {
+  try {
+    if (req.userRole !== 'superadmin') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid admin id' });
+    }
+    const currentId = Number(req.userId) ?? req.userId;
+    if (id === currentId) {
+      return res.status(400).json({ error: 'Cannot suspend your own account' });
+    }
+    const suspended = req.body?.suspended === true;
+    const result = await query(
+      `UPDATE "User" SET "suspended" = $1, "updatedAt" = NOW() WHERE id = $2 AND role = 'admin' RETURNING id, "suspended"`,
+      [suspended, id]
+    );
+    if (!result.rows || result.rows.length === 0) {
+      return res.status(404).json({ error: 'Admin not found or cannot be suspended (superadmins cannot be suspended)' });
+    }
+    return res.json({ id: result.rows[0].id, suspended: !!result.rows[0].suspended });
+  } catch (err) {
+    console.error('suspendAdmin', err);
+    return res.status(500).json({ error: 'Failed to update suspend status' });
   }
 }
 
@@ -118,12 +149,10 @@ export async function deleteAdmin(req, res) {
     if (Number.isNaN(id)) {
       return res.status(400).json({ error: 'Invalid admin id' });
     }
-    // Do not allow deleting yourself
     const currentId = Number(req.userId) || req.userId;
     if (id === currentId) {
       return res.status(400).json({ error: 'Cannot delete your own account' });
     }
-    // Only delete users with role 'admin' (never superadmin)
     const result = await query(
       `DELETE FROM "User" WHERE id = $1 AND role = 'admin' RETURNING id`,
       [id]
@@ -138,21 +167,23 @@ export async function deleteAdmin(req, res) {
   }
 }
 
-/** GET /api/admin/events – list events from Supabase; super admin sees all, others only their own. */
+/** GET /api/admin/events – list events; super admin sees all, others only events they created (createdBy = userId). */
 export async function listAdminEvents(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
-    const userId = req.user?.id;
+    const rawId = req.user?.id;
+    const userId = rawId != null ? Number(rawId) : null;
 
-    // Event table columns (match event.model): include isPublished for visibility toggle
     const sql = superAdmin
-      ? `SELECT id, title, date, location, venue, "imageUrl", "isTrending", price, "createdBy", category, "startTime", "isPublished"
-         FROM "Event"
-         ORDER BY date DESC NULLS LAST`
-      : `SELECT id, title, date, location, venue, "imageUrl", "isTrending", price, "createdBy", category, "startTime", "isPublished"
-         FROM "Event"
-         WHERE "createdBy" = $1 OR ("createdBy" IS NULL AND ($1 = 0 OR $1 = '0'))
-         ORDER BY date DESC NULLS LAST`;
+      ? `SELECT e.id, e.title, e.date, e.location, e.venue, e."imageUrl", e."isTrending", e.price, e."createdBy", e.category, e."startTime", e."isPublished", u.name AS "createdByName"
+         FROM "Event" e
+         LEFT JOIN "User" u ON (u.id::text = e."createdBy"::text)
+         ORDER BY e.date DESC NULLS LAST`
+      : `SELECT e.id, e.title, e.date, e.location, e.venue, e."imageUrl", e."isTrending", e.price, e."createdBy", e.category, e."startTime", e."isPublished", u.name AS "createdByName"
+         FROM "Event" e
+         LEFT JOIN "User" u ON (u.id::text = e."createdBy"::text)
+         WHERE (e."createdBy" = $1) OR (e."createdBy" IS NULL AND $1 = 0)
+         ORDER BY e.date DESC NULLS LAST`;
     const params = superAdmin ? [] : [userId];
     const result = await query(sql, params).catch((err) => {
       console.error('listAdminEvents query', err?.message || err);
@@ -168,6 +199,7 @@ export async function listAdminEvents(req, res) {
       isTrending: row.isTrending ?? false,
       price: row.price ?? 0,
       createdBy: row.createdBy,
+      createdByName: row.createdByName ?? (row.createdBy == null ? 'Super Admin' : null),
     }));
     return res.json(list);
   } catch (err) {

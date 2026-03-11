@@ -7,8 +7,8 @@ const router = express.Router();
 router.get('/', eventsController.listEvents);
 router.get('/:id', eventsController.getEvent);
 router.post('/', requireAuth, eventsController.createEvent);
-router.patch('/:id', requireAuth, eventsController.updateEvent);
 router.patch('/:id/trending', requireAuth, eventsController.setTrending);
+router.patch('/:id', requireAuth, eventsController.updateEvent);
 router.delete('/:id', requireAuth, eventsController.deleteEvent);
 
 export default router;

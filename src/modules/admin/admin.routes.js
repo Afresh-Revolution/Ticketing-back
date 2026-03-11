@@ -7,6 +7,7 @@ const router = Router();
 router.get('/me', requireAuth, adminController.getMe);
 router.get('/dashboard', requireAuth, adminController.getDashboard);
 router.get('/admins', requireAuth, requireSuperAdmin, adminController.listAdmins);
+router.patch('/admins/:id/suspend', requireAuth, requireSuperAdmin, adminController.suspendAdmin);
 router.delete('/admins/:id', requireAuth, requireSuperAdmin, adminController.deleteAdmin);
 router.get('/sales', requireAuth, adminController.getSales);
 router.get('/events', requireAuth, adminController.listAdminEvents);

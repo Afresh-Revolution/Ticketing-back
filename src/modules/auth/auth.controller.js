@@ -45,12 +45,15 @@ export async function signIn(req, res) {
     }
 
     const userResult = await query(
-      'SELECT "id", "email", "name", "passwordHash", "role", "emailVerified" FROM "User" WHERE "email" = $1',
+      'SELECT "id", "email", "name", "passwordHash", "role", "emailVerified", "suspended" FROM "User" WHERE "email" = $1',
       [em]
     );
     const user = userResult.rows[0];
     if (!user || !user.passwordHash) {
       return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    if (user.suspended) {
+      return res.status(403).json({ error: 'Account suspended. Contact support.' });
     }
 
     const valid = await bcrypt.compare(password, user.passwordHash);
