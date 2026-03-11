@@ -62,11 +62,12 @@ export async function listForJoscity(req, res, next) {
   }
 }
 
-/** Returns true if the current user is allowed to modify this event (creator or super admin for null createdBy). */
+/** Returns true if the current user is allowed to modify this event (creator or super admin for any event). */
 function canModifyEvent(event, userId) {
   const sid = String(userId);
   const isSuperAdmin = sid === '0' || userId === 0;
-  if (event.createdBy == null) return isSuperAdmin;
+  if (isSuperAdmin) return true;
+  if (event.createdBy == null) return false;
   return String(event.createdBy) === sid;
 }
 
