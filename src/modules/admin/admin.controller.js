@@ -13,7 +13,8 @@ function isSuperAdmin(req) {
 export async function getDashboard(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
-    const userId = req.user?.id;
+    const rawId = req.user?.id ?? req.userId;
+    const userIdParam = rawId != null ? String(rawId) : '';
 
     const stats = {
       totalRevenue: 0,
@@ -29,12 +30,12 @@ export async function getDashboard(req, res) {
       ? `SELECT COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS ticket_rev,
                 COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN 1 ELSE 0 END), 0) AS tickets_sold
          FROM "Order" o
-         LEFT JOIN "Event" e ON e.id = o."eventId"`
+         LEFT JOIN "Event" e ON e.id::text = o."eventId"::text`
       : `SELECT COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS ticket_rev,
                 COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN 1 ELSE 0 END), 0) AS tickets_sold
          FROM "Order" o
-         INNER JOIN "Event" e ON e.id = o."eventId" AND (e."createdBy" = $1 OR (e."createdBy" IS NULL AND ($1 = 0 OR $1 = '0')))`;
-    const revParams = superAdmin ? [] : [userId];
+         INNER JOIN "Event" e ON e.id::text = o."eventId"::text AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))`;
+    const revParams = superAdmin ? [] : [userIdParam];
     const r = await query(revSql, revParams).catch(() => ({ rows: [{ ticket_rev: 0, tickets_sold: 0 }] }));
     if (r.rows?.[0]) {
       stats.ticketRevenue = Number(r.rows[0].ticket_rev) || 0;
@@ -45,8 +46,8 @@ export async function getDashboard(req, res) {
     // Event counts: all for super admin, else only events created by this admin (or createdBy IS NULL = super admin’s)
     const countSql = superAdmin
       ? 'SELECT COUNT(*) AS c FROM "Event"'
-      : 'SELECT COUNT(*) AS c FROM "Event" WHERE "createdBy" = $1 OR ("createdBy" IS NULL AND ($1 = 0 OR $1 = \'0\'))';
-    const countParams = superAdmin ? [] : [userId];
+      : 'SELECT COUNT(*) AS c FROM "Event" WHERE ("createdBy"::text = $1) OR ("createdBy" IS NULL AND $1 = \'0\')';
+    const countParams = superAdmin ? [] : [userIdParam];
     const e = await query(countSql, countParams).catch(() => ({ rows: [{ c: 0 }] }));
     stats.totalEvents = Number(e.rows?.[0]?.c) || 0;
     stats.activeEvents = stats.totalEvents;
@@ -167,29 +168,53 @@ export async function deleteAdmin(req, res) {
   }
 }
 
-/** GET /api/admin/events – list events; super admin sees all, others only events they created (createdBy = userId). */
+/** GET /api/admin/events – list events; super admin sees all (including other admins'), others only events they created. */
 export async function listAdminEvents(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
-    const rawId = req.user?.id;
-    const userId = rawId != null ? Number(rawId) : null;
+    const rawId = req.user?.id ?? req.userId;
+    const userIdParam = rawId != null ? String(rawId) : '';
 
-    const sql = superAdmin
-      ? `SELECT e.id, e.title, e.date, e.location, e.venue, e."imageUrl", e."isTrending", e.price, e."createdBy", e.category, e."startTime", e."isPublished", u.name AS "createdByName"
+    let rows = [];
+    if (superAdmin) {
+      const r = await query(
+        `SELECT e.id, e.title, e.date, e.location, e.venue, e."imageUrl", e."isTrending", e.price, e."createdBy", e.category, e."startTime", e."isPublished"
          FROM "Event" e
-         LEFT JOIN "User" u ON (u.id::text = e."createdBy"::text)
          ORDER BY e.date DESC NULLS LAST`
-      : `SELECT e.id, e.title, e.date, e.location, e.venue, e."imageUrl", e."isTrending", e.price, e."createdBy", e.category, e."startTime", e."isPublished", u.name AS "createdByName"
+      ).catch((err) => {
+        console.error('listAdminEvents (super) query', err?.message || err);
+        return { rows: [] };
+      });
+      rows = r.rows || [];
+    } else {
+      const r = await query(
+        `SELECT e.id, e.title, e.date, e.location, e.venue, e."imageUrl", e."isTrending", e.price, e."createdBy", e.category, e."startTime", e."isPublished"
          FROM "Event" e
-         LEFT JOIN "User" u ON (u.id::text = e."createdBy"::text)
-         WHERE (e."createdBy" = $1) OR (e."createdBy" IS NULL AND $1 = 0)
-         ORDER BY e.date DESC NULLS LAST`;
-    const params = superAdmin ? [] : [userId];
-    const result = await query(sql, params).catch((err) => {
-      console.error('listAdminEvents query', err?.message || err);
-      return { rows: [] };
-    });
-    const rows = result.rows || [];
+         WHERE (e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0')
+         ORDER BY e.date DESC NULLS LAST`,
+        [userIdParam]
+      ).catch((err) => {
+        console.error('listAdminEvents (admin) query', err?.message || err);
+        return { rows: [] };
+      });
+      rows = r.rows || [];
+    }
+
+    if (rows.length === 0) return res.json([]);
+
+    const ids = [...new Set(rows.map((r) => r.createdBy).filter((x) => x != null))];
+    let names = {};
+    if (ids.length > 0) {
+      const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
+      const nameRows = await query(
+        `SELECT id, name FROM "User" WHERE id::text IN (${placeholders})`,
+        ids.map((id) => String(id))
+      ).catch(() => ({ rows: [] }));
+      (nameRows.rows || []).forEach((r) => {
+        names[String(r.id)] = r.name || null;
+      });
+    }
+
     const list = rows.map((row) => ({
       id: String(row.id),
       title: row.title,
@@ -199,7 +224,7 @@ export async function listAdminEvents(req, res) {
       isTrending: row.isTrending ?? false,
       price: row.price ?? 0,
       createdBy: row.createdBy,
-      createdByName: row.createdByName ?? (row.createdBy == null ? 'Super Admin' : null),
+      createdByName: row.createdBy == null ? 'Super Admin' : (names[String(row.createdBy)] ?? null),
     }));
     return res.json(list);
   } catch (err) {
@@ -293,25 +318,26 @@ export async function getEventOrders(req, res) {
   }
 }
 
-/** GET /api/admin/sales – sales from Supabase; super admin sees all, others only for their events. */
+/** GET /api/admin/sales – super admin sees all sales, others only for their events. */
 export async function getSales(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
-    const userId = req.user?.id;
+    const rawId = req.user?.id ?? req.userId;
+    const userIdParam = rawId != null ? String(rawId) : '';
 
     const sql = superAdmin
       ? `SELECT o.id, o."fullName", o.email, o."totalAmount", o."status", o."createdAt", e.title AS event_title
          FROM "Order" o
-         LEFT JOIN "Event" e ON e.id = o."eventId"
+         LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
          ORDER BY o."createdAt" DESC
          LIMIT 100`
       : `SELECT o.id, o."fullName", o.email, o."totalAmount", o."status", o."createdAt", e.title AS event_title
          FROM "Order" o
-         LEFT JOIN "Event" e ON e.id = o."eventId"
-         WHERE e."createdBy" = $1 OR (e."createdBy" IS NULL AND ($1 = 0 OR $1 = '0'))
+         LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
+         WHERE (e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0')
          ORDER BY o."createdAt" DESC
          LIMIT 100`;
-    const params = superAdmin ? [] : [userId];
+    const params = superAdmin ? [] : [userIdParam];
     const result = await query(sql, params).catch(() => ({ rows: [] }));
     const list = (result.rows || []).map((r) => ({
       id: r.id,
