@@ -23,8 +23,8 @@ export async function create(req, res, next) {
       return res.status(400).json({ error: 'totalAmount must be a non-negative number' });
     }
 
-    // Identify user if logged in
-    const userId = req.user ? req.user.id : null;
+    // Identify user if logged in (optionalAuth sets req.user; some middlewares set req.userId)
+    const userId = req.user?.id ?? req.userId ?? null;
 
     const order = await orderModel.create({
       eventId,

@@ -1,35 +1,42 @@
-import { query } from '../../shared/config/db.js';
+import { userPageModel } from './userPage/userPage.model.js';
 
-/** GET /api/user/orders - current user's orders (tickets) */
+/** GET /api/user/orders - current user's orders (tickets) with event, items, ticketCode for My Tickets page */
 export async function getMyOrders(req, res) {
   try {
     const userId = req.userId;
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
-    const result = await query(
-      `SELECT o."id", o."eventId", o."fullName", o."email", o."totalAmount", o."status", o."reference", o."createdAt",
-              e."title" AS "eventTitle", e."date" AS "eventDate"
-       FROM "Order" o
-       LEFT JOIN "Event" e ON e."id" = o."eventId"
-       WHERE o."userId" = $1
-       ORDER BY o."createdAt" DESC`,
-      [userId]
-    ).catch(() => ({ rows: [] }));
-    const list = (result.rows || []).map((row) => ({
-      id: String(row.id),
-      eventId: row.eventId ? String(row.eventId) : null,
-      eventTitle: row.eventTitle,
-      eventDate: row.eventDate,
-      fullName: row.fullName,
-      email: row.email,
-      totalAmount: row.totalAmount,
-      status: row.status,
-      reference: row.reference,
-      createdAt: row.createdAt,
+    const orders = await userPageModel.getMyOrders(userId);
+    const list = orders.map((o) => ({
+      id: String(o.id),
+      eventId: o.eventId != null ? String(o.eventId) : null,
+      fullName: o.fullName,
+      email: o.email,
+      totalAmount: o.totalAmount,
+      status: o.status,
+      createdAt: o.createdAt,
+      ticketCode: o.ticketCode ?? null,
+      event: o.event
+        ? {
+            title: o.event.title,
+            description: o.event.description,
+            date: o.event.date,
+            venue: o.event.venue ?? o.event.location ?? '',
+            imageUrl: o.event.imageUrl,
+            category: o.event.category,
+            startTime: o.event.startTime,
+          }
+        : null,
+      items: (o.items || []).map((i) => ({
+        ticketName: i.ticketName ?? i.name ?? 'Ticket',
+        quantity: Number(i.quantity) || 0,
+        price: Number(i.price) || 0,
+      })),
     }));
     return res.json(list);
-  } catch {
+  } catch (err) {
+    console.error('[user.controller] getMyOrders:', err?.message || err);
     return res.json([]);
   }
 }

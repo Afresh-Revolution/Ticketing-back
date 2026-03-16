@@ -51,7 +51,7 @@ export const userPageModel = {
     const { rows } = await query(
       `SELECT o.id AS "orderId", o."eventId", o."fullName", o.email, o."totalAmount", o.status, o."ticketCode", o."createdAt" AS "orderCreatedAt",
               e.title AS "event_title", e.description AS "event_description", e.date AS "event_date",
-              e.venue AS "event_venue", e."imageUrl" AS "event_imageUrl", e.category AS "event_category",
+              COALESCE(e.venue, e.location) AS "event_venue", e."imageUrl" AS "event_imageUrl", e.category AS "event_category",
               e."startTime" AS "event_startTime"
        FROM "Order" o
        JOIN "Event" e ON e.id = o."eventId"

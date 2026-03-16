@@ -62,9 +62,12 @@ export function optionalAuth(req, res, next) {
         'SELECT id, email, name, role FROM "User" WHERE id = $1',
         [decoded.userId]
       );
-      req.user = rows[0] ?? null;
+      const user = rows[0] ?? null;
+      req.user = user;
+      req.userId = user?.id ?? decoded.userId;
     } catch {
       req.user = null;
+      req.userId = null;
     }
     next();
   });
