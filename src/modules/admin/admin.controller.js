@@ -751,7 +751,7 @@ export async function createWalkInSale(req, res) {
         Math.max(0, parseInt(amount, 10) || 0),
         validStatus,
         notes?.trim() || null,
-        userId,
+        (userId === 0 || userId === '0') ? null : userId,
       ]
     );
     if (!result.rows?.length) return res.status(500).json({ error: 'Failed to create walk-in sale' });
