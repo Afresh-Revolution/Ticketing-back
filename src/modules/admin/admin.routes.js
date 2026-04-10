@@ -27,4 +27,11 @@ router.get('/password-change-status', requireAuth, adminController.getPasswordCh
 router.post('/verify-password', requireAuth, adminController.verifyPassword);
 router.post('/change-password', requireAuth, adminController.changePassword);
 
+// Walk-in sales (on-site physical ticket payments)
+router.get('/walk-in-sales/revenue', requireAuth, adminController.getWalkInRevenue);
+router.get('/walk-in-sales', requireAuth, adminController.listWalkInSales);
+router.post('/walk-in-sales', requireAuth, adminController.createWalkInSale);
+router.patch('/walk-in-sales/:id/status', requireAuth, adminController.updateWalkInSaleStatus);
+router.delete('/walk-in-sales/:id', requireAuth, adminController.deleteWalkInSale);
+
 export default router;

@@ -686,3 +686,171 @@ export async function changePassword(req, res) {
     return res.status(500).json({ error: err.message || 'Failed' });
   }
 }
+
+/* ==================== Walk-In Sales ==================== */
+
+/** GET /api/admin/walk-in-sales – list walk-in sales; super admin sees all, others only for their events. */
+export async function listWalkInSales(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const rawId = req.user?.id ?? req.userId;
+    const userIdParam = rawId != null ? String(rawId) : '';
+
+    const sql = superAdmin
+      ? `SELECT w.*, e.title AS event_title
+         FROM "WalkInSale" w
+         LEFT JOIN "Event" e ON e.id = w."eventId"
+         ORDER BY w."createdAt" DESC
+         LIMIT 200`
+      : `SELECT w.*, e.title AS event_title
+         FROM "WalkInSale" w
+         LEFT JOIN "Event" e ON e.id = w."eventId"
+         WHERE (e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0')
+         ORDER BY w."createdAt" DESC
+         LIMIT 200`;
+    const params = superAdmin ? [] : [userIdParam];
+    const result = await query(sql, params).catch(() => ({ rows: [] }));
+    return res.json(result.rows || []);
+  } catch (err) {
+    console.error('listWalkInSales', err);
+    return res.json([]);
+  }
+}
+
+/** POST /api/admin/walk-in-sales – create a walk-in sale. */
+export async function createWalkInSale(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = getUserId(req);
+    const { eventId, fullName, email, phone, ticketType, quantity, amount, status, notes } = req.body || {};
+
+    if (!eventId) return res.status(400).json({ error: 'eventId is required' });
+    if (!fullName || !fullName.trim()) return res.status(400).json({ error: 'Full name is required' });
+    if (!amount && amount !== 0) return res.status(400).json({ error: 'Amount is required' });
+
+    // Verify ownership
+    const checkSql = superAdmin
+      ? 'SELECT id FROM "Event" WHERE id = $1'
+      : 'SELECT id FROM "Event" WHERE id = $1 AND ("createdBy" = $2 OR ("createdBy" IS NULL AND ($2 = 0 OR $2 = \'0\')))';
+    const checkParams = superAdmin ? [eventId] : [eventId, userId];
+    const check = await query(checkSql, checkParams).catch(() => ({ rows: [] }));
+    if (!check.rows?.length) return res.status(404).json({ error: 'Event not found or access denied' });
+
+    const validStatus = status === 'paid' ? 'paid' : 'pending';
+    const result = await query(
+      `INSERT INTO "WalkInSale" ("eventId", "fullName", "email", "phone", "ticketType", "quantity", "amount", "status", "notes", "recordedBy")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING *`,
+      [
+        eventId,
+        fullName.trim(),
+        email?.trim() || null,
+        phone?.trim() || null,
+        ticketType?.trim() || 'General',
+        Math.max(1, parseInt(quantity, 10) || 1),
+        Math.max(0, parseInt(amount, 10) || 0),
+        validStatus,
+        notes?.trim() || null,
+        userId,
+      ]
+    );
+    if (!result.rows?.length) return res.status(500).json({ error: 'Failed to create walk-in sale' });
+
+    // Include event title in response
+    const eventResult = await query('SELECT title FROM "Event" WHERE id = $1', [eventId]).catch(() => ({ rows: [] }));
+    const row = result.rows[0];
+    row.event_title = eventResult.rows?.[0]?.title || '';
+
+    return res.status(201).json(row);
+  } catch (err) {
+    console.error('createWalkInSale', err);
+    return res.status(500).json({ error: err.message || 'Failed to create walk-in sale' });
+  }
+}
+
+/** PATCH /api/admin/walk-in-sales/:id/status – toggle status between pending and paid. */
+export async function updateWalkInSaleStatus(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = getUserId(req);
+    const saleId = parseInt(req.params.id, 10);
+    if (Number.isNaN(saleId)) return res.status(400).json({ error: 'Invalid sale id' });
+
+    const { status } = req.body || {};
+    const validStatus = status === 'paid' ? 'paid' : 'pending';
+
+    // Verify ownership via event
+    const ownershipSql = superAdmin
+      ? `SELECT w.id FROM "WalkInSale" w
+         LEFT JOIN "Event" e ON e.id = w."eventId"
+         WHERE w.id = $1`
+      : `SELECT w.id FROM "WalkInSale" w
+         LEFT JOIN "Event" e ON e.id = w."eventId"
+         WHERE w.id = $1 AND (e."createdBy" = $2 OR (e."createdBy" IS NULL AND ($2 = 0 OR $2 = '0')))`;
+    const ownershipParams = superAdmin ? [saleId] : [saleId, userId];
+    const ownerCheck = await query(ownershipSql, ownershipParams).catch(() => ({ rows: [] }));
+    if (!ownerCheck.rows?.length) return res.status(404).json({ error: 'Walk-in sale not found' });
+
+    const result = await query(
+      `UPDATE "WalkInSale" SET "status" = $1, "updatedAt" = NOW() WHERE id = $2 RETURNING *`,
+      [validStatus, saleId]
+    );
+    if (!result.rows?.length) return res.status(404).json({ error: 'Walk-in sale not found' });
+    return res.json(result.rows[0]);
+  } catch (err) {
+    console.error('updateWalkInSaleStatus', err);
+    return res.status(500).json({ error: err.message || 'Failed' });
+  }
+}
+
+/** DELETE /api/admin/walk-in-sales/:id – delete a walk-in sale record. */
+export async function deleteWalkInSale(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = getUserId(req);
+    const saleId = parseInt(req.params.id, 10);
+    if (Number.isNaN(saleId)) return res.status(400).json({ error: 'Invalid sale id' });
+
+    // Verify ownership via event
+    const ownershipSql = superAdmin
+      ? `SELECT w.id FROM "WalkInSale" w
+         LEFT JOIN "Event" e ON e.id = w."eventId"
+         WHERE w.id = $1`
+      : `SELECT w.id FROM "WalkInSale" w
+         LEFT JOIN "Event" e ON e.id = w."eventId"
+         WHERE w.id = $1 AND (e."createdBy" = $2 OR (e."createdBy" IS NULL AND ($2 = 0 OR $2 = '0')))`;
+    const ownershipParams = superAdmin ? [saleId] : [saleId, userId];
+    const ownerCheck = await query(ownershipSql, ownershipParams).catch(() => ({ rows: [] }));
+    if (!ownerCheck.rows?.length) return res.status(404).json({ error: 'Walk-in sale not found' });
+
+    await query('DELETE FROM "WalkInSale" WHERE id = $1', [saleId]);
+    return res.json({ message: 'Deleted' });
+  } catch (err) {
+    console.error('deleteWalkInSale', err);
+    return res.status(500).json({ error: err.message || 'Failed' });
+  }
+}
+
+/** GET /api/admin/walk-in-sales/revenue – total paid walk-in revenue (for display in brackets). */
+export async function getWalkInRevenue(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const rawId = req.user?.id ?? req.userId;
+    const userIdParam = rawId != null ? String(rawId) : '';
+
+    const sql = superAdmin
+      ? `SELECT COALESCE(SUM(w."amount"), 0) AS total
+         FROM "WalkInSale" w
+         WHERE w."status" = 'paid'`
+      : `SELECT COALESCE(SUM(w."amount"), 0) AS total
+         FROM "WalkInSale" w
+         LEFT JOIN "Event" e ON e.id = w."eventId"
+         WHERE w."status" = 'paid' AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))`;
+    const params = superAdmin ? [] : [userIdParam];
+    const result = await query(sql, params).catch(() => ({ rows: [{ total: 0 }] }));
+    return res.json({ total: Number(result.rows?.[0]?.total) || 0 });
+  } catch (err) {
+    console.error('getWalkInRevenue', err);
+    return res.json({ total: 0 });
+  }
+}
