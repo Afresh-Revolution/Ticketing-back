@@ -11,6 +11,9 @@ const defaultCorsOrigins = [
 ];
 const resendApiKey = process.env.RESEND_API_KEY || '';
 const resendFrom = process.env.RESEND_FROM || 'Gatewav <onboarding@gatewav.com>';
+const cloudinaryCloudName = process.env.CLOUDINARY_CLOUD_NAME || '';
+const cloudinaryApiKey = process.env.CLOUDINARY_API_KEY || '';
+const cloudinaryApiSecret = process.env.CLOUDINARY_API_SECRET || '';
 
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
@@ -20,6 +23,9 @@ export const config = {
   resendApiKey,
   resendFrom,
   resend: { apiKey: resendApiKey, from: resendFrom },
+  cloudinaryCloudName,
+  cloudinaryApiKey,
+  cloudinaryApiSecret,
   frontendBaseUrl,
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || '',
   corsOrigins: corsOrigin

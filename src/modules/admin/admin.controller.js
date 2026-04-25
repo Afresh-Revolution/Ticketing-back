@@ -237,7 +237,7 @@ export async function listAdminEvents(req, res) {
 export async function getAdminEvent(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
-    const userId = req.user?.id;
+    const userId = getUserId(req);
     const eventId = req.params.eventId;
 
     const sql = superAdmin
@@ -271,7 +271,7 @@ export async function getAdminEvent(req, res) {
 export async function patchEventVisibility(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
-    const userId = req.user?.id;
+    const userId = getUserId(req);
     const eventId = req.params.eventId;
     const isPublished = req.body?.isPublished !== false;
 
@@ -297,7 +297,7 @@ export async function patchEventVisibility(req, res) {
 export async function getEventOrders(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
-    const userId = req.user?.id;
+    const userId = getUserId(req);
     const eventId = req.params.eventId;
 
     const checkSql = superAdmin

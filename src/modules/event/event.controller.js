@@ -1,6 +1,12 @@
 import { eventModel } from './event.model.js';
 import { config } from '../../shared/config/env.js';
 import { query } from '../../shared/config/db.js';
+import {
+  deleteImageFromCloudinary,
+  extractCloudinaryPublicId,
+  isCloudinaryConfigured,
+  uploadImageBufferToCloudinary,
+} from '../../shared/services/cloudinary.service.js';
 
 /** Stable numeric id for external systems (e.g. JOSCITY) from our UUID. */
 function toStableNumericId(id) {
@@ -179,6 +185,21 @@ export async function remove(req, res, next) {
       const ownsEvent = event.createdBy != null && String(event.createdBy) === String(req.user.id);
       if (!ownsEvent) return res.status(403).json({ error: 'You can only delete events you created' });
     }
+
+    const cloudinaryPublicId = extractCloudinaryPublicId(event.imageUrl);
+    if (cloudinaryPublicId) {
+      if (!isCloudinaryConfigured()) {
+        return res.status(500).json({
+          error: 'Cloudinary is not configured. Cannot delete event image.',
+        });
+      }
+      const imageDeleteResult = await deleteImageFromCloudinary(cloudinaryPublicId);
+      const okResults = new Set(['ok', 'not found']);
+      if (!okResults.has(String(imageDeleteResult?.result || '').toLowerCase())) {
+        return res.status(500).json({ error: 'Failed to delete image from Cloudinary' });
+      }
+    }
+
     await eventModel.delete(req.params.id);
     res.status(204).send();
   } catch (e) {
@@ -197,6 +218,33 @@ export async function toggleTrending(req, res, next) {
     });
     
     res.json(updated);
+  } catch (e) {
+    next(e);
+  }
+}
+
+/** POST /api/events/upload-image – Upload image file to Cloudinary. */
+export async function uploadImage(req, res, next) {
+  try {
+    if (!isCloudinaryConfigured()) {
+      return res.status(500).json({
+        error: 'Cloudinary is not configured on the server',
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'Image file is required' });
+    }
+
+    if (!req.file.mimetype || !req.file.mimetype.startsWith('image/')) {
+      return res.status(400).json({ error: 'Only image files are allowed' });
+    }
+
+    const result = await uploadImageBufferToCloudinary(req.file.buffer);
+    return res.status(201).json({
+      imageUrl: result.secure_url,
+      publicId: result.public_id,
+    });
   } catch (e) {
     next(e);
   }
