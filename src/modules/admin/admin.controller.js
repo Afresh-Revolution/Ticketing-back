@@ -238,12 +238,13 @@ export async function getAdminEvent(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
     const userId = getUserId(req);
+    const userIdParam = userId != null ? String(userId) : '';
     const eventId = req.params.eventId;
 
     const sql = superAdmin
       ? 'SELECT * FROM "Event" WHERE id = $1'
-      : 'SELECT * FROM "Event" WHERE id = $1 AND ("createdBy" = $2 OR ("createdBy" IS NULL AND ($2 = 0 OR $2 = \'0\')))';
-    const params = superAdmin ? [eventId] : [eventId, userId];
+      : 'SELECT * FROM "Event" WHERE id = $1 AND ("createdBy"::text = $2 OR ("createdBy" IS NULL AND $2 = \'0\'))';
+    const params = superAdmin ? [eventId] : [eventId, userIdParam];
     const result = await query(sql, params).catch(() => ({ rows: [] }));
     if (!result.rows?.length) return res.status(404).json({ error: 'Event not found' });
     const row = result.rows[0];
@@ -272,13 +273,14 @@ export async function patchEventVisibility(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
     const userId = getUserId(req);
+    const userIdParam = userId != null ? String(userId) : '';
     const eventId = req.params.eventId;
     const isPublished = req.body?.isPublished !== false;
 
     const checkSql = superAdmin
       ? 'SELECT id FROM "Event" WHERE id = $1'
-      : 'SELECT id FROM "Event" WHERE id = $1 AND ("createdBy" = $2 OR ("createdBy" IS NULL AND ($2 = 0 OR $2 = \'0\')))';
-    const checkParams = superAdmin ? [eventId] : [eventId, userId];
+      : 'SELECT id FROM "Event" WHERE id = $1 AND ("createdBy"::text = $2 OR ("createdBy" IS NULL AND $2 = \'0\'))';
+    const checkParams = superAdmin ? [eventId] : [eventId, userIdParam];
     const check = await query(checkSql, checkParams).catch(() => ({ rows: [] }));
     if (!check.rows?.length) return res.status(404).json({ error: 'Event not found' });
 
@@ -298,12 +300,13 @@ export async function getEventOrders(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
     const userId = getUserId(req);
+    const userIdParam = userId != null ? String(userId) : '';
     const eventId = req.params.eventId;
 
     const checkSql = superAdmin
       ? 'SELECT id FROM "Event" WHERE id = $1'
-      : 'SELECT id FROM "Event" WHERE id = $1 AND ("createdBy" = $2 OR ("createdBy" IS NULL AND ($2 = 0 OR $2 = \'0\')))';
-    const checkParams = superAdmin ? [eventId] : [eventId, userId];
+      : 'SELECT id FROM "Event" WHERE id = $1 AND ("createdBy"::text = $2 OR ("createdBy" IS NULL AND $2 = \'0\'))';
+    const checkParams = superAdmin ? [eventId] : [eventId, userIdParam];
     const check = await query(checkSql, checkParams).catch(() => ({ rows: [] }));
     if (!check.rows?.length) return res.status(404).json({ error: 'Event not found' });
 
