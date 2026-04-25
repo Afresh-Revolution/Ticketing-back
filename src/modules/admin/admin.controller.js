@@ -329,12 +329,12 @@ export async function getSales(req, res) {
     const userIdParam = rawId != null ? String(rawId) : '';
 
     const sql = superAdmin
-      ? `SELECT o.id, o."fullName", o.email, o."totalAmount", o."status", o."createdAt", e.title AS event_title
+      ? `SELECT o.id, o."fullName", o.email, o.phone, o."totalAmount", o."status", o."createdAt", e.title AS event_title
          FROM "Order" o
          LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
          ORDER BY o."createdAt" DESC
          LIMIT 100`
-      : `SELECT o.id, o."fullName", o.email, o."totalAmount", o."status", o."createdAt", e.title AS event_title
+      : `SELECT o.id, o."fullName", o.email, o.phone, o."totalAmount", o."status", o."createdAt", e.title AS event_title
          FROM "Order" o
          LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
          WHERE (e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0')
@@ -346,6 +346,7 @@ export async function getSales(req, res) {
       id: r.id,
       buyer_name: r.fullName,
       buyer_email: r.email,
+      buyer_phone: r.phone,
       amount: r.totalAmount,
       ticket_count: 1,
       status: r.status,
