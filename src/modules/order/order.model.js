@@ -67,7 +67,7 @@ export const orderModel = {
     
     // Fetch Items
     const { rows: items } = await query(
-      `SELECT oi.*, tt.name as "ticketName" 
+      `SELECT oi.*, tt.name as "ticketName", tt.type as "ticketType"
        FROM "OrderItem" oi
        JOIN "TicketType" tt ON oi."ticketTypeId" = tt.id
        WHERE oi."orderId" = $1`, 

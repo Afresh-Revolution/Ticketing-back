@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs';
-import { query } from '../../shared/config/db.js';
+import { query, createId } from '../../shared/config/db.js';
 
 /** True if current user is super admin (sees all events in Supabase). */
 function isSuperAdmin(req) {
@@ -706,6 +706,143 @@ export async function changePassword(req, res) {
     return res.json({ success: true, message: 'Password updated' });
   } catch (err) {
     return res.status(500).json({ error: err.message || 'Failed' });
+  }
+}
+
+/** POST /api/admin/verify-ticket – verify scanned ticket code and log entry usage. */
+export async function verifyTicket(req, res) {
+  try {
+    const code = String(req.body?.code || '').trim();
+    if (!code) {
+      return res.status(400).json({ valid: false, reason: 'invalid', message: 'Ticket code is required.' });
+    }
+
+    const superAdmin = isSuperAdmin(req);
+    const userId = getUserId(req);
+    const userIdText = userId != null ? String(userId) : '';
+
+    const orderResult = await query(
+      `SELECT
+         o.id,
+         o."fullName",
+         o.status,
+         o."eventId",
+         e.title AS "eventTitle",
+         e."createdBy",
+         COALESCE(SUM(oi.quantity), 1)::int AS "totalQuantity",
+         COALESCE(COUNT(s.id), 0)::int AS "scanCount",
+         ARRAY_REMOVE(ARRAY_AGG(DISTINCT tt.name), NULL) AS "ticketTypes"
+       FROM "Order" o
+       LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
+       LEFT JOIN "OrderItem" oi ON oi."orderId"::text = o.id::text
+       LEFT JOIN "TicketType" tt ON tt.id::text = oi."ticketTypeId"::text
+       LEFT JOIN "ScanLog" s ON s."orderId"::text = o.id::text
+       WHERE o."ticketCode" = $1
+       GROUP BY o.id, o."fullName", o.status, o."eventId", e.title, e."createdBy"
+       LIMIT 1`,
+      [code]
+    ).catch(() => ({ rows: [] }));
+
+    if (!orderResult.rows?.length) {
+      return res.status(404).json({ valid: false, reason: 'not_found', message: 'Ticket code not found.' });
+    }
+
+    const row = orderResult.rows[0];
+    const eventTitle = row.eventTitle || 'Unknown event';
+    const ticketTypes = Array.isArray(row.ticketTypes) ? row.ticketTypes.filter(Boolean) : [];
+    const ticketType = ticketTypes.length > 0 ? ticketTypes.join(', ') : 'General';
+    const totalQuantity = Number(row.totalQuantity) || 1;
+    const scanCount = Number(row.scanCount) || 0;
+
+    const createdByText = row.createdBy == null ? null : String(row.createdBy);
+    const allowed =
+      superAdmin ||
+      (createdByText !== null && createdByText === userIdText) ||
+      (createdByText === null && userIdText === '0');
+
+    if (!allowed) {
+      return res.status(403).json({
+        valid: false,
+        reason: 'not_authorized',
+        message: 'You can only scan tickets for events you created. Super Admin can scan all.',
+        eventTitle,
+        fullName: row.fullName || undefined,
+        ticketType,
+      });
+    }
+
+    if (String(row.status || '').toLowerCase() !== 'paid') {
+      return res.status(400).json({
+        valid: false,
+        reason: 'unpaid',
+        message: 'This ticket has not been fully paid for.',
+        eventTitle,
+        fullName: row.fullName || undefined,
+        scanCount,
+        totalQuantity,
+        ticketType,
+      });
+    }
+
+    if (scanCount >= totalQuantity) {
+      return res.status(200).json({
+        valid: false,
+        reason: 'already_used',
+        message: 'Ticket already fully used.',
+        eventTitle,
+        fullName: row.fullName || undefined,
+        scanCount,
+        totalQuantity,
+        ticketType,
+      });
+    }
+
+    const insertAttempts = [
+      {
+        sql: `INSERT INTO "ScanLog" ("orderId", "eventId", "scannedBy") VALUES ($1, $2, $3)`,
+        params: [row.id, row.eventId, userIdText],
+      },
+      {
+        sql: `INSERT INTO "ScanLog" ("id", "orderId", "eventId", "scannedBy") VALUES ($1, $2, $3, $4)`,
+        params: [createId(), row.id, row.eventId, userIdText],
+      },
+      {
+        sql: `INSERT INTO "ScanLog" ("orderId") VALUES ($1)`,
+        params: [row.id],
+      },
+      {
+        sql: `INSERT INTO "ScanLog" ("id", "orderId") VALUES ($1, $2)`,
+        params: [createId(), row.id],
+      },
+    ];
+
+    let logged = false;
+    for (const attempt of insertAttempts) {
+      try {
+        await query(attempt.sql, attempt.params);
+        logged = true;
+        break;
+      } catch {
+        // Try next schema-compatible insert variant.
+      }
+    }
+
+    const nextScanCount = logged ? scanCount + 1 : scanCount;
+    const fullyUsed = nextScanCount >= totalQuantity;
+
+    return res.status(200).json({
+      valid: true,
+      message: fullyUsed ? 'Ticket verified (now fully used).' : 'Ticket verified successfully.',
+      eventTitle,
+      fullName: row.fullName || undefined,
+      scanCount: nextScanCount,
+      totalQuantity,
+      fullyUsed,
+      ticketType,
+    });
+  } catch (err) {
+    console.error('verifyTicket', err);
+    return res.status(500).json({ valid: false, reason: 'error', message: 'Ticket verification failed.' });
   }
 }
 

@@ -3,6 +3,14 @@ import { orderModel } from './order.model.js';
 import { eventModel } from '../event/event.model.js';
 import { sendTicketEmail } from '../../shared/services/email.service.js';
 
+function extractTicketTypes(items) {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => item?.ticketName || item?.ticketType || '')
+    .map((name) => String(name).trim())
+    .filter(Boolean);
+}
+
 export async function create(req, res, next) {
   try {
     const { eventId, items, fullName, email, phone, address, totalAmount } = req.body;
@@ -60,6 +68,7 @@ export async function create(req, res, next) {
           ticketCode,
           eventTitle: event?.title,
           eventDate: event?.date,
+          ticketTypes: extractTicketTypes(orderWithCode?.items),
         });
       } catch (emailErr) {
         console.error('[order] Free ticket email failed:', emailErr.message);
@@ -108,6 +117,7 @@ export async function verify(req, res, next) {
         ticketCode,
         eventTitle: event?.title,
         eventDate: event?.date,
+        ticketTypes: extractTicketTypes(orderWithCode?.items),
       });
     } catch (emailErr) {
       console.error('[order] Ticket email failed:', emailErr.message);

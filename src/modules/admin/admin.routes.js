@@ -26,6 +26,7 @@ router.delete('/top-users/:id', requireAuth, adminController.deleteTopUser);
 router.get('/password-change-status', requireAuth, adminController.getPasswordChangeStatus);
 router.post('/verify-password', requireAuth, adminController.verifyPassword);
 router.post('/change-password', requireAuth, adminController.changePassword);
+router.post('/verify-ticket', requireAuth, adminController.verifyTicket);
 
 // Walk-in sales (on-site physical ticket payments)
 router.get('/walk-in-sales/revenue', requireAuth, adminController.getWalkInRevenue);

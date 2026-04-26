@@ -71,7 +71,7 @@ export function sendOtpEmail(to, code, type = 'verification') {
 }
 
 /** Send digital ticket email with QR code (after payment success). */
-export async function sendTicketEmail({ to, fullName, ticketCode, eventTitle, eventDate }) {
+export async function sendTicketEmail({ to, fullName, ticketCode, eventTitle, eventDate, ticketTypes = [] }) {
   let qrDataUrl = '';
   try {
     qrDataUrl = await QRCode.toDataURL(ticketCode, { margin: 2, width: 200 });
@@ -80,6 +80,16 @@ export async function sendTicketEmail({ to, fullName, ticketCode, eventTitle, ev
   }
   const dateStr = eventDate ? new Date(eventDate).toLocaleDateString('en-NG', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }) : '';
   const subject = 'Your ticket – ' + (eventTitle || 'Event');
+  const safeTicketTypes = Array.isArray(ticketTypes)
+    ? ticketTypes.map((t) => String(t || '').trim()).filter(Boolean)
+    : [];
+  const uniqueTicketTypes = [...new Set(safeTicketTypes)];
+  const ticketTypeBadges = uniqueTicketTypes
+    .map(
+      (type) =>
+        `<span style="display:inline-block;background:#791A94;color:#fff;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;margin:0 6px 6px 0;">${type}</span>`
+    )
+    .join('');
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; background: #f8f9fa; border-radius: 12px;">
       <h2 style="color: #791A94; margin-top: 0;">Gatewave Ticket</h2>
@@ -88,6 +98,7 @@ export async function sendTicketEmail({ to, fullName, ticketCode, eventTitle, ev
       <div style="background: #fff; padding: 20px; border-radius: 12px; text-align: center; margin: 20px 0; border: 1px solid #e0e0e0;">
         <p style="margin: 0 0 8px 0; font-weight: bold; color: #1a1a2e;">${eventTitle || 'Event'}</p>
         <p style="margin: 0 0 16px 0; color: #666; font-size: 14px;">${dateStr}</p>
+        ${ticketTypeBadges ? `<div style="margin: 0 0 14px 0;">${ticketTypeBadges}</div>` : ''}
         <p style="margin: 0 0 8px 0; font-size: 12px; color: #999;">Ticket code</p>
         <p style="margin: 0 0 12px 0; font-size: 18px; font-weight: bold; letter-spacing: 2px;">${ticketCode}</p>
         ${qrDataUrl ? `<img src="${qrDataUrl}" alt="QR code" width="200" height="200" style="display: block; margin: 0 auto;" />` : ''}
