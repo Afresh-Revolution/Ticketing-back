@@ -27,12 +27,32 @@ export async function getDashboard(req, res) {
 
     // Revenue/sales: join Order -> Event; super admin sees all, others only their events (createdBy = userId)
     const revSql = superAdmin
-      ? `SELECT COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS ticket_rev,
-                COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN 1 ELSE 0 END), 0) AS tickets_sold
+      ? `SELECT
+           COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS ticket_rev,
+           COALESCE(
+             SUM(
+               CASE
+                 WHEN o."status" = 'paid'
+                 THEN COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
+                 ELSE 0
+               END
+             ),
+             0
+           ) AS tickets_sold
          FROM "Order" o
          LEFT JOIN "Event" e ON e.id::text = o."eventId"::text`
-      : `SELECT COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS ticket_rev,
-                COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN 1 ELSE 0 END), 0) AS tickets_sold
+      : `SELECT
+           COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS ticket_rev,
+           COALESCE(
+             SUM(
+               CASE
+                 WHEN o."status" = 'paid'
+                 THEN COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
+                 ELSE 0
+               END
+             ),
+             0
+           ) AS tickets_sold
          FROM "Order" o
          INNER JOIN "Event" e ON e.id::text = o."eventId"::text AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))`;
     const revParams = superAdmin ? [] : [userIdParam];
@@ -329,12 +349,42 @@ export async function getSales(req, res) {
     const userIdParam = rawId != null ? String(rawId) : '';
 
     const sql = superAdmin
-      ? `SELECT o.id, o."fullName", o.email, o.phone, o."totalAmount", o."status", o."createdAt", e.title AS event_title
+      ? `SELECT
+           o.id,
+           o."fullName",
+           o.email,
+           o.phone,
+           o."totalAmount",
+           o."status",
+           o."createdAt",
+           e.title AS event_title,
+           COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1) AS ticket_count,
+           COALESCE((
+             SELECT STRING_AGG(CONCAT(COALESCE(tt.name, 'General'), ' x', oi.quantity::text), ', ' ORDER BY COALESCE(tt.name, 'General'))
+             FROM "OrderItem" oi
+             LEFT JOIN "TicketType" tt ON tt.id::text = oi."ticketTypeId"::text
+             WHERE oi."orderId"::text = o.id::text
+           ), 'General x1') AS ticket_breakdown
          FROM "Order" o
          LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
          ORDER BY o."createdAt" DESC
          LIMIT 100`
-      : `SELECT o.id, o."fullName", o.email, o.phone, o."totalAmount", o."status", o."createdAt", e.title AS event_title
+      : `SELECT
+           o.id,
+           o."fullName",
+           o.email,
+           o.phone,
+           o."totalAmount",
+           o."status",
+           o."createdAt",
+           e.title AS event_title,
+           COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1) AS ticket_count,
+           COALESCE((
+             SELECT STRING_AGG(CONCAT(COALESCE(tt.name, 'General'), ' x', oi.quantity::text), ', ' ORDER BY COALESCE(tt.name, 'General'))
+             FROM "OrderItem" oi
+             LEFT JOIN "TicketType" tt ON tt.id::text = oi."ticketTypeId"::text
+             WHERE oi."orderId"::text = o.id::text
+           ), 'General x1') AS ticket_breakdown
          FROM "Order" o
          LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
          WHERE (e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0')
@@ -348,7 +398,8 @@ export async function getSales(req, res) {
       buyer_email: r.email,
       buyer_phone: r.phone,
       amount: r.totalAmount,
-      ticket_count: 1,
+      ticket_count: Number(r.ticket_count) || 1,
+      ticket_breakdown: r.ticket_breakdown || '',
       status: r.status,
       created_at: r.createdAt,
       event_title: r.event_title,
@@ -729,16 +780,11 @@ export async function verifyTicket(req, res) {
          o."eventId",
          e.title AS "eventTitle",
          e."createdBy",
-         COALESCE(SUM(oi.quantity), 1)::int AS "totalQuantity",
-         COALESCE(COUNT(s.id), 0)::int AS "scanCount",
-         ARRAY_REMOVE(ARRAY_AGG(DISTINCT tt.name), NULL) AS "ticketTypes"
+         COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1) AS "totalQuantity",
+         COALESCE((SELECT COUNT(*)::int FROM "ScanLog" s WHERE s."orderId"::text = o.id::text), 0) AS "scanCount"
        FROM "Order" o
        LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
-       LEFT JOIN "OrderItem" oi ON oi."orderId"::text = o.id::text
-       LEFT JOIN "TicketType" tt ON tt.id::text = oi."ticketTypeId"::text
-       LEFT JOIN "ScanLog" s ON s."orderId"::text = o.id::text
        WHERE o."ticketCode" = $1
-       GROUP BY o.id, o."fullName", o.status, o."eventId", e.title, e."createdBy"
        LIMIT 1`,
       [code]
     ).catch(() => ({ rows: [] }));
@@ -749,10 +795,25 @@ export async function verifyTicket(req, res) {
 
     const row = orderResult.rows[0];
     const eventTitle = row.eventTitle || 'Unknown event';
-    const ticketTypes = Array.isArray(row.ticketTypes) ? row.ticketTypes.filter(Boolean) : [];
-    const ticketType = ticketTypes.length > 0 ? ticketTypes.join(', ') : 'General';
     const totalQuantity = Number(row.totalQuantity) || 1;
     const scanCount = Number(row.scanCount) || 0;
+    const breakdownResult = await query(
+      `SELECT tt.name AS name, SUM(oi.quantity)::int AS quantity
+       FROM "OrderItem" oi
+       LEFT JOIN "TicketType" tt ON tt.id::text = oi."ticketTypeId"::text
+       WHERE oi."orderId"::text = $1
+       GROUP BY tt.name`,
+      [row.id]
+    ).catch(() => ({ rows: [] }));
+    const ticketBreakdown = (breakdownResult.rows || [])
+      .map((item) => ({
+        name: item?.name || 'General',
+        quantity: Number(item?.quantity) || 0,
+      }))
+      .filter((item) => item.quantity > 0);
+    const ticketType = ticketBreakdown.length > 0
+      ? ticketBreakdown.map((item) => `${item.name} x${item.quantity}`).join(', ')
+      : 'General x1';
 
     const createdByText = row.createdBy == null ? null : String(row.createdBy);
     const allowed =
@@ -768,6 +829,7 @@ export async function verifyTicket(req, res) {
         eventTitle,
         fullName: row.fullName || undefined,
         ticketType,
+        ticketBreakdown,
       });
     }
 
@@ -781,6 +843,7 @@ export async function verifyTicket(req, res) {
         scanCount,
         totalQuantity,
         ticketType,
+        ticketBreakdown,
       });
     }
 
@@ -794,6 +857,7 @@ export async function verifyTicket(req, res) {
         scanCount,
         totalQuantity,
         ticketType,
+        ticketBreakdown,
       });
     }
 
@@ -839,6 +903,7 @@ export async function verifyTicket(req, res) {
       totalQuantity,
       fullyUsed,
       ticketType,
+      ticketBreakdown,
     });
   } catch (err) {
     console.error('verifyTicket', err);
