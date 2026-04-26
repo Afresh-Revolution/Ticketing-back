@@ -94,7 +94,7 @@ export async function sendTicketEmail({ to, fullName, ticketCode, eventTitle, ev
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; background: #f8f9fa; border-radius: 12px;">
       <h2 style="color: #791A94; margin-top: 0;">Gatewave Ticket</h2>
       <p>Hi ${fullName || 'there'},</p>
-      <p>Your payment was successful. Here is your digital ticket.</p>
+      <p>Your payment was successful. Here is your digital ticket. NOTE: For multiple ticket purchases, please share to individual attendees.</p>
       <div style="background: #fff; padding: 20px; border-radius: 12px; text-align: center; margin: 20px 0; border: 1px solid #e0e0e0;">
         <p style="margin: 0 0 8px 0; font-weight: bold; color: #1a1a2e;">${eventTitle || 'Event'}</p>
         <p style="margin: 0 0 16px 0; color: #666; font-size: 14px;">${dateStr}</p>
