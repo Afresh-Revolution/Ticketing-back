@@ -612,13 +612,31 @@ export async function createTopUser(req, res) {
 export async function updateTopUser(req, res) {
   try {
     const { name, title, imageUrl, sortOrder } = req.body || {};
-    await query(
-      'UPDATE "TopUser" SET "name" = COALESCE($1, "name"), "title" = COALESCE($2, "title"), "imageUrl" = COALESCE($3, "imageUrl"), "sortOrder" = COALESCE($4, "sortOrder") WHERE "id" = $5',
-      [name, title, imageUrl, sortOrder, req.params.id]
-    ).catch(() => ({}));
-    return res.json({ message: 'Updated' });
-  } catch {
-    return res.status(404).json({ error: 'Not found' });
+    const parsedSortOrder =
+      sortOrder === undefined || sortOrder === null || sortOrder === ''
+        ? null
+        : Number(sortOrder);
+
+    if (parsedSortOrder !== null && Number.isNaN(parsedSortOrder)) {
+      return res.status(400).json({ error: 'sortOrder must be a number' });
+    }
+
+    const result = await query(
+      `UPDATE "TopUser"
+       SET "name" = COALESCE($1, "name"),
+           "title" = COALESCE($2, "title"),
+           "imageUrl" = COALESCE($3, "imageUrl"),
+           "sortOrder" = COALESCE($4, "sortOrder"),
+           "updatedAt" = NOW()
+       WHERE "id" = $5
+       RETURNING "id", "name", "title", "imageUrl", "sortOrder"`,
+      [name, title, imageUrl, parsedSortOrder, req.params.id]
+    );
+
+    if (!result.rows?.length) return res.status(404).json({ error: 'Top user not found' });
+    return res.json(result.rows[0]);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed to update top user' });
   }
 }
 
