@@ -151,6 +151,7 @@ export async function updateEvent(req, res) {
     ).catch(() => ({ rows: [] }));
     if (!result.rows || result.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
     return res.json({ message: 'Updated' });
+    
   } catch (err) {
     console.error('updateEvent', err);
     return res.status(500).json({ error: err.message || 'Failed to update' });
