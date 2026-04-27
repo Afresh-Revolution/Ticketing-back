@@ -12,6 +12,7 @@ router.delete('/admins/:id', requireAuth, requireSuperAdmin, adminController.del
 router.get('/sales', requireAuth, adminController.getSales);
 router.get('/events', requireAuth, adminController.listAdminEvents);
 router.get('/events/:eventId/orders', requireAuth, adminController.getEventOrders);
+router.patch('/events/:eventId', requireAuth, adminController.patchAdminEvent);
 router.patch('/events/:eventId/visibility', requireAuth, adminController.patchEventVisibility);
 router.get('/events/:eventId', requireAuth, adminController.getAdminEvent);
 router.get('/withdraw', requireAuth, adminController.getWithdrawPage);

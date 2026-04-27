@@ -288,6 +288,67 @@ export async function getAdminEvent(req, res) {
   }
 }
 
+/** PATCH /api/admin/events/:eventId – update event details; owner only (unless super admin). */
+export async function patchAdminEvent(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = getUserId(req);
+    const userIdParam = userId != null ? String(userId) : '';
+    const eventId = String(req.params.eventId || req.params.id || '');
+    const body = req.body || {};
+
+    if (!eventId) return res.status(400).json({ error: 'Event id is required' });
+
+    const check = await query(
+      'SELECT "id", "createdBy" FROM "Event" WHERE "id"::text = $1',
+      [eventId]
+    ).catch(() => ({ rows: [] }));
+    if (!check.rows?.length) return res.status(404).json({ error: 'Event not found' });
+
+    const event = check.rows[0];
+    const ownsEvent = String(event.createdBy) === userIdParam || (event.createdBy == null && userIdParam === '0');
+    if (!superAdmin && !ownsEvent) {
+      return res.status(403).json({ error: 'You can only edit events you created' });
+    }
+
+    const result = await query(
+      `UPDATE "Event"
+       SET "title" = COALESCE($1, "title"),
+           "date" = COALESCE($2, "date"),
+           "location" = COALESCE($3, "location"),
+           "price" = COALESCE($4, "price"),
+           "imageUrl" = COALESCE($5, "imageUrl"),
+           "startTime" = COALESCE($6, "startTime"),
+           "description" = COALESCE($7, "description"),
+           "organizer" = COALESCE($8, "organizer"),
+           "isTrending" = COALESCE($9, "isTrending"),
+           "isPublished" = COALESCE($10, "isPublished"),
+           "updatedAt" = NOW()
+       WHERE "id"::text = $11
+       RETURNING "id"`,
+      [
+        body.title ?? null,
+        body.date ?? null,
+        body.location ?? null,
+        body.price ?? null,
+        body.imageUrl ?? null,
+        body.startTime ?? null,
+        body.description ?? null,
+        body.organizer ?? null,
+        typeof body.isTrending === 'boolean' ? body.isTrending : null,
+        typeof body.isPublished === 'boolean' ? body.isPublished : null,
+        eventId,
+      ]
+    ).catch(() => ({ rows: [] }));
+
+    if (!result.rows?.length) return res.status(404).json({ error: 'Event not found' });
+    return res.json({ message: 'Updated' });
+  } catch (err) {
+    console.error('patchAdminEvent', err);
+    return res.status(500).json({ error: err.message || 'Failed to update event' });
+  }
+}
+
 /** PATCH /api/admin/events/:eventId/visibility – toggle event visible on public side (isPublished). */
 export async function patchEventVisibility(req, res) {
   try {
