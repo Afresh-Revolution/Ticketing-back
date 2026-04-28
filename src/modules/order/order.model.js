@@ -11,6 +11,10 @@ function rowToOrder(row) {
     phone: row.phone,
     address: row.address,
     totalAmount: row.totalAmount,
+    couponId: row.couponId ?? null,
+    couponCode: row.couponCode ?? null,
+    originalAmount: row.originalAmount ?? row.totalAmount,
+    discountAmount: row.discountAmount ?? 0,
     status: row.status,
     reference: row.reference,
     ticketCode: row.ticketCode ?? null,
@@ -27,8 +31,8 @@ export const orderModel = {
     // Start simple without transaction for now, but in prod use transaction
     // 1. Create Order
     await query(
-      `INSERT INTO "Order" (id, "eventId", "userId", "fullName", email, phone, address, "totalAmount", status, reference, "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      `INSERT INTO "Order" (id, "eventId", "userId", "fullName", email, phone, address, "totalAmount", status, reference, "couponId", "couponCode", "originalAmount", "discountAmount", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
       [
         id,
         data.eventId,
@@ -40,6 +44,10 @@ export const orderModel = {
         data.totalAmount,
         data.status ?? 'pending',
         data.reference ?? null,
+        data.couponId ?? null,
+        data.couponCode ?? null,
+        data.originalAmount ?? data.totalAmount,
+        data.discountAmount ?? 0,
         now,
         now
       ]

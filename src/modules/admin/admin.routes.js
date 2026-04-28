@@ -10,6 +10,10 @@ router.get('/admins', requireAuth, requireSuperAdmin, adminController.listAdmins
 router.patch('/admins/:id/suspend', requireAuth, requireSuperAdmin, adminController.suspendAdmin);
 router.delete('/admins/:id', requireAuth, requireSuperAdmin, adminController.deleteAdmin);
 router.get('/sales', requireAuth, adminController.getSales);
+router.get('/coupons', requireAuth, adminController.listCoupons);
+router.post('/coupons', requireAuth, adminController.createCoupon);
+router.patch('/coupons/:id', requireAuth, adminController.updateCoupon);
+router.delete('/coupons/:id', requireAuth, adminController.deleteCoupon);
 router.get('/events', requireAuth, adminController.listAdminEvents);
 router.get('/events/:eventId/orders', requireAuth, adminController.getEventOrders);
 router.patch('/events/:eventId', requireAuth, adminController.patchAdminEvent);

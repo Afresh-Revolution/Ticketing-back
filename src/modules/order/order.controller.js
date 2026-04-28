@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { orderModel } from './order.model.js';
 import { eventModel } from '../event/event.model.js';
 import { sendTicketEmail } from '../../shared/services/email.service.js';
+import { query } from '../../shared/config/db.js';
 
 function extractTicketTypes(items) {
   if (!Array.isArray(items)) return [];
@@ -11,11 +12,45 @@ function extractTicketTypes(items) {
     .filter(Boolean);
 }
 
+function applyCouponDiscount(totalAmount, coupon) {
+  const amount = Math.max(0, Number(totalAmount) || 0);
+  if (!coupon) return { originalAmount: amount, discountAmount: 0, finalAmount: amount };
+  let discountAmount = 0;
+  if (coupon.discountType === 'fixed') {
+    discountAmount = Math.max(0, Number(coupon.discountValue) || 0);
+  } else {
+    const percentage = Math.max(0, Math.min(100, Number(coupon.discountValue) || 0));
+    discountAmount = Math.round((amount * percentage) / 100);
+  }
+  discountAmount = Math.min(amount, discountAmount);
+  return { originalAmount: amount, discountAmount, finalAmount: amount - discountAmount };
+}
+
+async function getValidCoupon(eventId, code) {
+  const normalizedCode = String(code || '').trim().toUpperCase();
+  if (!eventId || !normalizedCode) return null;
+  const result = await query(
+    `SELECT id, "eventId", code, name, "discountType", "discountValue", "maxUses", "usedCount", "isActive", "expiresAt"
+     FROM "Coupon"
+     WHERE "eventId"::text = $1 AND UPPER(code) = $2
+     LIMIT 1`,
+    [String(eventId), normalizedCode]
+  ).catch((e) => {
+    if (e?.code === '42P01') return { rows: [] };
+    throw e;
+  });
+  const coupon = result.rows?.[0];
+  if (!coupon) return null;
+  if (!coupon.isActive) return null;
+  if (coupon.expiresAt && new Date(coupon.expiresAt).getTime() < Date.now()) return null;
+  if (coupon.maxUses != null && Number(coupon.usedCount) >= Number(coupon.maxUses)) return null;
+  return coupon;
+}
+
 export async function create(req, res, next) {
   try {
-    const { eventId, items, fullName, email, phone, address, totalAmount } = req.body;
+    const { eventId, items, fullName, email, phone, address, totalAmount, couponCode } = req.body;
     const amount = Number(totalAmount);
-    const isFreeOrder = amount === 0;
 
     // Basic validation (totalAmount can be 0 for free tickets)
     const missing = [];
@@ -31,6 +66,13 @@ export async function create(req, res, next) {
       return res.status(400).json({ error: 'totalAmount must be a non-negative number' });
     }
 
+    const coupon = couponCode ? await getValidCoupon(eventId, couponCode) : null;
+    if (couponCode && !coupon) {
+      return res.status(400).json({ error: 'Invalid or expired coupon code' });
+    }
+    const pricing = applyCouponDiscount(amount, coupon);
+    const isFreeOrder = pricing.finalAmount === 0;
+
     // Identify user if logged in (optionalAuth sets req.user; some middlewares set req.userId)
     const userId = req.user?.id ?? req.userId ?? null;
 
@@ -42,7 +84,11 @@ export async function create(req, res, next) {
       phone,
       address,
       items,
-      totalAmount: amount,
+      totalAmount: pricing.finalAmount,
+      couponId: coupon?.id ?? null,
+      couponCode: coupon?.code ?? null,
+      originalAmount: pricing.originalAmount,
+      discountAmount: pricing.discountAmount,
       status: isFreeOrder ? 'paid' : 'pending',
       reference: isFreeOrder ? `free_${Date.now()}` : null
     });
@@ -82,6 +128,36 @@ export async function create(req, res, next) {
   }
 }
 
+export async function validateCoupon(req, res, next) {
+  try {
+    const { eventId, code, totalAmount } = req.body || {};
+    if (!eventId || !code || totalAmount == null) {
+      return res.status(400).json({ error: 'eventId, code and totalAmount required' });
+    }
+
+    const coupon = await getValidCoupon(eventId, code);
+    if (!coupon) {
+      return res.status(404).json({ error: 'Coupon not found or no longer valid' });
+    }
+
+    const pricing = applyCouponDiscount(Number(totalAmount), coupon);
+    return res.json({
+      valid: true,
+      coupon: {
+        id: coupon.id,
+        eventId: coupon.eventId,
+        code: coupon.code,
+        name: coupon.name,
+        discountType: coupon.discountType,
+        discountValue: Number(coupon.discountValue) || 0,
+      },
+      pricing,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 function generateTicketCode() {
   return crypto.randomBytes(6).toString('hex').toUpperCase();
 }
@@ -109,6 +185,18 @@ export async function verify(req, res, next) {
     }
     const orderWithCode = await orderModel.findById(orderId);
     const event = await eventModel.findById(order.eventId);
+
+    await query(
+      `UPDATE "Coupon"
+       SET "usedCount" = "usedCount" + 1, "updatedAt" = NOW()
+       WHERE id IN (
+         SELECT "couponId" FROM "Order" WHERE id = $1 AND "couponId" IS NOT NULL
+       )`,
+      [orderId]
+    ).catch((e) => {
+      if (e?.code === '42P01') return null;
+      throw e;
+    });
 
     try {
       await sendTicketEmail({

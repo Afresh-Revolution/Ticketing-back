@@ -472,6 +472,239 @@ export async function getSales(req, res) {
   }
 }
 
+/** GET /api/admin/coupons – list coupons; super admin sees all, others only their events. */
+export async function listCoupons(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = getUserId(req);
+    const userIdParam = userId != null ? String(userId) : '';
+    const eventId = req.query?.eventId ? String(req.query.eventId) : '';
+
+    const params = [];
+    let whereSql = '';
+    if (!superAdmin) {
+      params.push(userIdParam);
+      whereSql = `WHERE (e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0')`;
+    }
+    if (eventId) {
+      params.push(eventId);
+      whereSql += whereSql ? ` AND c."eventId"::text = $${params.length}` : `WHERE c."eventId"::text = $${params.length}`;
+    }
+
+    const result = await query(
+      `SELECT
+         c.id,
+         c."eventId",
+         c.code,
+         c.name,
+         c."discountType",
+         c."discountValue",
+         c."maxUses",
+         c."usedCount",
+         c."isActive",
+         c."expiresAt",
+         c."createdAt",
+         c."updatedAt",
+         e.title AS "eventTitle"
+       FROM "Coupon" c
+       LEFT JOIN "Event" e ON e.id::text = c."eventId"::text
+       ${whereSql}
+       ORDER BY c."createdAt" DESC`,
+      params
+    ).catch((err) => {
+      console.error('listCoupons query', err?.message || err);
+      return { rows: [] };
+    });
+
+    const list = (result.rows || []).map((row) => ({
+      id: String(row.id),
+      eventId: String(row.eventId),
+      eventTitle: row.eventTitle || null,
+      code: row.code,
+      name: row.name,
+      discountType: row.discountType,
+      discountValue: Number(row.discountValue) || 0,
+      maxUses: row.maxUses == null ? null : Number(row.maxUses),
+      usedCount: Number(row.usedCount) || 0,
+      isActive: !!row.isActive,
+      expiresAt: row.expiresAt || null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+    return res.json(list);
+  } catch (err) {
+    console.error('listCoupons', err);
+    return res.json([]);
+  }
+}
+
+/** POST /api/admin/coupons – create coupon for an event the admin owns (or any event for super admin). */
+export async function createCoupon(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = getUserId(req);
+    const userIdParam = userId != null ? String(userId) : '';
+    const body = req.body || {};
+
+    const eventId = String(body.eventId || '').trim();
+    const code = String(body.code || '').trim().toUpperCase();
+    const name = String(body.name || '').trim();
+    const discountType = body.discountType === 'fixed' ? 'fixed' : 'percentage';
+    const discountValue = Number(body.discountValue);
+    const maxUses = body.maxUses == null || body.maxUses === '' ? null : Number(body.maxUses);
+    const isActive = body.isActive !== false;
+    const expiresAt = body.expiresAt ? new Date(body.expiresAt).toISOString() : null;
+
+    if (!eventId || !code || !name) {
+      return res.status(400).json({ error: 'eventId, code and name are required' });
+    }
+    if (Number.isNaN(discountValue) || discountValue < 0) {
+      return res.status(400).json({ error: 'discountValue must be a non-negative number' });
+    }
+    if (discountType === 'percentage' && discountValue > 100) {
+      return res.status(400).json({ error: 'percentage discount cannot be greater than 100' });
+    }
+    if (maxUses != null && (Number.isNaN(maxUses) || maxUses < 1)) {
+      return res.status(400).json({ error: 'maxUses must be at least 1 when provided' });
+    }
+    if (body.expiresAt && Number.isNaN(Date.parse(body.expiresAt))) {
+      return res.status(400).json({ error: 'expiresAt must be a valid date' });
+    }
+
+    const eventCheckSql = superAdmin
+      ? 'SELECT id FROM "Event" WHERE id::text = $1'
+      : 'SELECT id FROM "Event" WHERE id::text = $1 AND ("createdBy"::text = $2 OR ("createdBy" IS NULL AND $2 = \'0\'))';
+    const eventCheckParams = superAdmin ? [eventId] : [eventId, userIdParam];
+    const eventCheck = await query(eventCheckSql, eventCheckParams).catch(() => ({ rows: [] }));
+    if (!eventCheck.rows?.length) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    const id = createId();
+    const result = await query(
+      `INSERT INTO "Coupon" (
+        id, "eventId", "createdBy", code, name, "discountType", "discountValue", "maxUses", "isActive", "expiresAt", "createdAt", "updatedAt"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+      RETURNING id, "eventId", code, name, "discountType", "discountValue", "maxUses", "usedCount", "isActive", "expiresAt", "createdAt", "updatedAt"`,
+      [id, eventId, userId ?? null, code, name, discountType, discountValue, maxUses, isActive, expiresAt]
+    );
+    return res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err?.code === '23505') {
+      return res.status(409).json({ error: 'Coupon code already exists for this event' });
+    }
+    console.error('createCoupon', err);
+    return res.status(500).json({ error: 'Failed to create coupon' });
+  }
+}
+
+/** PATCH /api/admin/coupons/:id – update coupon (owner only unless super admin). */
+export async function updateCoupon(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = getUserId(req);
+    const userIdParam = userId != null ? String(userId) : '';
+    const couponId = String(req.params.id || '');
+    const body = req.body || {};
+
+    if (!couponId) return res.status(400).json({ error: 'Coupon id is required' });
+
+    const checkSql = superAdmin
+      ? `SELECT c.id, c."eventId"
+         FROM "Coupon" c
+         WHERE c.id::text = $1`
+      : `SELECT c.id, c."eventId"
+         FROM "Coupon" c
+         INNER JOIN "Event" e ON e.id::text = c."eventId"::text
+         WHERE c.id::text = $1
+           AND (e."createdBy"::text = $2 OR (e."createdBy" IS NULL AND $2 = '0'))`;
+    const checkParams = superAdmin ? [couponId] : [couponId, userIdParam];
+    const check = await query(checkSql, checkParams).catch(() => ({ rows: [] }));
+    if (!check.rows?.length) return res.status(404).json({ error: 'Coupon not found' });
+
+    const code = body.code == null ? null : String(body.code).trim().toUpperCase();
+    const name = body.name == null ? null : String(body.name).trim();
+    const discountType = body.discountType == null ? null : (body.discountType === 'fixed' ? 'fixed' : body.discountType === 'percentage' ? 'percentage' : 'invalid');
+    const discountValue = body.discountValue == null ? null : Number(body.discountValue);
+    const maxUses = body.maxUses === undefined ? null : (body.maxUses === null || body.maxUses === '' ? -1 : Number(body.maxUses));
+    const expiresAt = body.expiresAt === undefined ? null : (body.expiresAt === null || body.expiresAt === '' ? '' : body.expiresAt);
+
+    if (code !== null && !code) return res.status(400).json({ error: 'code cannot be empty' });
+    if (name !== null && !name) return res.status(400).json({ error: 'name cannot be empty' });
+    if (discountType === 'invalid') return res.status(400).json({ error: 'discountType must be percentage or fixed' });
+    if (discountValue !== null && (Number.isNaN(discountValue) || discountValue < 0)) {
+      return res.status(400).json({ error: 'discountValue must be a non-negative number' });
+    }
+    if (discountType === 'percentage' && discountValue != null && discountValue > 100) {
+      return res.status(400).json({ error: 'percentage discount cannot be greater than 100' });
+    }
+    if (maxUses !== null && maxUses !== -1 && (Number.isNaN(maxUses) || maxUses < 1)) {
+      return res.status(400).json({ error: 'maxUses must be at least 1 when provided' });
+    }
+    if (expiresAt && expiresAt !== '' && Number.isNaN(Date.parse(expiresAt))) {
+      return res.status(400).json({ error: 'expiresAt must be a valid date' });
+    }
+
+    const result = await query(
+      `UPDATE "Coupon"
+       SET code = COALESCE($1, code),
+           name = COALESCE($2, name),
+           "discountType" = COALESCE($3, "discountType"),
+           "discountValue" = COALESCE($4, "discountValue"),
+           "maxUses" = CASE WHEN $5 = -1 THEN NULL ELSE COALESCE($5, "maxUses") END,
+           "isActive" = COALESCE($6, "isActive"),
+           "expiresAt" = CASE WHEN $7 = '' THEN NULL ELSE COALESCE($7::timestamptz, "expiresAt") END,
+           "updatedAt" = NOW()
+       WHERE id::text = $8
+       RETURNING id, "eventId", code, name, "discountType", "discountValue", "maxUses", "usedCount", "isActive", "expiresAt", "createdAt", "updatedAt"`,
+      [
+        code,
+        name,
+        discountType,
+        discountValue,
+        maxUses,
+        typeof body.isActive === 'boolean' ? body.isActive : null,
+        expiresAt,
+        couponId,
+      ]
+    );
+    return res.json(result.rows[0]);
+  } catch (err) {
+    if (err?.code === '23505') {
+      return res.status(409).json({ error: 'Coupon code already exists for this event' });
+    }
+    console.error('updateCoupon', err);
+    return res.status(500).json({ error: 'Failed to update coupon' });
+  }
+}
+
+/** DELETE /api/admin/coupons/:id – remove coupon (owner only unless super admin). */
+export async function deleteCoupon(req, res) {
+  try {
+    const superAdmin = isSuperAdmin(req);
+    const userId = getUserId(req);
+    const userIdParam = userId != null ? String(userId) : '';
+    const couponId = String(req.params.id || '');
+    if (!couponId) return res.status(400).json({ error: 'Coupon id is required' });
+
+    const deleteSql = superAdmin
+      ? 'DELETE FROM "Coupon" WHERE id::text = $1 RETURNING id'
+      : `DELETE FROM "Coupon" c
+         USING "Event" e
+         WHERE c.id::text = $1
+           AND e.id::text = c."eventId"::text
+           AND (e."createdBy"::text = $2 OR (e."createdBy" IS NULL AND $2 = '0'))
+         RETURNING c.id`;
+    const params = superAdmin ? [couponId] : [couponId, userIdParam];
+    const result = await query(deleteSql, params);
+    if (!result.rows?.length) return res.status(404).json({ error: 'Coupon not found' });
+    return res.status(204).send();
+  } catch (err) {
+    console.error('deleteCoupon', err);
+    return res.status(500).json({ error: 'Failed to delete coupon' });
+  }
+}
+
 /** Resolve current user id (requireAuth sets both req.user and req.userId). */
 function getUserId(req) {
   return req.user?.id ?? req.userId;

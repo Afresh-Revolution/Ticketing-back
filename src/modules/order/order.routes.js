@@ -6,6 +6,7 @@ const router = Router();
 
 // Create order (optional auth to attach user if logged in)
 router.post('/', optionalAuth, orderController.create);
+router.post('/validate-coupon', optionalAuth, orderController.validateCoupon);
 
 // Verify payment
 router.post('/verify', orderController.verify);
