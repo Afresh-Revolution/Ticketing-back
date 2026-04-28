@@ -1,8 +1,8 @@
 import express from 'express';
-import cors from 'cors';
 import { config } from './shared/config/env.js';
 import { query } from './shared/config/db.js';
 import { errorHandler } from './shared/middleware/errorHandler.js';
+import { applySecurityMiddleware, createRateLimit } from './shared/middleware/security.js';
 import authRoutes from './modules/auth/auth.routes.js';
 import landingRoutes from './modules/landing/landing.routes.js';
 import communityRoutes from './modules/community/community.routes.js';
@@ -15,13 +15,13 @@ import adminRoutes from './modules/admin/admin.routes.js';
 
 const app = express();
 
-app.use(cors({
-  origin: config.corsOrigins,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
-}));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+applySecurityMiddleware(app);
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+
+const authRateLimit = createRateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: 'Too many auth requests. Please try again later.' });
+const adminRateLimit = createRateLimit({ windowMs: 60 * 1000, max: 120, message: 'Too many admin requests. Please slow down.' });
+const paymentRateLimit = createRateLimit({ windowMs: 60 * 1000, max: 30, message: 'Too many payment-related requests. Please retry shortly.' });
 
 // Health
 app.get('/health', async (req, res) => {
@@ -40,15 +40,15 @@ app.get('/health', async (req, res) => {
 });
 
 // API modules
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', authRateLimit, authRoutes);
 app.use('/api/landing', landingRoutes);
 app.use('/api/community', communityRoutes);
 app.use('/api/booking', bookingRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/events', eventRoutes);
-app.use('/api/orders', orderRoutes);
+app.use('/api/orders', paymentRateLimit, orderRoutes);
 app.use('/api/memberships', membershipRoutes);
-app.use('/api/admin', adminRoutes);
+app.use('/api/admin', adminRateLimit, adminRoutes);
 
 app.get('/api', (req, res) => {
   res.json({
