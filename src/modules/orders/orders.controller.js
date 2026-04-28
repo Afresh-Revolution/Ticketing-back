@@ -42,6 +42,19 @@ async function getValidCoupon(eventId, code) {
   return coupon;
 }
 
+function resolveCouponPreviewInput(body = {}) {
+  const eventId = body.eventId ?? body.event_id ?? body.event ?? null;
+  const code = body.code ?? body.couponCode ?? body.coupon_code ?? body.coupon ?? null;
+  const totalAmount =
+    body.totalAmount ??
+    body.total ??
+    body.amount ??
+    body.subtotal ??
+    body.baseAmount ??
+    null;
+  return { eventId, code, totalAmount };
+}
+
 /** POST /api/orders - create order (eventId, items, totalAmount, fullName, email, phone?, address?) */
 export async function createOrder(req, res) {
   try {
@@ -106,7 +119,7 @@ export async function createOrder(req, res) {
 /** POST /api/orders/validate-coupon - body: eventId, code, totalAmount */
 export async function validateCoupon(req, res) {
   try {
-    const { eventId, code, totalAmount } = req.body || {};
+    const { eventId, code, totalAmount } = resolveCouponPreviewInput(req.body || {});
     if (!eventId || !code || totalAmount == null) {
       return res.status(400).json({ error: 'eventId, code and totalAmount required' });
     }
