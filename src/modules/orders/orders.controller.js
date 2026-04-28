@@ -55,15 +55,28 @@ function resolveCouponPreviewInput(body = {}) {
   return { eventId, code, totalAmount };
 }
 
+function resolveOrderCouponInput(body = {}) {
+  const couponCode = body.couponCode ?? body.code ?? body.coupon_code ?? body.coupon ?? null;
+  const originalAmount =
+    body.originalAmount ??
+    body.subtotal ??
+    body.baseAmount ??
+    body.amount ??
+    body.totalAmount ??
+    null;
+  return { couponCode, originalAmount };
+}
+
 /** POST /api/orders - create order (eventId, items, totalAmount, fullName, email, phone?, address?) */
 export async function createOrder(req, res) {
   try {
-    const { eventId, items, totalAmount, fullName, email, phone, address, couponCode } = req.body || {};
+    const { eventId, items, fullName, email, phone, address } = req.body || {};
+    const { couponCode, originalAmount } = resolveOrderCouponInput(req.body || {});
     const userId = req.userId || null;
-    if (!eventId || !items || !Array.isArray(items) || items.length === 0 || totalAmount == null) {
+    if (!eventId || !items || !Array.isArray(items) || items.length === 0 || originalAmount == null) {
       return res.status(400).json({ error: 'eventId, items and totalAmount required' });
     }
-    const baseAmount = Number(totalAmount);
+    const baseAmount = Number(originalAmount);
     if (Number.isNaN(baseAmount) || baseAmount < 0) {
       return res.status(400).json({ error: 'totalAmount must be a non-negative number' });
     }

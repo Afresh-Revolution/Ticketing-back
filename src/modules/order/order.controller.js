@@ -60,10 +60,23 @@ function resolveCouponPreviewInput(body = {}) {
   return { eventId, code, totalAmount };
 }
 
+function resolveOrderCouponInput(body = {}) {
+  const couponCode = body.couponCode ?? body.code ?? body.coupon_code ?? body.coupon ?? null;
+  const originalAmount =
+    body.originalAmount ??
+    body.subtotal ??
+    body.baseAmount ??
+    body.amount ??
+    body.totalAmount ??
+    null;
+  return { couponCode, originalAmount };
+}
+
 export async function create(req, res, next) {
   try {
-    const { eventId, items, fullName, email, phone, address, totalAmount, couponCode } = req.body;
-    const amount = Number(totalAmount);
+    const { eventId, items, fullName, email, phone, address, totalAmount } = req.body;
+    const { couponCode, originalAmount } = resolveOrderCouponInput(req.body || {});
+    const amount = Number(originalAmount);
 
     // Basic validation (totalAmount can be 0 for free tickets)
     const missing = [];
@@ -71,7 +84,7 @@ export async function create(req, res, next) {
     if (!items || !Array.isArray(items) || items.length === 0) missing.push('items');
     if (!fullName || String(fullName).trim() === '') missing.push('fullName');
     if (!email || String(email).trim() === '') missing.push('email');
-    if (totalAmount === undefined || totalAmount === null) missing.push('totalAmount');
+    if (originalAmount === undefined || originalAmount === null) missing.push('totalAmount');
     if (missing.length > 0) {
       return res.status(400).json({ error: `Missing required fields: ${missing.join(', ')}` });
     }
