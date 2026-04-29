@@ -167,18 +167,51 @@ export async function validateCoupon(req, res) {
 /** POST /api/orders/initialize-payment - body: email, amount (in naira), optional reference/metadata */
 export async function initializePayment(req, res) {
   try {
-    const { email, amount, totalAmount, reference, metadata } = req.body || {};
-    const rawAmount = amount ?? totalAmount;
-    const numericAmount = Number(rawAmount);
-    if (!email || Number.isNaN(numericAmount) || numericAmount <= 0) {
-      return res.status(400).json({ error: 'email and amount are required' });
+    const { email, amount, totalAmount, reference, metadata, orderId, callbackUrl } = req.body || {};
+    let resolvedEmail = email;
+    let resolvedAmount = amount ?? totalAmount;
+    let resolvedReference = reference;
+
+    // Support order-first checkout flow: frontend sends orderId and backend derives amount/email.
+    if (orderId) {
+      const orderResult = await query(
+        `SELECT id, email, "totalAmount", status, reference
+         FROM "Order"
+         WHERE id::text = $1
+         LIMIT 1`,
+        [String(orderId)]
+      ).catch((e) => {
+        if (e?.code === '42P01') return { rows: [] };
+        throw e;
+      });
+      const order = orderResult.rows?.[0];
+      if (!order) return res.status(404).json({ error: 'Order not found' });
+      if (String(order.status || '').toLowerCase() === 'paid') {
+        return res.status(400).json({ error: 'Order is already paid' });
+      }
+      resolvedEmail = resolvedEmail || order.email;
+      resolvedAmount = resolvedAmount ?? order.totalAmount;
+      resolvedReference = resolvedReference || order.reference || `ord_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+      // Keep order reference synchronized with Paystack reference for easier verify flow.
+      await query(
+        `UPDATE "Order"
+         SET reference = $1, "updatedAt" = NOW()
+         WHERE id::text = $2`,
+        [resolvedReference, String(orderId)]
+      ).catch(() => null);
+    }
+
+    const numericAmount = Number(resolvedAmount);
+    if (!resolvedEmail || Number.isNaN(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({ error: 'Provide either orderId or email and amount' });
     }
     if (!config.paystackSecretKey) {
       return res.status(500).json({ error: 'PAYSTACK_SECRET_KEY is not configured' });
     }
 
     const amountKobo = Math.round(numericAmount * 100);
-    const txRef = String(reference || `ord_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`);
+    const txRef = String(resolvedReference || `ord_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`);
 
     const paystackRes = await fetch('https://api.paystack.co/transaction/initialize', {
       method: 'POST',
@@ -187,10 +220,11 @@ export async function initializePayment(req, res) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        email: String(email).trim(),
+        email: String(resolvedEmail).trim(),
         amount: amountKobo,
         reference: txRef,
         currency: 'NGN',
+        callback_url: callbackUrl || undefined,
         metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
       }),
     });
