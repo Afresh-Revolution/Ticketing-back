@@ -3,6 +3,7 @@ import { orderModel } from './order.model.js';
 import { eventModel } from '../event/event.model.js';
 import { sendTicketEmail } from '../../shared/services/email.service.js';
 import { query } from '../../shared/config/db.js';
+import { config } from '../../shared/config/env.js';
 
 function extractTicketTypes(items) {
   if (!Array.isArray(items)) return [];
@@ -188,6 +189,132 @@ function generateTicketCode() {
   return crypto.randomBytes(6).toString('hex').toUpperCase();
 }
 
+function generatePaystackReference() {
+  return `ord_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function ensureOrderTicketCode(orderId, currentTicketCode) {
+  if (currentTicketCode) return currentTicketCode;
+  let ticketCode = generateTicketCode();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await orderModel.setTicketCode(orderId, ticketCode);
+      return ticketCode;
+    } catch (e) {
+      if (e?.code === '23505') {
+        ticketCode = generateTicketCode();
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error('Failed to generate ticket code');
+}
+
+async function sendOrderTicketEmail(order) {
+  const ticketCode = await ensureOrderTicketCode(order.id, order.ticketCode);
+  const freshOrder = await orderModel.findById(order.id);
+  const event = await eventModel.findById(order.eventId);
+  try {
+    await sendTicketEmail({
+      to: order.email,
+      fullName: order.fullName,
+      ticketCode,
+      eventTitle: event?.title,
+      eventDate: event?.date,
+      ticketTypes: extractTicketTypes(freshOrder?.items),
+    });
+  } catch (emailErr) {
+    console.error('[order] Ticket email failed:', emailErr.message);
+  }
+  return { freshOrder, ticketCode };
+}
+
+async function verifyWithPaystack(reference) {
+  const secret = config.paystackSecretKey;
+  if (!secret) {
+    throw new Error('PAYSTACK_SECRET_KEY is missing in backend environment');
+  }
+  const response = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${secret}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data?.status !== true) {
+    throw new Error(data?.message || 'Paystack verification failed');
+  }
+  return data?.data || null;
+}
+
+export async function initializePayment(req, res, next) {
+  try {
+    const { orderId, callbackUrl } = req.body || {};
+    if (!orderId) return res.status(400).json({ error: 'orderId is required' });
+
+    if (!config.paystackSecretKey) {
+      return res.status(500).json({ error: 'Payment is not configured on backend' });
+    }
+
+    const order = await orderModel.findById(orderId);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (String(order.status || '').toLowerCase() === 'paid') {
+      return res.status(400).json({ error: 'Order is already paid' });
+    }
+    if (!order.email || !String(order.email).includes('@')) {
+      return res.status(400).json({ error: 'Order email is invalid' });
+    }
+
+    const amountKobo = Math.round((Number(order.totalAmount) || 0) * 100);
+    if (!Number.isFinite(amountKobo) || amountKobo < 100) {
+      return res.status(400).json({ error: 'Order amount must be at least ₦1' });
+    }
+
+    const reference = generatePaystackReference();
+    await query(
+      `UPDATE "Order" SET "reference" = $1, "updatedAt" = NOW() WHERE id = $2`,
+      [reference, orderId]
+    );
+
+    const payload = {
+      email: String(order.email).trim(),
+      amount: amountKobo,
+      reference,
+      currency: 'NGN',
+      metadata: {
+        orderId: String(order.id),
+        eventId: String(order.eventId || ''),
+        fullName: String(order.fullName || ''),
+      },
+      callback_url: callbackUrl || `${config.frontendBaseUrl}/#/payment-success`,
+    };
+
+    const paystackResponse = await fetch('https://api.paystack.co/transaction/initialize', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.paystackSecretKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await paystackResponse.json().catch(() => ({}));
+    if (!paystackResponse.ok || data?.status !== true || !data?.data?.authorization_url) {
+      return res.status(400).json({ error: data?.message || 'Failed to initialize payment' });
+    }
+
+    return res.json({
+      authorizationUrl: data.data.authorization_url,
+      accessCode: data.data.access_code,
+      reference: data.data.reference,
+      orderId: String(order.id),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function verify(req, res, next) {
   try {
     const { reference, orderId } = req.body;
@@ -196,21 +323,30 @@ export async function verify(req, res, next) {
       return res.status(400).json({ error: 'Missing reference or orderId' });
     }
 
-    const order = await orderModel.updateStatus(orderId, 'paid', reference);
-    if (!order) return res.status(404).json({ error: 'Order not found' });
+    const existingOrder = await orderModel.findById(orderId);
+    if (!existingOrder) return res.status(404).json({ error: 'Order not found' });
 
-    let ticketCode = generateTicketCode();
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        await orderModel.setTicketCode(orderId, ticketCode);
-        break;
-      } catch (e) {
-        if (e.code === '23505') ticketCode = generateTicketCode();
-        else throw e;
-      }
+    if (String(existingOrder.status || '').toLowerCase() === 'paid') {
+      return res.json(existingOrder);
     }
-    const orderWithCode = await orderModel.findById(orderId);
-    const event = await eventModel.findById(order.eventId);
+
+    if (existingOrder.reference && String(existingOrder.reference) !== String(reference)) {
+      return res.status(400).json({ error: 'Reference does not match this order' });
+    }
+
+    const paystackTx = await verifyWithPaystack(reference);
+    if (!paystackTx || String(paystackTx.status || '').toLowerCase() !== 'success') {
+      return res.status(400).json({ error: 'Payment was not successful' });
+    }
+
+    const paidAmountKobo = Number(paystackTx.amount || 0);
+    const expectedAmountKobo = Math.round((Number(existingOrder.totalAmount) || 0) * 100);
+    if (paidAmountKobo !== expectedAmountKobo) {
+      return res.status(400).json({ error: 'Payment amount does not match order amount' });
+    }
+
+    const paidOrder = await orderModel.updateStatus(orderId, 'paid', reference);
+    if (!paidOrder) return res.status(404).json({ error: 'Order not found' });
 
     await query(
       `UPDATE "Coupon"
@@ -224,20 +360,9 @@ export async function verify(req, res, next) {
       throw e;
     });
 
-    try {
-      await sendTicketEmail({
-        to: order.email,
-        fullName: order.fullName,
-        ticketCode,
-        eventTitle: event?.title,
-        eventDate: event?.date,
-        ticketTypes: extractTicketTypes(orderWithCode?.items),
-      });
-    } catch (emailErr) {
-      console.error('[order] Ticket email failed:', emailErr.message);
-    }
+    const { freshOrder } = await sendOrderTicketEmail(paidOrder);
 
-    res.json(orderWithCode);
+    res.json(freshOrder);
   } catch (err) {
     next(err);
   }

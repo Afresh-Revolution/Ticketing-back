@@ -1,5 +1,7 @@
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { query, createId } from '../../shared/config/db.js';
+import { sendTicketEmail } from '../../shared/services/email.service.js';
 
 /** True if current user is super admin (sees all events in Supabase). */
 function isSuperAdmin(req) {
@@ -412,6 +414,7 @@ export async function getSales(req, res) {
     const sql = superAdmin
       ? `SELECT
            o.id,
+           o."eventId",
            o."fullName",
            o.email,
            o.phone,
@@ -432,6 +435,7 @@ export async function getSales(req, res) {
          LIMIT 100`
       : `SELECT
            o.id,
+           o."eventId",
            o."fullName",
            o.email,
            o.phone,
@@ -455,6 +459,7 @@ export async function getSales(req, res) {
     const result = await query(sql, params).catch(() => ({ rows: [] }));
     const list = (result.rows || []).map((r) => ({
       id: r.id,
+      event_id: r.eventId,
       buyer_name: r.fullName,
       buyer_email: r.email,
       buyer_phone: r.phone,
@@ -469,6 +474,161 @@ export async function getSales(req, res) {
   } catch (err) {
     console.error('getSales', err);
     return res.json([]);
+  }
+}
+
+function normalizeSaleStatus(status) {
+  const value = String(status || '').trim().toLowerCase();
+  return value === 'paid' ? 'paid' : value === 'pending' ? 'pending' : null;
+}
+
+function generateTicketCode() {
+  return crypto.randomBytes(6).toString('hex').toUpperCase();
+}
+
+async function getSaleByIdForAdmin(orderId, req) {
+  const superAdmin = isSuperAdmin(req);
+  const rawId = req.user?.id ?? req.userId;
+  const userIdParam = rawId != null ? String(rawId) : '';
+  const sql = superAdmin
+    ? `SELECT
+         o.id,
+         o."eventId",
+         o."fullName",
+         o.email,
+         o.status,
+         o."ticketCode",
+         e.title AS event_title,
+         e.date AS event_date
+       FROM "Order" o
+       LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
+       WHERE o.id::text = $1
+       LIMIT 1`
+    : `SELECT
+         o.id,
+         o."eventId",
+         o."fullName",
+         o.email,
+         o.status,
+         o."ticketCode",
+         e.title AS event_title,
+         e.date AS event_date
+       FROM "Order" o
+       LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
+       WHERE o.id::text = $1
+         AND ((e."createdBy"::text = $2) OR (e."createdBy" IS NULL AND $2 = '0'))
+       LIMIT 1`;
+  const params = superAdmin ? [orderId] : [orderId, userIdParam];
+  const result = await query(sql, params).catch(() => ({ rows: [] }));
+  return result.rows?.[0] || null;
+}
+
+async function getOrderTicketTypes(orderId) {
+  const result = await query(
+    `SELECT COALESCE(tt.name, 'General') AS name
+     FROM "OrderItem" oi
+     LEFT JOIN "TicketType" tt ON tt.id::text = oi."ticketTypeId"::text
+     WHERE oi."orderId"::text = $1`,
+    [orderId]
+  ).catch(() => ({ rows: [] }));
+  return (result.rows || []).map((row) => String(row.name || '').trim()).filter(Boolean);
+}
+
+async function ensureTicketCode(orderId, existingTicketCode) {
+  if (existingTicketCode) return existingTicketCode;
+  let ticketCode = generateTicketCode();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const updated = await query(
+        `UPDATE "Order"
+         SET "ticketCode" = $1, "updatedAt" = NOW()
+         WHERE id::text = $2
+         RETURNING "ticketCode"`,
+        [ticketCode, orderId]
+      );
+      return updated.rows?.[0]?.ticketCode || ticketCode;
+    } catch (err) {
+      if (err?.code === '23505') {
+        ticketCode = generateTicketCode();
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Failed to generate a unique ticket code');
+}
+
+async function sendSaleTicketEmail(orderRow) {
+  if (!orderRow?.email) throw new Error('Buyer email is missing for this sale');
+  const ticketCode = await ensureTicketCode(orderRow.id, orderRow.ticketCode);
+  const ticketTypes = await getOrderTicketTypes(orderRow.id);
+  await sendTicketEmail({
+    to: orderRow.email,
+    fullName: orderRow.fullName,
+    ticketCode,
+    eventTitle: orderRow.event_title,
+    eventDate: orderRow.event_date,
+    ticketTypes,
+  });
+  return ticketCode;
+}
+
+/** PATCH /api/admin/sales/:orderId/status – update online sale status; auto email when set to paid. */
+export async function updateSaleStatus(req, res) {
+  try {
+    const orderId = String(req.params.orderId || '').trim();
+    const status = normalizeSaleStatus(req.body?.status);
+    if (!orderId) return res.status(400).json({ error: 'Order id is required' });
+    if (!status) return res.status(400).json({ error: 'Status must be pending or paid' });
+
+    const sale = await getSaleByIdForAdmin(orderId, req);
+    if (!sale) return res.status(404).json({ error: 'Sale not found' });
+
+    const previousStatus = String(sale.status || '').toLowerCase();
+    const updateResult = await query(
+      `UPDATE "Order" SET "status" = $1, "updatedAt" = NOW() WHERE id::text = $2 RETURNING "status"`,
+      [status, orderId]
+    );
+    const updatedStatus = updateResult.rows?.[0]?.status || status;
+
+    let emailSent = false;
+    let ticketCode = sale.ticketCode || null;
+    if (status === 'paid' && previousStatus !== 'paid') {
+      ticketCode = await sendSaleTicketEmail(sale);
+      emailSent = true;
+    }
+
+    return res.json({
+      message: 'Sale status updated',
+      sale: { id: orderId, status: updatedStatus, ticketCode },
+      emailSent,
+    });
+  } catch (err) {
+    console.error('updateSaleStatus', err);
+    return res.status(500).json({ error: err.message || 'Failed to update sale status' });
+  }
+}
+
+/** POST /api/admin/sales/:orderId/resend – resend ticket email for a paid sale. */
+export async function resendSaleTicket(req, res) {
+  try {
+    const orderId = String(req.params.orderId || '').trim();
+    if (!orderId) return res.status(400).json({ error: 'Order id is required' });
+
+    const sale = await getSaleByIdForAdmin(orderId, req);
+    if (!sale) return res.status(404).json({ error: 'Sale not found' });
+    if (String(sale.status || '').toLowerCase() !== 'paid') {
+      return res.status(400).json({ error: 'Only paid sales can be resent' });
+    }
+
+    const ticketCode = await sendSaleTicketEmail(sale);
+    return res.json({
+      message: 'Ticket resent successfully',
+      sale: { id: orderId, status: 'paid', ticketCode },
+    });
+  } catch (err) {
+    console.error('resendSaleTicket', err);
+    return res.status(500).json({ error: err.message || 'Failed to resend ticket' });
   }
 }
 

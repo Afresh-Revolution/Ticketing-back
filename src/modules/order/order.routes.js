@@ -8,6 +8,7 @@ const router = Router();
 router.post('/', optionalAuth, orderController.create);
 router.post('/validate-coupon', optionalAuth, orderController.validateCoupon);
 router.post('/coupon-preview', optionalAuth, orderController.validateCoupon);
+router.post('/initialize-payment', optionalAuth, orderController.initializePayment);
 
 // Verify payment
 router.post('/verify', orderController.verify);
