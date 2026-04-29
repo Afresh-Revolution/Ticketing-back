@@ -592,16 +592,23 @@ export async function updateSaleStatus(req, res) {
     const updatedStatus = updateResult.rows?.[0]?.status || status;
 
     let emailSent = false;
+    let emailError = null;
     let ticketCode = sale.ticketCode || null;
     if (status === 'paid' && previousStatus !== 'paid') {
-      ticketCode = await sendSaleTicketEmail(sale);
-      emailSent = true;
+      try {
+        ticketCode = await sendSaleTicketEmail(sale);
+        emailSent = true;
+      } catch (emailErr) {
+        emailError = emailErr?.message || 'Status updated, but ticket email failed';
+        console.error('updateSaleStatus email warning', emailErr);
+      }
     }
 
     return res.json({
-      message: 'Sale status updated',
+      message: emailError ? 'Sale status updated, but email failed' : 'Sale status updated',
       sale: { id: orderId, status: updatedStatus, ticketCode },
       emailSent,
+      emailError,
     });
   } catch (err) {
     console.error('updateSaleStatus', err);
@@ -881,10 +888,18 @@ export async function getWithdrawPage(req, res) {
 
     const kpi = { totalGross: 0, availableToWithdraw: 0, totalFees: 0 };
 
+    const userIdText = userId != null ? String(userId) : '';
     const revSql = superAdmin
-      ? `SELECT COALESCE(SUM(o."totalAmount"), 0) AS total FROM "Order" o JOIN "Event" e ON e.id = o."eventId" WHERE o."status" = 'paid'`
-      : `SELECT COALESCE(SUM(o."totalAmount"), 0) AS total FROM "Order" o JOIN "Event" e ON e.id = o."eventId" WHERE o."status" = 'paid' AND (e."createdBy" = $1 OR (e."createdBy" IS NULL AND ($1 = 0 OR $1 = '0')))`;
-    const revParams = superAdmin ? [] : [userId];
+      ? `SELECT COALESCE(SUM(o."totalAmount"), 0) AS total
+         FROM "Order" o
+         JOIN "Event" e ON e.id::text = o."eventId"::text
+         WHERE o."status" = 'paid'`
+      : `SELECT COALESCE(SUM(o."totalAmount"), 0) AS total
+         FROM "Order" o
+         JOIN "Event" e ON e.id::text = o."eventId"::text
+         WHERE o."status" = 'paid'
+           AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))`;
+    const revParams = superAdmin ? [] : [userIdText];
     const revResult = await query(revSql, revParams).catch(() => ({ rows: [{ total: 0 }] }));
     kpi.totalGross = Number(revResult.rows?.[0]?.total) || 0;
     kpi.totalFees = Math.round(kpi.totalGross * 0.15);
@@ -901,11 +916,11 @@ export async function getWithdrawPage(req, res) {
                 COALESCE(rev.gross, 0) AS gross_revenue,
                 w.status AS withdrawal_status, w.amount AS withdrawn_net, w."createdAt" AS withdrawn_at
          FROM "Event" e
-         LEFT JOIN (SELECT o."eventId", SUM(o."totalAmount") AS gross FROM "Order" o WHERE o."status" = 'paid' GROUP BY o."eventId") rev ON rev."eventId" = e.id
-         LEFT JOIN LATERAL (SELECT status, amount, "createdAt" FROM "Withdrawal" WHERE "eventId" = e.id AND "userId" = $1 ORDER BY "createdAt" DESC LIMIT 1) w ON true
-         WHERE e."createdBy" = $2 OR (e."createdBy" IS NULL AND ($2 = 0 OR $2 = '0'))
+         LEFT JOIN (SELECT o."eventId", SUM(o."totalAmount") AS gross FROM "Order" o WHERE o."status" = 'paid' GROUP BY o."eventId") rev ON rev."eventId"::text = e.id::text
+         LEFT JOIN LATERAL (SELECT status, amount, "createdAt" FROM "Withdrawal" WHERE "eventId"::text = e.id::text AND "userId"::text = $1 ORDER BY "createdAt" DESC LIMIT 1) w ON true
+         WHERE (e."createdBy"::text = $2) OR (e."createdBy" IS NULL AND $2 = '0')
          ORDER BY e.date DESC NULLS LAST`;
-    const eventsParams = superAdmin ? [] : [userId, userId];
+    const eventsParams = superAdmin ? [] : [userIdText, userIdText];
     const eventsResult = await query(eventsSql, eventsParams).catch(() => ({ rows: [] }));
     const events = (eventsResult.rows || []).map((r) => ({
       id: String(r.id),
