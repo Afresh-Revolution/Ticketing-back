@@ -1,4 +1,4 @@
-import { query } from '../../shared/config/db.js';
+import { query, createId } from '../../shared/config/db.js';
 
 function applyCouponDiscount(totalAmount, coupon) {
   const amount = Math.max(0, Number(totalAmount) || 0);
@@ -87,12 +87,14 @@ export async function createOrder(req, res) {
     }
     const pricing = applyCouponDiscount(baseAmount, coupon);
 
+    const orderId = createId();
     const ref = `order_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const result = await query(
-      `INSERT INTO "Order" ("eventId", "userId", "fullName", "email", "phone", "address", "totalAmount", "status", "reference", "couponId", "couponCode", "originalAmount", "discountAmount")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11, $12)
+      `INSERT INTO "Order" ("id", "eventId", "userId", "fullName", "email", "phone", "address", "totalAmount", "status", "reference", "couponId", "couponCode", "originalAmount", "discountAmount")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, $11, $12, $13)
        RETURNING "id", "reference", "status", "totalAmount", "couponCode", "originalAmount", "discountAmount"`,
       [
+        orderId,
         eventId,
         userId,
         (fullName || '').trim() || null,
