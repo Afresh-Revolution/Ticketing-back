@@ -4,6 +4,7 @@ import { eventModel } from '../event/event.model.js';
 import { sendTicketEmail } from '../../shared/services/email.service.js';
 import { query } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
+import { config } from '../../shared/config/env.js';
 
 function extractTicketTypes(items) {
   if (!Array.isArray(items)) return [];

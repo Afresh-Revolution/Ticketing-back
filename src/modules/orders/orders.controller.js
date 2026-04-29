@@ -1,4 +1,5 @@
 import { query, createId } from '../../shared/config/db.js';
+import { config } from '../../shared/config/env.js';
 
 function applyCouponDiscount(totalAmount, coupon) {
   const amount = Math.max(0, Number(totalAmount) || 0);
@@ -160,6 +161,54 @@ export async function validateCoupon(req, res) {
   } catch (err) {
     console.error('validateCoupon', err);
     return res.status(500).json({ error: err.message || 'Failed to validate coupon' });
+  }
+}
+
+/** POST /api/orders/initialize-payment - body: email, amount (in naira), optional reference/metadata */
+export async function initializePayment(req, res) {
+  try {
+    const { email, amount, totalAmount, reference, metadata } = req.body || {};
+    const rawAmount = amount ?? totalAmount;
+    const numericAmount = Number(rawAmount);
+    if (!email || Number.isNaN(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({ error: 'email and amount are required' });
+    }
+    if (!config.paystackSecretKey) {
+      return res.status(500).json({ error: 'PAYSTACK_SECRET_KEY is not configured' });
+    }
+
+    const amountKobo = Math.round(numericAmount * 100);
+    const txRef = String(reference || `ord_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`);
+
+    const paystackRes = await fetch('https://api.paystack.co/transaction/initialize', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.paystackSecretKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: String(email).trim(),
+        amount: amountKobo,
+        reference: txRef,
+        currency: 'NGN',
+        metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
+      }),
+    });
+
+    const data = await paystackRes.json().catch(() => ({}));
+    if (!paystackRes.ok || !data?.status || !data?.data) {
+      return res.status(400).json({ error: data?.message || 'Failed to initialize payment' });
+    }
+
+    return res.json({
+      message: 'Payment initialized',
+      authorization_url: data.data.authorization_url,
+      access_code: data.data.access_code,
+      reference: data.data.reference || txRef,
+    });
+  } catch (err) {
+    console.error('initializePayment', err);
+    return res.status(500).json({ error: err.message || 'Failed to initialize payment' });
   }
 }
 

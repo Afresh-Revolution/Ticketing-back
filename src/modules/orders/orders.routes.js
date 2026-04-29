@@ -7,6 +7,7 @@ const router = express.Router();
 router.post('/', optionalAuth, ordersController.createOrder);
 router.post('/validate-coupon', optionalAuth, ordersController.validateCoupon);
 router.post('/coupon-preview', optionalAuth, ordersController.validateCoupon);
+router.post('/initialize-payment', optionalAuth, ordersController.initializePayment);
 router.post('/verify', ordersController.verifyOrder);
 
 export default router;
