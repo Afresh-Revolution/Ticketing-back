@@ -39,8 +39,55 @@ export async function getEvent(req, res) {
       return res.status(404).json({ error: 'Event not found' });
     }
     const row = result.rows[0];
+    const eventId = String(row.id);
+
+    // Include ticket pools so frontend can render selectable ticket types.
+    const ticketTypeRows = await query(
+      'SELECT * FROM "TicketType" WHERE "eventId"::text = $1',
+      [eventId]
+    ).then((r) => r.rows || []).catch((e) => {
+      // Keep event details available even if TicketType table is not configured yet.
+      if (e?.code === '42P01') return [];
+      throw e;
+    });
+
+    const ticketTypeIds = ticketTypeRows.map((t) => String(t.id)).filter(Boolean);
+    let soldByTicketTypeId = {};
+    if (ticketTypeIds.length > 0) {
+      const soldRows = await query(
+        `SELECT oi."ticketTypeId", COALESCE(SUM(oi.quantity), 0)::int AS sold
+         FROM "OrderItem" oi
+         INNER JOIN "Order" o ON o.id::text = oi."orderId"::text AND o.status = 'paid'
+         WHERE oi."ticketTypeId"::text = ANY($1)
+         GROUP BY oi."ticketTypeId"`,
+        [ticketTypeIds]
+      ).then((r) => r.rows || []).catch((e) => {
+        if (e?.code === '42P01') return [];
+        throw e;
+      });
+
+      soldByTicketTypeId = soldRows.reduce((acc, soldRow) => {
+        acc[String(soldRow.ticketTypeId)] = Number(soldRow.sold) || 0;
+        return acc;
+      }, {});
+    }
+
+    const tickets = ticketTypeRows.map((t) => {
+      const id = String(t.id);
+      const price = Number(t.price) || 0;
+      return {
+        id,
+        name: t.name || 'Ticket',
+        description: t.description || '',
+        price,
+        quantity: Number(t.quantity) || 0,
+        type: t.type === 'free' ? 'free' : (price === 0 ? 'free' : 'paid'),
+        sold: soldByTicketTypeId[id] || 0,
+      };
+    });
+
     return res.json({
-      id: String(row.id),
+      id: eventId,
       title: row.title,
       date: row.date,
       location: row.location,
@@ -49,6 +96,8 @@ export async function getEvent(req, res) {
       startTime: row.startTime,
       description: row.description,
       organizer: row.organizer,
+      tickets,
+      ticketTypes: tickets,
     });
   } catch (err) {
     console.error('getEvent', err);
