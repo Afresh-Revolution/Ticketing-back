@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { query, createId } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
-import { sendTicketEmail } from '../../shared/services/email.service.js';
+import { sendEmail, sendTicketEmail } from '../../shared/services/email.service.js';
 
 function applyCouponDiscount(totalAmount, coupon) {
   const amount = Math.max(0, Number(totalAmount) || 0);
@@ -431,5 +431,48 @@ export async function verifyOrder(req, res) {
     console.error('verifyOrder', err);
     const statusCode = Number(err?.statusCode) || 500;
     return res.status(statusCode).json({ error: err.message || 'Verification failed' });
+  }
+}
+
+/** POST /api/orders/manual-payment-notify - body: orderId, email */
+export async function notifyManualPayment(req, res) {
+  try {
+    const { orderId, email } = req.body || {};
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId is required' });
+    }
+
+    const order = await getOrderById(orderId);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    const buyerEmail = String(email || order.email || '').trim();
+    if (!buyerEmail) {
+      return res.status(400).json({ error: 'Buyer email is required' });
+    }
+
+    const eventMeta = await getEventMeta(order.eventId);
+    const notifyTo = process.env.MANUAL_PAYMENT_NOTIFY_EMAIL || 'williambosworth777@icloud.com';
+    const subject = `Payment requested (${String(order.id)})`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
+        <h2 style="color:#791A94;">Payment Notice</h2>
+        <p>A buyer clicked "Paid" on checkout and reported a completed transfer.</p>
+        <ul>
+          <li><strong>Order ID:</strong> ${String(order.id)}</li>
+          <li><strong>Event:</strong> ${String(eventMeta?.title || 'Unknown event')}</li>
+          <li><strong>Amount:</strong> ₦${Number(order.totalAmount || 0).toLocaleString()}</li>
+          <li><strong>Buyer name:</strong> ${String(order.fullName || 'N/A')}</li>
+          <li><strong>Buyer email:</strong> ${buyerEmail}</li>
+          <li><strong>Status:</strong> ${String(order.status || 'pending')}</li>
+          <li><strong>Reference:</strong> ${String(order.reference || '')}</li>
+        </ul>
+      </div>
+    `;
+    await sendEmail({ to: notifyTo, subject, html });
+
+    return res.json({ message: 'Manual payment notice sent' });
+  } catch (err) {
+    console.error('notifyManualPayment', err);
+    return res.status(500).json({ error: err.message || 'Failed to send manual payment notice' });
   }
 }

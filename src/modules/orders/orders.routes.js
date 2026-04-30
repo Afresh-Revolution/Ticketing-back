@@ -9,5 +9,6 @@ router.post('/validate-coupon', optionalAuth, ordersController.validateCoupon);
 router.post('/coupon-preview', optionalAuth, ordersController.validateCoupon);
 router.post('/initialize-payment', optionalAuth, ordersController.initializePayment);
 router.post('/verify', ordersController.verifyOrder);
+router.post('/manual-payment-notify', optionalAuth, ordersController.notifyManualPayment);
 
 export default router;
