@@ -49,13 +49,18 @@ export function applySecurityMiddleware(app) {
 
   app.use((req, res, next) => {
     const contentType = req.headers["content-type"] || "";
+    const normalizedContentType = String(contentType).toLowerCase();
+    const allowedContentTypes = [
+      "application/json",
+      "application/x-www-form-urlencoded",
+      "multipart/form-data",
+    ];
     if (
       ["POST", "PUT", "PATCH"].includes(req.method) &&
       contentType &&
-      !String(contentType).toLowerCase().includes("application/json") &&
-      !String(contentType)
-        .toLowerCase()
-        .includes("application/x-www-form-urlencoded")
+      !allowedContentTypes.some((allowedType) =>
+        normalizedContentType.includes(allowedType),
+      )
     ) {
       return res.status(415).json({ error: "Unsupported Media Type" });
     }
