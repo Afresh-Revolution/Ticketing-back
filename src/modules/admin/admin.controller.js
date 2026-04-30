@@ -258,16 +258,9 @@ export async function listAdminEvents(req, res) {
 /** GET /api/admin/events/:eventId – single event; 404 if not owner (unless super admin). */
 export async function getAdminEvent(req, res) {
   try {
-    const superAdmin = isSuperAdmin(req);
-    const userId = getUserId(req);
-    const userIdParam = userId != null ? String(userId) : '';
     const eventId = req.params.eventId;
 
-    const sql = superAdmin
-      ? 'SELECT * FROM "Event" WHERE "id"::text = $1'
-      : 'SELECT * FROM "Event" WHERE "id"::text = $1 AND ("createdBy"::text = $2 OR ("createdBy" IS NULL AND $2 = \'0\'))';
-    const params = superAdmin ? [eventId] : [eventId, userIdParam];
-    const result = await query(sql, params).catch(() => ({ rows: [] }));
+    const result = await query('SELECT * FROM "Event" WHERE "id"::text = $1', [eventId]).catch(() => ({ rows: [] }));
     if (!result.rows?.length) return res.status(404).json({ error: 'Event not found' });
     const row = result.rows[0];
     return res.json({
@@ -293,9 +286,6 @@ export async function getAdminEvent(req, res) {
 /** PATCH /api/admin/events/:eventId – update event details; owner only (unless super admin). */
 export async function patchAdminEvent(req, res) {
   try {
-    const superAdmin = isSuperAdmin(req);
-    const userId = getUserId(req);
-    const userIdParam = userId != null ? String(userId) : '';
     const eventId = String(req.params.eventId || req.params.id || '');
     const body = req.body || {};
 
@@ -306,12 +296,6 @@ export async function patchAdminEvent(req, res) {
       [eventId]
     ).catch(() => ({ rows: [] }));
     if (!check.rows?.length) return res.status(404).json({ error: 'Event not found' });
-
-    const event = check.rows[0];
-    const ownsEvent = String(event.createdBy) === userIdParam || (event.createdBy == null && userIdParam === '0');
-    if (!superAdmin && !ownsEvent) {
-      return res.status(403).json({ error: 'You can only edit events you created' });
-    }
 
     const result = await query(
       `UPDATE "Event"
@@ -325,8 +309,10 @@ export async function patchAdminEvent(req, res) {
            "organizer" = COALESCE($8, "organizer"),
            "isTrending" = COALESCE($9, "isTrending"),
            "isPublished" = COALESCE($10, "isPublished"),
+           "venue" = COALESCE($11, "venue"),
+           "category" = COALESCE($12, "category"),
            "updatedAt" = NOW()
-       WHERE "id"::text = $11
+       WHERE "id"::text = $13
        RETURNING "id"`,
       [
         body.title ?? null,
@@ -339,11 +325,68 @@ export async function patchAdminEvent(req, res) {
         body.organizer ?? null,
         typeof body.isTrending === 'boolean' ? body.isTrending : null,
         typeof body.isPublished === 'boolean' ? body.isPublished : null,
+        body.venue ?? null,
+        body.category ?? null,
         eventId,
       ]
     ).catch(() => ({ rows: [] }));
 
     if (!result.rows?.length) return res.status(404).json({ error: 'Event not found' });
+    if (Array.isArray(body.ticketTypes)) {
+      const currentRows = await query(
+        'SELECT "id" FROM "TicketType" WHERE "eventId"::text = $1',
+        [eventId]
+      ).catch(() => ({ rows: [] }));
+      const existingIds = new Set((currentRows.rows || []).map((r) => String(r.id)));
+      const incomingIds = new Set();
+
+      for (const ticket of body.ticketTypes) {
+        const parsedId = typeof ticket?.id === 'string' ? ticket.id.trim() : '';
+        const hasExistingId = parsedId.length > 0 && existingIds.has(parsedId);
+        if (hasExistingId) incomingIds.add(parsedId);
+
+        const price = Number(ticket?.price) || 0;
+        const quantity = Number(ticket?.quantity) || 0;
+        const type = ticket?.type === 'free' ? 'free' : (price === 0 ? 'free' : 'paid');
+        const name = ticket?.name || 'Ticket';
+        const description = ticket?.description || null;
+
+        if (hasExistingId) {
+          await query(
+            `UPDATE "TicketType"
+             SET "name" = $1,
+                 "description" = $2,
+                 "price" = $3,
+                 "quantity" = $4,
+                 "type" = $5,
+                 "updatedAt" = NOW()
+             WHERE "id"::text = $6 AND "eventId"::text = $7`,
+            [name, description, price, quantity, type, parsedId, eventId]
+          );
+        } else {
+          await query(
+            `INSERT INTO "TicketType" ("id", "eventId", "name", "description", "price", "quantity", "type", "createdAt", "updatedAt")
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
+            [crypto.randomUUID(), eventId, name, description, price, quantity, type]
+          );
+        }
+      }
+
+      for (const existingId of existingIds) {
+        if (incomingIds.has(existingId)) continue;
+        await query(
+          `DELETE FROM "TicketType" tt
+           WHERE tt."id"::text = $1
+             AND tt."eventId"::text = $2
+             AND NOT EXISTS (
+               SELECT 1
+               FROM "OrderItem" oi
+               WHERE oi."ticketTypeId"::text = tt."id"::text
+             )`,
+          [existingId, eventId]
+        );
+      }
+    }
     return res.json({ message: 'Updated' });
   } catch (err) {
     console.error('patchAdminEvent', err);

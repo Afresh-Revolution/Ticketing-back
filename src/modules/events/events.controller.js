@@ -1,4 +1,9 @@
 import { query } from '../../shared/config/db.js';
+import { randomUUID } from 'crypto';
+import {
+  isCloudinaryConfigured,
+  uploadImageBufferToCloudinary,
+} from '../../shared/services/cloudinary.service.js';
 
 /** GET /api/events - list events (?trending=true&take=3) */
 export async function listEvents(req, res) {
@@ -105,6 +110,29 @@ export async function getEvent(req, res) {
   }
 }
 
+/** POST /api/events/upload-image – upload event image to Cloudinary */
+export async function uploadImage(req, res) {
+  try {
+    if (!isCloudinaryConfigured()) {
+      return res.status(500).json({ error: 'Cloudinary is not configured on the server' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'Image file is required' });
+    }
+    if (!req.file.mimetype || !req.file.mimetype.startsWith('image/')) {
+      return res.status(400).json({ error: 'Only image files are allowed' });
+    }
+    const result = await uploadImageBufferToCloudinary(req.file.buffer);
+    return res.status(201).json({
+      imageUrl: result.secure_url,
+      publicId: result.public_id,
+    });
+  } catch (err) {
+    console.error('uploadImage', err);
+    return res.status(500).json({ error: err.message || 'Image upload failed' });
+  }
+}
+
 /** Resolve createdBy: null only for superadmin (id 0). Every other request must have a numeric userId from the token so the event is attributed to that admin. */
 function getCreatedBy(req) {
   const raw = req.user?.id ?? req.userId;
@@ -187,18 +215,81 @@ export async function updateEvent(req, res) {
     const event = eventRows.rows[0];
     const createdBy = event.createdBy;
 
-    if (!isSuperAdmin && String(createdBy) !== String(userId)) {
+    const ownsEvent = createdBy != null && String(createdBy) === String(userId);
+    const superAdminOwnsNullEvent = isSuperAdmin && (createdBy == null || String(createdBy) === '0');
+    if (!isSuperAdmin && !ownsEvent) {
       return res.status(403).json({ error: 'You can only edit events you created' });
+    }
+    if (isSuperAdmin && !ownsEvent && !superAdminOwnsNullEvent) {
+      return res.status(403).json({ error: 'Super admin can only edit their own events, not another admin\'s' });
     }
 
     const result = await query(
       `UPDATE "Event" SET "title" = COALESCE($1, "title"), "date" = COALESCE($2, "date"), "location" = COALESCE($3, "location"),
        "price" = COALESCE($4, "price"), "imageUrl" = COALESCE($5, "imageUrl"), "startTime" = COALESCE($6, "startTime"),
-       "description" = COALESCE($7, "description"), "updatedAt" = NOW()
-       WHERE "id" = $8 RETURNING "id"`,
-      [body.title, body.date, body.location, body.price, body.imageUrl, body.startTime, body.description, eventId]
+       "description" = COALESCE($7, "description"), "venue" = COALESCE($8, "venue"), "category" = COALESCE($9, "category"),
+       "updatedAt" = NOW()
+       WHERE "id" = $10 RETURNING "id"`,
+      [body.title, body.date, body.location, body.price, body.imageUrl, body.startTime, body.description, body.venue, body.category, eventId]
     ).catch(() => ({ rows: [] }));
     if (!result.rows || result.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
+
+    if (Array.isArray(body.ticketTypes)) {
+      const currentRows = await query(
+        'SELECT "id" FROM "TicketType" WHERE "eventId"::text = $1',
+        [String(eventId)]
+      ).catch(() => ({ rows: [] }));
+      const existingIds = new Set((currentRows.rows || []).map((r) => String(r.id)));
+      const incomingIds = new Set();
+
+      for (const ticket of body.ticketTypes) {
+        const parsedId = typeof ticket?.id === 'string' ? ticket.id.trim() : '';
+        const hasExistingId = parsedId.length > 0 && existingIds.has(parsedId);
+        if (hasExistingId) incomingIds.add(parsedId);
+
+        const price = Number(ticket?.price) || 0;
+        const quantity = Number(ticket?.quantity) || 0;
+        const type = ticket?.type === 'free' ? 'free' : (price === 0 ? 'free' : 'paid');
+        const name = ticket?.name || 'Ticket';
+        const description = ticket?.description || null;
+
+        if (hasExistingId) {
+          await query(
+            `UPDATE "TicketType"
+             SET "name" = $1,
+                 "description" = $2,
+                 "price" = $3,
+                 "quantity" = $4,
+                 "type" = $5,
+                 "updatedAt" = NOW()
+             WHERE "id"::text = $6 AND "eventId"::text = $7`,
+            [name, description, price, quantity, type, parsedId, String(eventId)]
+          );
+        } else {
+          await query(
+            `INSERT INTO "TicketType" ("id", "eventId", "name", "description", "price", "quantity", "type", "createdAt", "updatedAt")
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
+            [randomUUID(), String(eventId), name, description, price, quantity, type]
+          );
+        }
+      }
+
+      for (const existingId of existingIds) {
+        if (incomingIds.has(existingId)) continue;
+        await query(
+          `DELETE FROM "TicketType" tt
+           WHERE tt."id"::text = $1
+             AND tt."eventId"::text = $2
+             AND NOT EXISTS (
+               SELECT 1
+               FROM "OrderItem" oi
+               WHERE oi."ticketTypeId"::text = tt."id"::text
+             )`,
+          [existingId, String(eventId)]
+        );
+      }
+    }
+
     return res.json({ message: 'Updated' });
     
   } catch (err) {
