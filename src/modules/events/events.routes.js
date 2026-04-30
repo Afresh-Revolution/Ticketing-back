@@ -19,6 +19,7 @@ router.post('/upload-image', requireAuth, upload.single('image'), eventsControll
 router.post('/', requireAuth, eventsController.createEvent);
 router.patch('/:id/trending', requireAuth, eventsController.setTrending);
 router.patch('/:id', requireAuth, eventsController.updateEvent);
+router.put('/:id', requireAuth, eventsController.updateEvent);
 router.delete('/:id', requireAuth, eventsController.deleteEvent);
 
 export default router;

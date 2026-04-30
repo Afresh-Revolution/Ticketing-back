@@ -19,6 +19,7 @@ router.get('/:id', eventController.getById);
 router.post('/upload-image', authMiddleware, upload.single('image'), eventController.uploadImage);
 router.post('/', authMiddleware, eventController.create);
 router.patch('/:id', authMiddleware, eventController.update);
+router.put('/:id', authMiddleware, eventController.update);
 router.patch('/:id/trending', authMiddleware, eventController.toggleTrending);
 router.delete('/:id', authMiddleware, eventController.remove);
 
