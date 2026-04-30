@@ -11,7 +11,7 @@ export async function listEvents(req, res) {
     const trending = req.query.trending === 'true';
     const take = Math.min(parseInt(req.query.take, 10) || 50, 100);
     const result = await query(
-      `SELECT "id", "title", "date", "location", "price", "imageUrl", "startTime"
+      `SELECT "id", "title", "date", "location", "price", "imageUrl", "startTime", "category"
        FROM "Event"
        WHERE "isPublished" = TRUE ${trending ? 'AND "isTrending" = TRUE' : ''}
        ORDER BY "date" ASC
@@ -22,6 +22,7 @@ export async function listEvents(req, res) {
       id: String(row.id),
       title: row.title,
       date: row.date,
+      category: row.category,
       location: row.location,
       price: row.price,
       imageUrl: row.imageUrl,
@@ -100,6 +101,7 @@ export async function getEvent(req, res) {
       imageUrl: row.imageUrl,
       startTime: row.startTime,
       description: row.description,
+      category: row.category,
       organizer: row.organizer,
       tickets,
       ticketTypes: tickets,
