@@ -63,7 +63,7 @@ export async function getEvent(req, res) {
       const soldRows = await query(
         `SELECT oi."ticketTypeId", COALESCE(SUM(oi.quantity), 0)::int AS sold
          FROM "OrderItem" oi
-         INNER JOIN "Order" o ON o.id::text = oi."orderId"::text AND o.status = 'paid'
+         INNER JOIN "Order" o ON o.id::text = oi."orderId"::text AND LOWER(TRIM(COALESCE(o.status, ''))) = 'paid'
          WHERE oi."ticketTypeId"::text = ANY($1)
          GROUP BY oi."ticketTypeId"`,
         [ticketTypeIds]
@@ -80,7 +80,7 @@ export async function getEvent(req, res) {
     const walkInSoldRows = await query(
       `SELECT LOWER(TRIM(COALESCE("ticketType", 'General'))) AS ticket_name, COALESCE(SUM(quantity), 0)::int AS sold
        FROM "WalkInSale"
-       WHERE "eventId"::text = $1 AND "status" = 'paid'
+       WHERE "eventId"::text = $1 AND LOWER(TRIM(COALESCE("status", ''))) = 'paid'
        GROUP BY LOWER(TRIM(COALESCE("ticketType", 'General')))` ,
       [eventId]
     ).then((r) => r.rows || []).catch((e) => {

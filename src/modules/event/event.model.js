@@ -81,7 +81,7 @@ export const eventModel = {
       const { rows: soldRows } = await query(
         `SELECT oi."ticketTypeId", COALESCE(SUM(oi.quantity), 0)::int AS sold
          FROM "OrderItem" oi
-         INNER JOIN "Order" o ON o.id = oi."orderId" AND o.status = 'paid'
+         INNER JOIN "Order" o ON o.id = oi."orderId" AND LOWER(TRIM(COALESCE(o.status, ''))) = 'paid'
          WHERE oi."ticketTypeId" = ANY($1)
          GROUP BY oi."ticketTypeId"`,
         [ticketIds]
@@ -91,7 +91,7 @@ export const eventModel = {
     const walkInSoldResult = await query(
       `SELECT LOWER(TRIM(COALESCE("ticketType", 'General'))) AS ticket_name, COALESCE(SUM(quantity), 0)::int AS sold
        FROM "WalkInSale"
-       WHERE "eventId"::text = $1 AND "status" = 'paid'
+       WHERE "eventId"::text = $1 AND LOWER(TRIM(COALESCE("status", ''))) = 'paid'
        GROUP BY LOWER(TRIM(COALESCE("ticketType", 'General')))` ,
       [String(id)]
     ).catch((e) => {
