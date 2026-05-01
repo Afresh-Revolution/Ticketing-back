@@ -74,6 +74,82 @@ export async function getDashboard(req, res) {
     stats.totalEvents = Number(e.rows?.[0]?.c) || 0;
     stats.activeEvents = stats.totalEvents;
 
+    const recentSql = superAdmin
+      ? `SELECT *
+         FROM (
+           SELECT
+             o.id::text AS id,
+             'online'::text AS source,
+             o."fullName" AS buyer_name,
+             o.email AS buyer_email,
+             o.phone AS buyer_phone,
+             o."totalAmount" AS amount,
+             o."createdAt" AS created_at,
+             e.title AS event_title
+           FROM "Order" o
+           LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
+           WHERE o."status" = 'paid'
+           UNION ALL
+           SELECT
+             w.id::text AS id,
+             'walk_in'::text AS source,
+             w."fullName" AS buyer_name,
+             w.email AS buyer_email,
+             w.phone AS buyer_phone,
+             w.amount AS amount,
+             w."createdAt" AS created_at,
+             e.title AS event_title
+           FROM "WalkInSale" w
+           LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
+           WHERE w."status" = 'paid'
+         ) s
+         ORDER BY s.created_at DESC
+         LIMIT 10`
+      : `SELECT *
+         FROM (
+           SELECT
+             o.id::text AS id,
+             'online'::text AS source,
+             o."fullName" AS buyer_name,
+             o.email AS buyer_email,
+             o.phone AS buyer_phone,
+             o."totalAmount" AS amount,
+             o."createdAt" AS created_at,
+             e.title AS event_title
+           FROM "Order" o
+           INNER JOIN "Event" e ON e.id::text = o."eventId"::text
+           WHERE o."status" = 'paid' AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))
+           UNION ALL
+           SELECT
+             w.id::text AS id,
+             'walk_in'::text AS source,
+             w."fullName" AS buyer_name,
+             w.email AS buyer_email,
+             w.phone AS buyer_phone,
+             w.amount AS amount,
+             w."createdAt" AS created_at,
+             e.title AS event_title
+           FROM "WalkInSale" w
+           INNER JOIN "Event" e ON e.id::text = w."eventId"::text
+           WHERE w."status" = 'paid' AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))
+         ) s
+         ORDER BY s.created_at DESC
+         LIMIT 10`;
+    const recentParams = superAdmin ? [] : [userIdParam];
+    const recentResult = await query(recentSql, recentParams).catch(() => ({ rows: [] }));
+    recentSales.push(
+      ...(recentResult.rows || []).map((row) => ({
+        id: row.id,
+        source: row.source,
+        buyer_name: row.buyer_name,
+        buyer_email: row.buyer_email,
+        buyer_phone: row.buyer_phone,
+        amount: Number(row.amount) || 0,
+        created_at: row.created_at,
+        event_title: row.event_title || '',
+      }))
+    );
+
     return res.json({ stats, recentSales });
   } catch (err) {
     console.error('getDashboard', err);
@@ -527,6 +603,44 @@ function normalizeSaleStatus(status) {
 
 function generateTicketCode() {
   return crypto.randomBytes(6).toString('hex').toUpperCase();
+}
+
+async function resolveAdminEventIdentifier(eventIdentifier, req) {
+  const superAdmin = isSuperAdmin(req);
+  const rawId = req.user?.id ?? req.userId;
+  const userIdParam = rawId != null ? String(rawId) : '';
+  const normalized = String(eventIdentifier || '').trim();
+  if (!normalized) return null;
+
+  const byIdSql = superAdmin
+    ? `SELECT e.id::text AS id, e.title, e.date
+       FROM "Event" e
+       WHERE e.id::text = $1
+       LIMIT 1`
+    : `SELECT e.id::text AS id, e.title, e.date
+       FROM "Event" e
+       WHERE e.id::text = $1
+         AND (e."createdBy"::text = $2 OR (e."createdBy" IS NULL AND $2 = '0'))
+       LIMIT 1`;
+  const byIdParams = superAdmin ? [normalized] : [normalized, userIdParam];
+  const byIdResult = await query(byIdSql, byIdParams).catch(() => ({ rows: [] }));
+  if (byIdResult.rows?.[0]) return byIdResult.rows[0];
+
+  const byTitleSql = superAdmin
+    ? `SELECT e.id::text AS id, e.title, e.date
+       FROM "Event" e
+       WHERE LOWER(COALESCE(e.title, '')) = LOWER($1)
+       ORDER BY e."createdAt" DESC
+       LIMIT 1`
+    : `SELECT e.id::text AS id, e.title, e.date
+       FROM "Event" e
+       WHERE LOWER(COALESCE(e.title, '')) = LOWER($1)
+         AND (e."createdBy"::text = $2 OR (e."createdBy" IS NULL AND $2 = '0'))
+       ORDER BY e."createdAt" DESC
+       LIMIT 1`;
+  const byTitleParams = superAdmin ? [normalized] : [normalized, userIdParam];
+  const byTitleResult = await query(byTitleSql, byTitleParams).catch(() => ({ rows: [] }));
+  return byTitleResult.rows?.[0] || null;
 }
 
 async function getSaleByIdForAdmin(orderId, req) {
@@ -1456,7 +1570,6 @@ export async function listWalkInSales(req, res) {
 /** POST /api/admin/walk-in-sales – create a walk-in sale. */
 export async function createWalkInSale(req, res) {
   try {
-    const superAdmin = isSuperAdmin(req);
     const userId = getUserId(req);
     const { eventId, fullName, email, phone, ticketType, quantity, amount, status, notes } = req.body || {};
 
@@ -1464,13 +1577,8 @@ export async function createWalkInSale(req, res) {
     if (!fullName || !fullName.trim()) return res.status(400).json({ error: 'Full name is required' });
     if (!amount && amount !== 0) return res.status(400).json({ error: 'Amount is required' });
 
-    // Verify ownership
-    const checkSql = superAdmin
-      ? 'SELECT id FROM "Event" WHERE id = $1'
-      : 'SELECT id FROM "Event" WHERE id = $1 AND ("createdBy" = $2 OR ("createdBy" IS NULL AND ($2 = 0 OR $2 = \'0\')))';
-    const checkParams = superAdmin ? [eventId] : [eventId, userId];
-    const check = await query(checkSql, checkParams).catch(() => ({ rows: [] }));
-    if (!check.rows?.length) return res.status(404).json({ error: 'Event not found or access denied' });
+    const event = await resolveAdminEventIdentifier(eventId, req);
+    if (!event?.id) return res.status(404).json({ error: 'Event not found or access denied' });
 
     const validStatus = status === 'paid' ? 'paid' : 'pending';
     const result = await query(
@@ -1478,7 +1586,7 @@ export async function createWalkInSale(req, res) {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
-        eventId,
+        event.id,
         fullName.trim(),
         email?.trim() || null,
         phone?.trim() || null,
@@ -1492,10 +1600,23 @@ export async function createWalkInSale(req, res) {
     );
     if (!result.rows?.length) return res.status(500).json({ error: 'Failed to create walk-in sale' });
 
-    // Include event title in response
-    const eventResult = await query('SELECT title FROM "Event" WHERE id = $1', [eventId]).catch(() => ({ rows: [] }));
     const row = result.rows[0];
-    row.event_title = eventResult.rows?.[0]?.title || '';
+    row.event_title = event.title || '';
+
+    if (validStatus === 'paid' && row.email) {
+      try {
+        await sendTicketEmail({
+          to: row.email,
+          fullName: row.fullName,
+          ticketCode: generateTicketCode(),
+          eventTitle: event.title,
+          eventDate: event.date,
+          ticketTypes: [row.ticketType || 'General'],
+        });
+      } catch (emailErr) {
+        console.error('createWalkInSale email warning', emailErr);
+      }
+    }
 
     return res.status(201).json(row);
   } catch (err) {
@@ -1517,22 +1638,43 @@ export async function updateWalkInSaleStatus(req, res) {
 
     // Verify ownership via event
     const ownershipSql = superAdmin
-      ? `SELECT w.id FROM "WalkInSale" w
+      ? `SELECT w.id, w.status, w.email, w."fullName", w."ticketType", e.title AS event_title, e.date AS event_date
+         FROM "WalkInSale" w
          LEFT JOIN "Event" e ON e.id = w."eventId"
          WHERE w.id = $1`
-      : `SELECT w.id FROM "WalkInSale" w
+      : `SELECT w.id, w.status, w.email, w."fullName", w."ticketType", e.title AS event_title, e.date AS event_date
+         FROM "WalkInSale" w
          LEFT JOIN "Event" e ON e.id = w."eventId"
          WHERE w.id = $1 AND (e."createdBy" = $2 OR (e."createdBy" IS NULL AND ($2 = 0 OR $2 = '0')))`;
     const ownershipParams = superAdmin ? [saleId] : [saleId, userId];
     const ownerCheck = await query(ownershipSql, ownershipParams).catch(() => ({ rows: [] }));
     if (!ownerCheck.rows?.length) return res.status(404).json({ error: 'Walk-in sale not found' });
 
+    const previousStatus = String(ownerCheck.rows[0].status || '').toLowerCase();
     const result = await query(
       `UPDATE "WalkInSale" SET "status" = $1, "updatedAt" = NOW() WHERE id = $2 RETURNING *`,
       [validStatus, saleId]
     );
     if (!result.rows?.length) return res.status(404).json({ error: 'Walk-in sale not found' });
-    return res.json(result.rows[0]);
+    const row = result.rows[0];
+    row.event_title = ownerCheck.rows[0].event_title || '';
+
+    if (validStatus === 'paid' && previousStatus !== 'paid' && ownerCheck.rows[0].email) {
+      try {
+        await sendTicketEmail({
+          to: ownerCheck.rows[0].email,
+          fullName: ownerCheck.rows[0].fullName,
+          ticketCode: generateTicketCode(),
+          eventTitle: ownerCheck.rows[0].event_title,
+          eventDate: ownerCheck.rows[0].event_date,
+          ticketTypes: [ownerCheck.rows[0].ticketType || 'General'],
+        });
+      } catch (emailErr) {
+        console.error('updateWalkInSaleStatus email warning', emailErr);
+      }
+    }
+
+    return res.json(row);
   } catch (err) {
     console.error('updateWalkInSaleStatus', err);
     return res.status(500).json({ error: err.message || 'Failed' });
