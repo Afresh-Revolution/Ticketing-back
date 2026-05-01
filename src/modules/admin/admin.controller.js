@@ -1549,12 +1549,12 @@ export async function listWalkInSales(req, res) {
     const sql = superAdmin
       ? `SELECT w.*, e.title AS event_title
          FROM "WalkInSale" w
-         LEFT JOIN "Event" e ON e.id = w."eventId"
+         LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
          ORDER BY w."createdAt" DESC
          LIMIT 200`
       : `SELECT w.*, e.title AS event_title
          FROM "WalkInSale" w
-         LEFT JOIN "Event" e ON e.id = w."eventId"
+         LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
          WHERE (e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0')
          ORDER BY w."createdAt" DESC
          LIMIT 200`;
@@ -1580,7 +1580,8 @@ export async function createWalkInSale(req, res) {
     const event = await resolveAdminEventIdentifier(eventId, req);
     if (!event?.id) return res.status(404).json({ error: 'Event not found or access denied' });
 
-    const validStatus = status === 'paid' ? 'paid' : 'pending';
+    const validStatus = normalizeSaleStatus(status);
+    if (!validStatus) return res.status(400).json({ error: 'Status must be pending or paid' });
     const result = await query(
       `INSERT INTO "WalkInSale" ("eventId", "fullName", "email", "phone", "ticketType", "quantity", "amount", "status", "notes", "recordedBy")
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -1630,23 +1631,25 @@ export async function updateWalkInSaleStatus(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
     const userId = getUserId(req);
+    const userIdParam = userId != null ? String(userId) : '';
     const saleId = parseInt(req.params.id, 10);
     if (Number.isNaN(saleId)) return res.status(400).json({ error: 'Invalid sale id' });
 
     const { status } = req.body || {};
-    const validStatus = status === 'paid' ? 'paid' : 'pending';
+    const validStatus = normalizeSaleStatus(status);
+    if (!validStatus) return res.status(400).json({ error: 'Status must be pending or paid' });
 
     // Verify ownership via event
     const ownershipSql = superAdmin
       ? `SELECT w.id, w.status, w.email, w."fullName", w."ticketType", e.title AS event_title, e.date AS event_date
          FROM "WalkInSale" w
-         LEFT JOIN "Event" e ON e.id = w."eventId"
+         LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
          WHERE w.id = $1`
       : `SELECT w.id, w.status, w.email, w."fullName", w."ticketType", e.title AS event_title, e.date AS event_date
          FROM "WalkInSale" w
-         LEFT JOIN "Event" e ON e.id = w."eventId"
-         WHERE w.id = $1 AND (e."createdBy" = $2 OR (e."createdBy" IS NULL AND ($2 = 0 OR $2 = '0')))`;
-    const ownershipParams = superAdmin ? [saleId] : [saleId, userId];
+         LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
+         WHERE w.id = $1 AND (e."createdBy"::text = $2 OR (e."createdBy" IS NULL AND $2 = '0'))`;
+    const ownershipParams = superAdmin ? [saleId] : [saleId, userIdParam];
     const ownerCheck = await query(ownershipSql, ownershipParams).catch(() => ({ rows: [] }));
     if (!ownerCheck.rows?.length) return res.status(404).json({ error: 'Walk-in sale not found' });
 
@@ -1686,18 +1689,19 @@ export async function deleteWalkInSale(req, res) {
   try {
     const superAdmin = isSuperAdmin(req);
     const userId = getUserId(req);
+    const userIdParam = userId != null ? String(userId) : '';
     const saleId = parseInt(req.params.id, 10);
     if (Number.isNaN(saleId)) return res.status(400).json({ error: 'Invalid sale id' });
 
     // Verify ownership via event
     const ownershipSql = superAdmin
       ? `SELECT w.id FROM "WalkInSale" w
-         LEFT JOIN "Event" e ON e.id = w."eventId"
+         LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
          WHERE w.id = $1`
       : `SELECT w.id FROM "WalkInSale" w
-         LEFT JOIN "Event" e ON e.id = w."eventId"
-         WHERE w.id = $1 AND (e."createdBy" = $2 OR (e."createdBy" IS NULL AND ($2 = 0 OR $2 = '0')))`;
-    const ownershipParams = superAdmin ? [saleId] : [saleId, userId];
+         LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
+         WHERE w.id = $1 AND (e."createdBy"::text = $2 OR (e."createdBy" IS NULL AND $2 = '0'))`;
+    const ownershipParams = superAdmin ? [saleId] : [saleId, userIdParam];
     const ownerCheck = await query(ownershipSql, ownershipParams).catch(() => ({ rows: [] }));
     if (!ownerCheck.rows?.length) return res.status(404).json({ error: 'Walk-in sale not found' });
 
@@ -1722,7 +1726,7 @@ export async function getWalkInRevenue(req, res) {
          WHERE w."status" = 'paid'`
       : `SELECT COALESCE(SUM(w."amount"), 0) AS total
          FROM "WalkInSale" w
-         LEFT JOIN "Event" e ON e.id = w."eventId"
+         LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
          WHERE w."status" = 'paid' AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))`;
     const params = superAdmin ? [] : [userIdParam];
     const result = await query(sql, params).catch(() => ({ rows: [{ total: 0 }] }));
