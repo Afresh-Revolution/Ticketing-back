@@ -83,6 +83,8 @@ export async function getDashboard(req, res) {
              o."fullName" AS buyer_name,
              o.email AS buyer_email,
              o.phone AS buyer_phone,
+             o."status" AS status,
+             COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1) AS ticket_count,
              o."totalAmount" AS amount,
              o."createdAt" AS created_at,
              e.title AS event_title
@@ -96,6 +98,8 @@ export async function getDashboard(req, res) {
              w."fullName" AS buyer_name,
              w.email AS buyer_email,
              w.phone AS buyer_phone,
+             w."status" AS status,
+             COALESCE(w."quantity", 1)::int AS ticket_count,
              w.amount AS amount,
              w."createdAt" AS created_at,
              e.title AS event_title
@@ -113,6 +117,8 @@ export async function getDashboard(req, res) {
              o."fullName" AS buyer_name,
              o.email AS buyer_email,
              o.phone AS buyer_phone,
+             o."status" AS status,
+             COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1) AS ticket_count,
              o."totalAmount" AS amount,
              o."createdAt" AS created_at,
              e.title AS event_title
@@ -126,6 +132,8 @@ export async function getDashboard(req, res) {
              w."fullName" AS buyer_name,
              w.email AS buyer_email,
              w.phone AS buyer_phone,
+             w."status" AS status,
+             COALESCE(w."quantity", 1)::int AS ticket_count,
              w.amount AS amount,
              w."createdAt" AS created_at,
              e.title AS event_title
@@ -144,6 +152,8 @@ export async function getDashboard(req, res) {
         buyer_name: row.buyer_name,
         buyer_email: row.buyer_email,
         buyer_phone: row.buyer_phone,
+        status: row.status || 'pending',
+        ticket_count: Number(row.ticket_count) || 1,
         amount: Number(row.amount) || 0,
         created_at: row.created_at,
         event_title: row.event_title || '',
@@ -774,7 +784,52 @@ export async function updateSaleStatus(req, res) {
     if (!status) return res.status(400).json({ error: 'Status must be pending or paid' });
 
     const sale = await getSaleByIdForAdmin(orderId, req);
-    if (!sale) return res.status(404).json({ error: 'Sale not found' });
+    if (!sale) {
+      const walkInId = Number.parseInt(orderId, 10);
+      if (Number.isNaN(walkInId)) return res.status(404).json({ error: 'Sale not found' });
+
+      const walkInSale = await getWalkInSaleByIdForAdmin(walkInId, req);
+      if (!walkInSale) return res.status(404).json({ error: 'Sale not found' });
+
+      const previousStatus = String(walkInSale.status || '').toLowerCase();
+      await query(
+        `UPDATE "WalkInSale" SET "status" = $1, "updatedAt" = NOW() WHERE id = $2`,
+        [status, walkInId]
+      );
+      const freshWalkInSale = await getWalkInSaleByIdForAdmin(walkInId, req);
+      if (!freshWalkInSale) return res.status(404).json({ error: 'Sale not found' });
+
+      let emailSent = false;
+      let emailError = null;
+      if (status === 'paid' && previousStatus !== 'paid' && freshWalkInSale.email) {
+        try {
+          await sendTicketEmail({
+            to: freshWalkInSale.email,
+            fullName: freshWalkInSale.fullName,
+            ticketCode: generateTicketCode(),
+            eventTitle: freshWalkInSale.event_title,
+            eventDate: freshWalkInSale.event_date,
+            ticketTypes: [freshWalkInSale.ticketType || 'General'],
+          });
+          emailSent = true;
+        } catch (emailErr) {
+          emailError = emailErr?.message || 'Status updated, but ticket email failed';
+          console.error('updateSaleStatus walk-in email warning', emailErr);
+        }
+      }
+
+      return res.json({
+        message: emailError ? 'Sale status updated, but email failed' : 'Sale status updated',
+        sale: {
+          id: String(freshWalkInSale.id),
+          status: freshWalkInSale.status,
+          ticket_count: Number(freshWalkInSale.quantity) || 1,
+          source: 'walk_in',
+        },
+        emailSent,
+        emailError,
+      });
+    }
 
     const previousStatus = String(sale.status || '').toLowerCase();
     const updateResult = await query(

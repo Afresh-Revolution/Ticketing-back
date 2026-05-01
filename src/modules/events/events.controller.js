@@ -77,6 +77,22 @@ export async function getEvent(req, res) {
         return acc;
       }, {});
     }
+    const walkInSoldRows = await query(
+      `SELECT LOWER(TRIM(COALESCE("ticketType", 'General'))) AS ticket_name, COALESCE(SUM(quantity), 0)::int AS sold
+       FROM "WalkInSale"
+       WHERE "eventId"::text = $1 AND "status" = 'paid'
+       GROUP BY LOWER(TRIM(COALESCE("ticketType", 'General')))` ,
+      [eventId]
+    ).then((r) => r.rows || []).catch((e) => {
+      if (e?.code === '42P01') return [];
+      throw e;
+    });
+    const walkInSoldByName = walkInSoldRows.reduce((acc, soldRow) => {
+      const key = String(soldRow.ticket_name || '').trim().toLowerCase();
+      if (!key) return acc;
+      acc[key] = Number(soldRow.sold) || 0;
+      return acc;
+    }, {});
 
     const tickets = ticketTypeRows.map((t) => {
       const id = String(t.id);
@@ -88,7 +104,7 @@ export async function getEvent(req, res) {
         price,
         quantity: Number(t.quantity) || 0,
         type: t.type === 'free' ? 'free' : (price === 0 ? 'free' : 'paid'),
-        sold: soldByTicketTypeId[id] || 0,
+        sold: (soldByTicketTypeId[id] || 0) + (walkInSoldByName[String(t.name || '').trim().toLowerCase()] || 0),
       };
     });
 

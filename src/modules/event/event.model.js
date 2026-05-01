@@ -88,6 +88,22 @@ export const eventModel = {
       );
       soldByTicketId = soldRows.reduce((acc, r) => { acc[r.ticketTypeId] = Number(r.sold) || 0; return acc; }, {});
     }
+    const walkInSoldResult = await query(
+      `SELECT LOWER(TRIM(COALESCE("ticketType", 'General'))) AS ticket_name, COALESCE(SUM(quantity), 0)::int AS sold
+       FROM "WalkInSale"
+       WHERE "eventId"::text = $1 AND "status" = 'paid'
+       GROUP BY LOWER(TRIM(COALESCE("ticketType", 'General')))` ,
+      [String(id)]
+    ).catch((e) => {
+      if (e?.code === '42P01') return { rows: [] };
+      throw e;
+    });
+    const walkInSoldByName = (walkInSoldResult.rows || []).reduce((acc, row) => {
+      const key = String(row.ticket_name || '').trim().toLowerCase();
+      if (!key) return acc;
+      acc[key] = Number(row.sold) || 0;
+      return acc;
+    }, {});
     event.tickets = ticketTypeRows.map(t => ({
       id: t.id,
       name: t.name,
@@ -95,7 +111,7 @@ export const eventModel = {
       price: t.price,
       quantity: t.quantity,
       type: t.type || (t.price === 0 ? 'free' : 'paid'),
-      sold: soldByTicketId[t.id] || 0,
+      sold: (soldByTicketId[t.id] || 0) + (walkInSoldByName[String(t.name || '').trim().toLowerCase()] || 0),
     }));
 
     return event;
