@@ -596,9 +596,23 @@ export async function getSales(req, res) {
   }
 }
 
-function normalizeSaleStatus(status) {
-  const value = String(status || '').trim().toLowerCase();
-  return value === 'paid' ? 'paid' : value === 'pending' ? 'pending' : null;
+function normalizeSaleStatus(statusInput, body = null) {
+  if (typeof statusInput === 'boolean') return statusInput ? 'paid' : 'pending';
+
+  const value = String(statusInput ?? '').trim().toLowerCase();
+  if (value === 'paid' || value === 'completed' || value === 'success' || value === 'changed' || value === 'true') {
+    return 'paid';
+  }
+  if (value === 'pending' || value === 'unpaid' || value === 'false') {
+    return 'pending';
+  }
+
+  const b = body && typeof body === 'object' ? body : {};
+  if (typeof b.isPaid === 'boolean') return b.isPaid ? 'paid' : 'pending';
+  if (typeof b.checked === 'boolean') return b.checked ? 'paid' : 'pending';
+  if (typeof b.value === 'boolean') return b.value ? 'paid' : 'pending';
+
+  return null;
 }
 
 function generateTicketCode() {
@@ -734,7 +748,7 @@ async function sendSaleTicketEmail(orderRow) {
 export async function updateSaleStatus(req, res) {
   try {
     const orderId = String(req.params.orderId || '').trim();
-    const status = normalizeSaleStatus(req.body?.status);
+    const status = normalizeSaleStatus(req.body?.status, req.body);
     if (!orderId) return res.status(400).json({ error: 'Order id is required' });
     if (!status) return res.status(400).json({ error: 'Status must be pending or paid' });
 
@@ -1580,7 +1594,7 @@ export async function createWalkInSale(req, res) {
     const event = await resolveAdminEventIdentifier(eventId, req);
     if (!event?.id) return res.status(404).json({ error: 'Event not found or access denied' });
 
-    const validStatus = normalizeSaleStatus(status);
+    const validStatus = normalizeSaleStatus(status, req.body);
     if (!validStatus) return res.status(400).json({ error: 'Status must be pending or paid' });
     const result = await query(
       `INSERT INTO "WalkInSale" ("eventId", "fullName", "email", "phone", "ticketType", "quantity", "amount", "status", "notes", "recordedBy")
@@ -1636,7 +1650,7 @@ export async function updateWalkInSaleStatus(req, res) {
     if (Number.isNaN(saleId)) return res.status(400).json({ error: 'Invalid sale id' });
 
     const { status } = req.body || {};
-    const validStatus = normalizeSaleStatus(status);
+    const validStatus = normalizeSaleStatus(status, req.body);
     if (!validStatus) return res.status(400).json({ error: 'Status must be pending or paid' });
 
     // Verify ownership via event
