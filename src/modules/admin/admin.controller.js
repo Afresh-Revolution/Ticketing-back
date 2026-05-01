@@ -694,6 +694,27 @@ async function getSaleByIdForAdmin(orderId, req) {
   return result.rows?.[0] || null;
 }
 
+async function getWalkInSaleByIdForAdmin(saleId, req) {
+  const superAdmin = isSuperAdmin(req);
+  const rawId = req.user?.id ?? req.userId;
+  const userIdParam = rawId != null ? String(rawId) : '';
+  const sql = superAdmin
+    ? `SELECT w.*, e.title AS event_title, e.date AS event_date
+       FROM "WalkInSale" w
+       LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
+       WHERE w.id = $1
+       LIMIT 1`
+    : `SELECT w.*, e.title AS event_title, e.date AS event_date
+       FROM "WalkInSale" w
+       LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
+       WHERE w.id = $1
+         AND (e."createdBy"::text = $2 OR (e."createdBy" IS NULL AND $2 = '0'))
+       LIMIT 1`;
+  const params = superAdmin ? [saleId] : [saleId, userIdParam];
+  const result = await query(sql, params).catch(() => ({ rows: [] }));
+  return result.rows?.[0] || null;
+}
+
 async function getOrderTicketTypes(orderId) {
   const result = await query(
     `SELECT COALESCE(tt.name, 'General') AS name
@@ -1668,13 +1689,12 @@ export async function updateWalkInSaleStatus(req, res) {
     if (!ownerCheck.rows?.length) return res.status(404).json({ error: 'Walk-in sale not found' });
 
     const previousStatus = String(ownerCheck.rows[0].status || '').toLowerCase();
-    const result = await query(
+    await query(
       `UPDATE "WalkInSale" SET "status" = $1, "updatedAt" = NOW() WHERE id = $2 RETURNING *`,
       [validStatus, saleId]
     );
-    if (!result.rows?.length) return res.status(404).json({ error: 'Walk-in sale not found' });
-    const row = result.rows[0];
-    row.event_title = ownerCheck.rows[0].event_title || '';
+    const row = await getWalkInSaleByIdForAdmin(saleId, req);
+    if (!row) return res.status(404).json({ error: 'Walk-in sale not found' });
 
     if (validStatus === 'paid' && previousStatus !== 'paid' && ownerCheck.rows[0].email) {
       try {
