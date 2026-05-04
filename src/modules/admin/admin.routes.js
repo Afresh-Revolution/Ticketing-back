@@ -1,8 +1,13 @@
 import { Router } from 'express';
+import multer from 'multer';
 import * as adminController from './admin.controller.js';
 import { requireAuth, requireSuperAdmin } from '../../middleware/auth.js';
 
 const router = Router();
+const landingVideoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 101 * 1024 * 1024 },
+});
 
 router.get('/me', requireAuth, adminController.getMe);
 router.get('/dashboard', requireAuth, adminController.getDashboard);
@@ -40,6 +45,18 @@ router.get('/password-change-status', requireAuth, adminController.getPasswordCh
 router.post('/verify-password', requireAuth, adminController.verifyPassword);
 router.post('/change-password', requireAuth, adminController.changePassword);
 router.post('/verify-ticket', requireAuth, adminController.verifyTicket);
+
+// Landing videos (superadmin only)
+router.get('/landing-videos', requireAuth, requireSuperAdmin, adminController.getAdminLandingVideos);
+router.post(
+  '/landing-videos/upload',
+  requireAuth,
+  requireSuperAdmin,
+  landingVideoUpload.single('video'),
+  adminController.uploadLandingVideo
+);
+router.patch('/landing-videos/:id', requireAuth, requireSuperAdmin, adminController.patchLandingVideo);
+router.delete('/landing-videos/:id', requireAuth, requireSuperAdmin, adminController.removeLandingVideo);
 
 // Walk-in sales (on-site physical ticket payments)
 router.get('/walk-in-sales/revenue', requireAuth, adminController.getWalkInRevenue);

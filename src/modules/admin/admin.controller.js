@@ -3,6 +3,8 @@ import crypto from 'crypto';
 import { query, createId } from '../../shared/config/db.js';
 import { insertTopUserRecord } from '../landing/topUsers/topUsers.model.js';
 import { sendTicketEmail } from '../../shared/services/email.service.js';
+import { uploadVideoBufferToCloudinary, deleteVideoFromCloudinary, isCloudinaryConfigured } from '../../shared/services/cloudinary.service.js';
+import { listLandingVideos, createLandingVideo, updateLandingVideo, deleteLandingVideo } from '../landing/videos/videos.model.js';
 
 /** True if current user is super admin (sees all events in Supabase). */
 function isSuperAdmin(req) {
@@ -545,6 +547,7 @@ export async function getSales(req, res) {
       ? `SELECT
            o.id,
            o."eventId",
+           o.reference,
            o."fullName",
            o.email,
            o.phone,
@@ -566,6 +569,7 @@ export async function getSales(req, res) {
       : `SELECT
            o.id,
            o."eventId",
+           o.reference,
            o."fullName",
            o.email,
            o.phone,
@@ -587,9 +591,10 @@ export async function getSales(req, res) {
          LIMIT 100`;
     const params = superAdmin ? [] : [userIdParam];
     const result = await query(sql, params).catch(() => ({ rows: [] }));
-    const list = (result.rows || []).map((r) => ({
+    const rawList = (result.rows || []).map((r) => ({
       id: r.id,
       event_id: r.eventId,
+      reference: r.reference || '',
       buyer_name: r.fullName,
       buyer_email: r.email,
       buyer_phone: r.phone,
@@ -600,7 +605,37 @@ export async function getSales(req, res) {
       created_at: r.createdAt,
       event_title: r.event_title,
     }));
-    return res.json(list);
+
+    // De-duplicate logical duplicates from repeated checkout attempts/callbacks.
+    // Prefer paid records; then the most recent row.
+    const dedupedMap = new Map();
+    for (const sale of rawList) {
+      const normalizedEmail = String(sale.buyer_email || '').trim().toLowerCase();
+      const key = sale.reference
+        ? `ref:${sale.reference}`
+        : `fallback:${sale.event_id}|${normalizedEmail}|${sale.amount}|${sale.ticket_breakdown || ''}`;
+      const current = dedupedMap.get(key);
+      if (!current) {
+        dedupedMap.set(key, sale);
+        continue;
+      }
+      const currentPaid = String(current.status || '').toLowerCase() === 'paid';
+      const nextPaid = String(sale.status || '').toLowerCase() === 'paid';
+      if (nextPaid && !currentPaid) {
+        dedupedMap.set(key, sale);
+        continue;
+      }
+      if (nextPaid === currentPaid) {
+        const currentTime = new Date(current.created_at).getTime();
+        const nextTime = new Date(sale.created_at).getTime();
+        if (nextTime > currentTime) dedupedMap.set(key, sale);
+      }
+    }
+
+    const deduped = Array.from(dedupedMap.values())
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 100);
+    return res.json(deduped);
   } catch (err) {
     console.error('getSales', err);
     return res.json([]);
@@ -1155,31 +1190,38 @@ export async function getWithdrawPage(req, res) {
 
     const eventsSql = superAdmin
       ? `SELECT e.id, e.title, e.date, e."imageUrl", e."createdBy",
-                COALESCE(rev.gross, 0) AS gross_revenue,
-                NULL::varchar AS withdrawal_status, NULL::numeric AS withdrawn_net, NULL::timestamptz AS withdrawn_at
-         FROM "Event" e
-         LEFT JOIN (SELECT o."eventId", SUM(o."totalAmount") AS gross FROM "Order" o WHERE o."status" = 'paid' GROUP BY o."eventId") rev ON rev."eventId" = e.id
-         ORDER BY e.date DESC NULLS LAST`
+               COALESCE(rev.gross, 0) AS gross_revenue
+        FROM "Event" e
+        LEFT JOIN (
+          SELECT o."eventId", SUM(o."totalAmount") AS gross
+          FROM "Order" o
+          WHERE o."status" = 'paid'
+          GROUP BY o."eventId"
+        ) rev ON rev."eventId"::text = e.id::text
+        ORDER BY e.date DESC NULLS LAST`
       : `SELECT e.id, e.title, e.date, e."imageUrl", e."createdBy",
-                COALESCE(rev.gross, 0) AS gross_revenue,
-                w.status AS withdrawal_status, w.amount AS withdrawn_net, w."createdAt" AS withdrawn_at
-         FROM "Event" e
-         LEFT JOIN (SELECT o."eventId", SUM(o."totalAmount") AS gross FROM "Order" o WHERE o."status" = 'paid' GROUP BY o."eventId") rev ON rev."eventId"::text = e.id::text
-         LEFT JOIN LATERAL (SELECT status, amount, "createdAt" FROM "Withdrawal" WHERE "eventId"::text = e.id::text AND "userId"::text = $1 ORDER BY "createdAt" DESC LIMIT 1) w ON true
-         WHERE (e."createdBy"::text = $2) OR (e."createdBy" IS NULL AND $2 = '0')
-         ORDER BY e.date DESC NULLS LAST`;
-    const eventsParams = superAdmin ? [] : [userIdText, userIdText];
+               COALESCE(rev.gross, 0) AS gross_revenue
+        FROM "Event" e
+        LEFT JOIN (
+          SELECT o."eventId", SUM(o."totalAmount") AS gross
+          FROM "Order" o
+          WHERE o."status" = 'paid'
+          GROUP BY o."eventId"
+        ) rev ON rev."eventId"::text = e.id::text
+        WHERE (e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0')
+        ORDER BY e.date DESC NULLS LAST`;
+    const eventsParams = superAdmin ? [] : [userIdText];
     const eventsResult = await query(eventsSql, eventsParams).catch(() => ({ rows: [] }));
-    const events = (eventsResult.rows || []).map((r) => ({
+    let events = (eventsResult.rows || []).map((r) => ({
       id: String(r.id),
       title: r.title || '',
       date: r.date || '',
       imageUrl: r.imageUrl ?? null,
       createdBy: r.createdBy != null ? String(r.createdBy) : null,
       gross_revenue: Number(r.gross_revenue) || 0,
-      withdrawal_status: r.withdrawal_status ?? null,
-      withdrawn_net: r.withdrawn_net != null ? Number(r.withdrawn_net) : null,
-      withdrawn_at: r.withdrawn_at ?? null,
+      withdrawal_status: null,
+      withdrawn_net: null,
+      withdrawn_at: null,
     }));
 
     const withResult = await query(
@@ -1200,6 +1242,28 @@ export async function getWithdrawPage(req, res) {
       admin_name: null,
       admin_email: null,
     }));
+
+    const latestByEvent = new Map();
+    for (const w of withdrawals) {
+      const current = latestByEvent.get(w.eventId);
+      if (!current) {
+        latestByEvent.set(w.eventId, w);
+        continue;
+      }
+      if (new Date(w.createdAt).getTime() > new Date(current.createdAt).getTime()) {
+        latestByEvent.set(w.eventId, w);
+      }
+    }
+    events = events.map((ev) => {
+      const latest = latestByEvent.get(ev.id);
+      if (!latest) return ev;
+      return {
+        ...ev,
+        withdrawal_status: latest.status || null,
+        withdrawn_net: latest.netAmount ?? null,
+        withdrawn_at: latest.createdAt || null,
+      };
+    });
 
     let bankAccount = null;
     const baResult = await query(
@@ -1416,6 +1480,104 @@ export async function deleteTopUser(req, res) {
   } catch (err) {
     console.error('[admin] deleteTopUser:', err?.message || err);
     return res.status(500).json({ error: err?.message || 'Failed to delete' });
+  }
+}
+
+/** GET /api/admin/landing-videos - superadmin only */
+export async function getAdminLandingVideos(req, res) {
+  try {
+    const rows = await listLandingVideos({ activeOnly: false });
+    return res.json(
+      rows.map((row) => ({
+        id: String(row.id),
+        videoUrl: row.videoUrl || '',
+        thumbnailUrl: row.thumbnailUrl || null,
+        sortOrder: Number(row.sortOrder) || 0,
+        isActive: !!row.isActive,
+        createdAt: row.createdAt || null,
+      }))
+    );
+  } catch (err) {
+    console.error('getAdminLandingVideos', err);
+    return res.status(500).json({ error: 'Failed to fetch landing videos' });
+  }
+}
+
+/** POST /api/admin/landing-videos/upload - superadmin only */
+export async function uploadLandingVideo(req, res) {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: 'Video file is required' });
+    if (!file.mimetype?.startsWith('video/')) {
+      return res.status(400).json({ error: 'Only video files are allowed' });
+    }
+    const maxBytes = 101 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      return res.status(400).json({ error: 'Video must be below 101MB' });
+    }
+    if (!isCloudinaryConfigured()) {
+      return res.status(500).json({ error: 'Cloudinary is not configured' });
+    }
+
+    const uploaded = await uploadVideoBufferToCloudinary(file.buffer, {
+      folder: 'ticketing/landing/videos',
+    });
+    const current = await listLandingVideos({ activeOnly: false });
+    const created = await createLandingVideo({
+      videoUrl: uploaded?.secure_url || uploaded?.url || '',
+      thumbnailUrl: uploaded?.secure_url || uploaded?.url || '',
+      publicId: uploaded?.public_id || null,
+      sortOrder: current.length,
+    });
+
+    return res.status(201).json({
+      id: String(created.id),
+      videoUrl: created.videoUrl,
+      thumbnailUrl: created.thumbnailUrl,
+      sortOrder: Number(created.sortOrder) || 0,
+      isActive: !!created.isActive,
+    });
+  } catch (err) {
+    console.error('uploadLandingVideo', err);
+    return res.status(500).json({ error: err.message || 'Failed to upload video' });
+  }
+}
+
+/** PATCH /api/admin/landing-videos/:id - superadmin only */
+export async function patchLandingVideo(req, res) {
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ error: 'id is required' });
+    const updated = await updateLandingVideo(id, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'Video not found' });
+    return res.json({
+      id: String(updated.id),
+      videoUrl: updated.videoUrl || '',
+      thumbnailUrl: updated.thumbnailUrl || null,
+      sortOrder: Number(updated.sortOrder) || 0,
+      isActive: !!updated.isActive,
+      createdAt: updated.createdAt || null,
+    });
+  } catch (err) {
+    console.error('patchLandingVideo', err);
+    return res.status(500).json({ error: err.message || 'Failed to update video' });
+  }
+}
+
+/** DELETE /api/admin/landing-videos/:id - superadmin only */
+export async function removeLandingVideo(req, res) {
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ error: 'id is required' });
+    const deleted = await deleteLandingVideo(id);
+    if (!deleted) return res.status(404).json({ error: 'Video not found' });
+    if (deleted.publicId) {
+      await deleteVideoFromCloudinary(deleted.publicId).catch(() => null);
+    }
+    return res.json({ message: 'Deleted' });
+  } catch (err) {
+    console.error('removeLandingVideo', err);
+    return res.status(500).json({ error: err.message || 'Failed to delete video' });
   }
 }
 

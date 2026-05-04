@@ -31,6 +31,22 @@ export function uploadImageBufferToCloudinary(buffer, opts = {}) {
   });
 }
 
+export function uploadVideoBufferToCloudinary(buffer, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder: opts.folder || 'ticketing/landing/videos',
+        resource_type: 'video',
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result);
+      }
+    );
+    uploadStream.end(buffer);
+  });
+}
+
 export function extractCloudinaryPublicId(imageUrl) {
   if (!imageUrl || typeof imageUrl !== 'string') return null;
   try {
@@ -62,4 +78,9 @@ export function extractCloudinaryPublicId(imageUrl) {
 export async function deleteImageFromCloudinary(publicId) {
   if (!publicId) return { result: 'not_found' };
   return cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
+}
+
+export async function deleteVideoFromCloudinary(publicId) {
+  if (!publicId) return { result: 'not_found' };
+  return cloudinary.uploader.destroy(publicId, { resource_type: 'video' });
 }

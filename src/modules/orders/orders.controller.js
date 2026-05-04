@@ -445,13 +445,10 @@ export async function notifyManualPayment(req, res) {
     const order = await getOrderById(orderId);
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    const buyerEmail = String(email || order.email || '').trim();
-    if (!buyerEmail) {
-      return res.status(400).json({ error: 'Buyer email is required' });
-    }
+    const buyerEmail = String(email || order.email || '').trim() || 'N/A';
 
     const eventMeta = await getEventMeta(order.eventId);
-    const notifyTo = process.env.MANUAL_PAYMENT_NOTIFY_EMAIL || 'williambosworth777@icloud.com';
+    const notifyTo = config.manualPaymentNotifyEmail || 'williambosworth777@icloud.com';
     const subject = `Payment requested (${String(order.id)})`;
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
