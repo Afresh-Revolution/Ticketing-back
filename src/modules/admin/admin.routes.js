@@ -31,6 +31,11 @@ router.get('/top-users', requireAuth, adminController.listTopUsers);
 router.post('/top-users', requireAuth, adminController.createTopUser);
 router.patch('/top-users/:id', requireAuth, adminController.updateTopUser);
 router.delete('/top-users/:id', requireAuth, adminController.deleteTopUser);
+// Alias: some frontends call /top_users (underscore)
+router.get('/top_users', requireAuth, adminController.listTopUsers);
+router.post('/top_users', requireAuth, adminController.createTopUser);
+router.patch('/top_users/:id', requireAuth, adminController.updateTopUser);
+router.delete('/top_users/:id', requireAuth, adminController.deleteTopUser);
 router.get('/password-change-status', requireAuth, adminController.getPasswordChangeStatus);
 router.post('/verify-password', requireAuth, adminController.verifyPassword);
 router.post('/change-password', requireAuth, adminController.changePassword);

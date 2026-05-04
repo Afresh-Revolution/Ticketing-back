@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import pg from 'pg';
 import { config } from './env.js';
 
@@ -92,10 +93,11 @@ export async function ensureUserSequence() {
 }
 
 /**
- * Ensure "TopUser" has columns used by admin + landing (older DBs may omit "isActive", etc.).
- * Idempotent; safe on every startup.
+ * Align live "TopUser" with app expectations: missing columns + "id" default for legacy TEXT PK
+ * or integer PK without a sequence (matches db/schema.sql SERIAL behavior).
+ * Idempotent; run on every startup.
  */
-export async function ensureTopUserColumns() {
+export async function ensureTopUserSchema() {
   if (!pool) return;
   try {
     const exists = await query(
@@ -115,8 +117,45 @@ export async function ensureTopUserColumns() {
       'ALTER TABLE "TopUser" ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMPTZ DEFAULT NOW()'
     );
     await query('UPDATE "TopUser" SET "isActive" = TRUE WHERE "isActive" IS NULL');
+
+    const idCol = await query(
+      `SELECT a.atttypid::regtype::text AS typ,
+              COALESCE(pg_get_expr(ad.adbin, ad.adrelid), '') AS def
+       FROM pg_attribute a
+       JOIN pg_class c ON a.attrelid = c.oid
+       JOIN pg_namespace n ON c.relnamespace = n.oid
+       LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+       WHERE n.nspname = 'public' AND c.relname = 'TopUser'
+         AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped`
+    );
+    const typ = (idCol.rows[0]?.typ || '').toLowerCase();
+    const def = String(idCol.rows[0]?.def || '').trim();
+    const hasDefault = def.length > 0;
+
+    if (!hasDefault && typ) {
+      if (typ === 'uuid') {
+        await query('ALTER TABLE "TopUser" ALTER COLUMN "id" SET DEFAULT gen_random_uuid()');
+      } else if (
+        typ === 'text' ||
+        typ.includes('varchar') ||
+        typ.includes('character varying')
+      ) {
+        await query(
+          'ALTER TABLE "TopUser" ALTER COLUMN "id" SET DEFAULT (gen_random_uuid()::text)'
+        );
+      } else if (typ === 'integer' || typ === 'bigint' || typ === 'smallint') {
+        await query('CREATE SEQUENCE IF NOT EXISTS "TopUser_id_seq"');
+        const maxResult = await query('SELECT COALESCE(MAX("id")::bigint, 0) AS mx FROM "TopUser"');
+        const maxId = Number(maxResult.rows[0]?.mx ?? 0);
+        await query('SELECT setval(\'"TopUser_id_seq"\', $1)', [Math.max(1, maxId + 1)]);
+        await query('ALTER SEQUENCE "TopUser_id_seq" OWNED BY "TopUser"."id"');
+        await query(
+          'ALTER TABLE "TopUser" ALTER COLUMN "id" SET DEFAULT nextval(\'"TopUser_id_seq"\')'
+        );
+      }
+    }
   } catch (err) {
-    console.warn('[db] ensureTopUserColumns:', err.message);
+    console.warn('[db] ensureTopUserSchema:', err.message);
   }
 }
 

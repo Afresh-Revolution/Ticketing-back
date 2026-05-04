@@ -4,5 +4,6 @@ import * as landingController from './landing.controller.js';
 const router = express.Router();
 
 router.get('/top-users', landingController.getTopUsers);
+router.get('/top_users', landingController.getTopUsers);
 
 export default router;

@@ -8,7 +8,7 @@ export async function getTopUsers(req, res) {
        FROM "TopUser"
        WHERE "isActive" = TRUE
        ORDER BY "sortOrder" ASC, "id" ASC`
-    ).catch(() => ({ rows: [] }));
+    );
     const list = (result.rows || []).map((row) => ({
       id: String(row.id),
       name: row.name || '',
@@ -17,7 +17,8 @@ export async function getTopUsers(req, res) {
       sortOrder: row.sortOrder ?? 0,
     }));
     return res.json(list);
-  } catch {
+  } catch (err) {
+    console.error('[landing] getTopUsers:', err?.message || err);
     return res.json([]);
   }
 }

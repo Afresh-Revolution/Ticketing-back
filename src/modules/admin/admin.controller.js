@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { query, createId } from '../../shared/config/db.js';
+import { insertTopUserRecord } from '../landing/topUsers/topUsers.model.js';
 import { sendTicketEmail } from '../../shared/services/email.service.js';
 
 /** True if current user is super admin (sees all events in Supabase). */
@@ -1356,33 +1357,20 @@ export async function listTopUsers(req, res) {
       `SELECT "id", "name", "title", "imageUrl", "sortOrder", "isActive", "createdAt", "updatedAt"
        FROM "TopUser"
        ORDER BY "sortOrder" ASC, "id" ASC`
-    ).catch(() => ({ rows: [] }));
+    );
     return res.json(result.rows || []);
-  } catch {
-    return res.json([]);
+  } catch (err) {
+    console.error('[admin] listTopUsers:', err?.message || err);
+    return res.status(500).json({ error: err?.message || 'Failed to list top users' });
   }
 }
 
-/** POST /api/admin/top-users, PATCH/DELETE /api/admin/top-users/:id */
+/** POST /api/admin/top-users (and /top_users alias), PATCH/DELETE …/:id */
 export async function createTopUser(req, res) {
   try {
-    const { name, title, imageUrl, sortOrder } = req.body || {};
-    const sort = Number(sortOrder) || 0;
-    const nm = name || '';
-    const tl = title ?? null;
-    const img = imageUrl || null;
-
-    const result = await query(
-      `INSERT INTO "TopUser" ("name", "title", "imageUrl", "sortOrder")
-       VALUES ($1, $2, $3, $4)
-       RETURNING "id", "name", "title", "imageUrl", "sortOrder", "isActive", "createdAt", "updatedAt"`,
-      [nm, tl, img, sort]
-    );
-
-    if (!result.rows?.length) {
-      return res.status(500).json({ error: 'Insert returned no row' });
-    }
-    return res.status(201).json(result.rows[0]);
+    const row = await insertTopUserRecord(req.body || {});
+    if (!row) return res.status(500).json({ error: 'Insert returned no row' });
+    return res.status(201).json(row);
   } catch (err) {
     console.error('[admin] createTopUser:', err?.message || err);
     return res.status(500).json({ error: err?.message || 'Failed to create top user' });
@@ -1422,10 +1410,12 @@ export async function updateTopUser(req, res) {
 
 export async function deleteTopUser(req, res) {
   try {
-    await query('DELETE FROM "TopUser" WHERE "id" = $1', [req.params.id]);
+    const r = await query('DELETE FROM "TopUser" WHERE "id" = $1', [req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ error: 'Not found' });
     return res.json({ message: 'Deleted' });
-  } catch {
-    return res.status(404).json({ error: 'Not found' });
+  } catch (err) {
+    console.error('[admin] deleteTopUser:', err?.message || err);
+    return res.status(500).json({ error: err?.message || 'Failed to delete' });
   }
 }
 
