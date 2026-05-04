@@ -91,6 +91,35 @@ export async function ensureUserSequence() {
   }
 }
 
+/**
+ * Ensure "TopUser" has columns used by admin + landing (older DBs may omit "isActive", etc.).
+ * Idempotent; safe on every startup.
+ */
+export async function ensureTopUserColumns() {
+  if (!pool) return;
+  try {
+    const exists = await query(
+      `SELECT 1 FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = 'TopUser'`
+    );
+    if (exists.rows.length === 0) return;
+
+    await query(
+      'ALTER TABLE "TopUser" ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN DEFAULT TRUE'
+    );
+    await query(
+      'ALTER TABLE "TopUser" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW()'
+    );
+    await query(
+      'ALTER TABLE "TopUser" ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMPTZ DEFAULT NOW()'
+    );
+    await query('UPDATE "TopUser" SET "isActive" = TRUE WHERE "isActive" IS NULL');
+  } catch (err) {
+    console.warn('[db] ensureTopUserColumns:', err.message);
+  }
+}
+
 export async function disconnectDb() {
   if (pool) await pool.end();
 }

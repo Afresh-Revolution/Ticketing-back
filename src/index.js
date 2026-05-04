@@ -8,7 +8,7 @@ if (process.env.ALLOW_INSECURE_TLS_OUTBOUND === "1") {
 
 import express from "express";
 import { config } from "./shared/config/env.js";
-import { ensureUserSequence } from "./shared/config/db.js";
+import { ensureUserSequence, ensureTopUserColumns } from "./shared/config/db.js";
 import {
   applySecurityMiddleware,
   createRateLimit,
@@ -67,6 +67,7 @@ app.use((err, req, res, next) => {
 
 const port = config.port;
 ensureUserSequence()
+  .then(() => ensureTopUserColumns())
   .then(() => {
     app.listen(port, () => {
       console.log(`Ticketing-back listening on port ${port}`);
