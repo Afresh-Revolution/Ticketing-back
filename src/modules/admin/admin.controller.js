@@ -1353,7 +1353,9 @@ export async function saveBankAccount(req, res) {
 export async function listTopUsers(req, res) {
   try {
     const result = await query(
-      'SELECT "id", "name", "title", "imageUrl", "sortOrder" FROM "TopUser" ORDER BY "sortOrder"'
+      `SELECT "id", "name", "title", "imageUrl", "sortOrder", "isActive", "createdAt", "updatedAt"
+       FROM "TopUser"
+       ORDER BY "sortOrder" ASC, "id" ASC`
     ).catch(() => ({ rows: [] }));
     return res.json(result.rows || []);
   } catch {
@@ -1365,14 +1367,25 @@ export async function listTopUsers(req, res) {
 export async function createTopUser(req, res) {
   try {
     const { name, title, imageUrl, sortOrder } = req.body || {};
+    const sort = Number(sortOrder) || 0;
+    const nm = name || '';
+    const tl = title ?? null;
+    const img = imageUrl || null;
+
     const result = await query(
-      'INSERT INTO "TopUser" ("name", "title", "imageUrl", "sortOrder") VALUES ($1, $2, $3, $4) RETURNING "id"',
-      [name || '', title || '', imageUrl || null, sortOrder ?? 0]
-    ).catch(() => ({ rows: [] }));
-    if (!result.rows?.length) return res.status(501).json({ error: 'TopUser table not configured' });
+      `INSERT INTO "TopUser" ("name", "title", "imageUrl", "sortOrder")
+       VALUES ($1, $2, $3, $4)
+       RETURNING "id", "name", "title", "imageUrl", "sortOrder", "isActive", "createdAt", "updatedAt"`,
+      [nm, tl, img, sort]
+    );
+
+    if (!result.rows?.length) {
+      return res.status(500).json({ error: 'Insert returned no row' });
+    }
     return res.status(201).json(result.rows[0]);
-  } catch {
-    return res.status(500).json({ error: 'Failed' });
+  } catch (err) {
+    console.error('[admin] createTopUser:', err?.message || err);
+    return res.status(500).json({ error: err?.message || 'Failed to create top user' });
   }
 }
 
@@ -1396,7 +1409,7 @@ export async function updateTopUser(req, res) {
            "sortOrder" = COALESCE($4, "sortOrder"),
            "updatedAt" = NOW()
        WHERE "id" = $5
-       RETURNING "id", "name", "title", "imageUrl", "sortOrder"`,
+       RETURNING "id", "name", "title", "imageUrl", "sortOrder", "isActive", "createdAt", "updatedAt"`,
       [name, title, imageUrl, parsedSortOrder, req.params.id]
     );
 

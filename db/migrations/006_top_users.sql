@@ -1,10 +1,12 @@
--- Top users carousel (landing page) – managed from admin
+-- Top users (landing carousel) – matches db/schema.sql "TopUser"
 CREATE TABLE IF NOT EXISTS "TopUser" (
-  id          TEXT PRIMARY KEY,
-  name        TEXT NOT NULL,
-  title       TEXT,
-  "imageUrl"  TEXT,
-  "sortOrder" INTEGER NOT NULL DEFAULT 0,
-  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
-  "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+  "id" SERIAL PRIMARY KEY,
+  "name" VARCHAR(255) NOT NULL,
+  "title" VARCHAR(255),
+  "imageUrl" VARCHAR(512),
+  "sortOrder" INTEGER DEFAULT 0,
+  "isActive" BOOLEAN DEFAULT TRUE,
+  "createdAt" TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE "TopUser" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ DEFAULT NOW();
