@@ -78,6 +78,27 @@ function generatePaystackReference() {
   return `ord_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+async function resolveOrderItemTicketTypeId(eventId, item = {}) {
+  const directId = item.ticketTypeId ?? item.ticketTypeID ?? item.ticketId ?? item.id ?? null;
+  if (directId != null && String(directId).trim() !== '') return String(directId).trim();
+
+  const ticketName = item.ticketType ?? item.ticketName ?? item.name ?? null;
+  if (ticketName == null || String(ticketName).trim() === '') return null;
+
+  const result = await query(
+    `SELECT "id"
+     FROM "TicketType"
+     WHERE "eventId"::text = $1
+       AND LOWER(TRIM(COALESCE("name", ''))) = LOWER(TRIM($2))
+     LIMIT 1`,
+    [String(eventId), String(ticketName)]
+  ).catch((e) => {
+    if (e?.code === '42P01') return { rows: [] };
+    throw e;
+  });
+  return result.rows?.[0]?.id ? String(result.rows[0].id) : null;
+}
+
 function resolvePaystackChannels() {
   const raw = process.env.PAYSTACK_CHANNELS;
   const allowed = new Set(['card', 'bank', 'ussd', 'qr', 'mobile_money', 'bank_transfer', 'eft']);
@@ -234,6 +255,24 @@ export async function createOrder(req, res) {
       return res.status(501).json({ error: 'Orders table not configured' });
     }
     const row = result.rows[0];
+
+    // Persist per-ticket breakdown so sold counters can increment by ticket type when order becomes paid.
+    for (const item of items) {
+      const quantity = Math.max(1, Number.parseInt(item?.quantity, 10) || 1);
+      const unitPrice = Math.max(0, Number(item?.price) || 0);
+      const ticketTypeId = await resolveOrderItemTicketTypeId(eventId, item);
+      if (!ticketTypeId) continue;
+
+      await query(
+        `INSERT INTO "OrderItem" ("id", "orderId", "ticketTypeId", "quantity", "price")
+         VALUES ($1, $2, $3, $4, $5)`,
+        [createId(), row.id, ticketTypeId, quantity, unitPrice]
+      ).catch((e) => {
+        if (e?.code === '42P01') return null;
+        throw e;
+      });
+    }
+
     return res.status(201).json({
       id: row.id,
       reference: row.reference,

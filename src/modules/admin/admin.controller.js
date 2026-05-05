@@ -803,6 +803,45 @@ async function getOrderTicketTypes(orderId) {
   return (result.rows || []).map((row) => String(row.name || '').trim()).filter(Boolean);
 }
 
+async function ensureOrderItemsForManualPaid(orderId, eventId, body = {}) {
+  const existing = await query(
+    `SELECT COUNT(*)::int AS c
+     FROM "OrderItem"
+     WHERE "orderId"::text = $1`,
+    [String(orderId)]
+  ).catch(() => ({ rows: [{ c: 0 }] }));
+  if ((Number(existing.rows?.[0]?.c) || 0) > 0) return false;
+
+  const normalizedQuantity = Math.max(1, parseInt(body.quantity ?? body.ticketCount, 10) || 1);
+  const normalizedPrice = Math.max(0, parseInt(body.price ?? body.amount, 10) || 0);
+  const directTicketTypeId = String(body.ticketTypeId ?? body.ticketTypeID ?? '').trim();
+  let ticketTypeId = directTicketTypeId || null;
+
+  if (!ticketTypeId) {
+    const ticketTypeName = String(body.ticketType ?? body.ticketTypeName ?? '').trim();
+    if (ticketTypeName) {
+      const byName = await query(
+        `SELECT "id"
+         FROM "TicketType"
+         WHERE "eventId"::text = $1
+           AND LOWER(REGEXP_REPLACE(TRIM(COALESCE("name", '')), '[^a-z0-9]+', '', 'g')) = $2
+         LIMIT 1`,
+        [String(eventId), normalizeTicketTypeKey(ticketTypeName)]
+      ).catch(() => ({ rows: [] }));
+      ticketTypeId = byName.rows?.[0]?.id ? String(byName.rows[0].id) : null;
+    }
+  }
+
+  if (!ticketTypeId) return false;
+
+  await query(
+    `INSERT INTO "OrderItem" ("id", "orderId", "ticketTypeId", "quantity", "price")
+     VALUES ($1, $2, $3, $4, $5)`,
+    [createId(), String(orderId), ticketTypeId, normalizedQuantity, normalizedPrice]
+  );
+  return true;
+}
+
 async function ensureTicketCode(orderId, existingTicketCode) {
   if (existingTicketCode) return existingTicketCode;
   let ticketCode = generateTicketCode();
@@ -909,6 +948,9 @@ export async function updateSaleStatus(req, res) {
     let emailError = null;
     let ticketCode = sale.ticketCode || null;
     if (status === 'paid' && previousStatus !== 'paid') {
+      await ensureOrderItemsForManualPaid(orderId, sale.eventId, req.body || {}).catch((e) => {
+        console.warn('ensureOrderItemsForManualPaid warning:', e?.message || e);
+      });
       try {
         ticketCode = await sendSaleTicketEmail(sale);
         emailSent = true;
