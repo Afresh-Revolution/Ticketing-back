@@ -1854,10 +1854,34 @@ export async function createWalkInSale(req, res) {
 
     if (!eventId) return res.status(400).json({ error: 'eventId is required' });
     if (!fullName || !fullName.trim()) return res.status(400).json({ error: 'Full name is required' });
-    if (!amount && amount !== 0) return res.status(400).json({ error: 'Amount is required' });
-
     const event = await resolveAdminEventIdentifier(eventId, req);
     if (!event?.id) return res.status(404).json({ error: 'Event not found or access denied' });
+
+    const normalizedQuantity = Math.max(1, parseInt(quantity, 10) || 1);
+    const rawAmount = typeof amount === 'string' ? amount.trim() : amount;
+    const hasExplicitAmount = rawAmount !== '' && rawAmount != null;
+    let normalizedAmount = hasExplicitAmount ? Math.max(0, parseInt(rawAmount, 10) || 0) : null;
+
+    // Auto-calculate amount from selected ticket type when amount is omitted.
+    if (normalizedAmount == null) {
+      const selectedTicketType = ticketType?.trim();
+      if (selectedTicketType) {
+        const ticketPriceResult = await query(
+          `SELECT COALESCE("price", 0) AS price
+           FROM "TicketType"
+           WHERE "eventId"::text = $1
+             AND LOWER(TRIM(COALESCE("name", ''))) = LOWER(TRIM($2))
+           LIMIT 1`,
+          [String(event.id), selectedTicketType]
+        ).catch(() => ({ rows: [] }));
+        const ticketPrice = Number(ticketPriceResult.rows?.[0]?.price ?? 0);
+        normalizedAmount = Math.max(0, ticketPrice * normalizedQuantity);
+      } else {
+        normalizedAmount = Math.max(0, Number(event.price) || 0) * normalizedQuantity;
+      }
+    }
+
+    if (normalizedAmount == null) return res.status(400).json({ error: 'Amount is required' });
 
     const validStatus = normalizeSaleStatus(status, req.body);
     if (!validStatus) return res.status(400).json({ error: 'Status must be pending or paid' });
@@ -1871,8 +1895,8 @@ export async function createWalkInSale(req, res) {
         email?.trim() || null,
         phone?.trim() || null,
         ticketType?.trim() || 'General',
-        Math.max(1, parseInt(quantity, 10) || 1),
-        Math.max(0, parseInt(amount, 10) || 0),
+        normalizedQuantity,
+        normalizedAmount,
         validStatus,
         notes?.trim() || null,
         (userId === 0 || userId === '0') ? null : userId,
