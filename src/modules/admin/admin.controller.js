@@ -326,6 +326,29 @@ export async function listAdminEvents(req, res) {
       });
     }
 
+    const eventIds = rows.map((row) => String(row.id));
+    let ticketTypeRows = [];
+    if (eventIds.length > 0) {
+      const ticketTypeResult = await query(
+        `SELECT "id", "eventId", "name", "price"
+         FROM "TicketType"
+         WHERE "eventId"::text = ANY($1)`,
+        [eventIds]
+      ).catch(() => ({ rows: [] }));
+      ticketTypeRows = ticketTypeResult.rows || [];
+    }
+    const ticketTypesByEventId = ticketTypeRows.reduce((acc, ticketRow) => {
+      const eventKey = String(ticketRow.eventId || '');
+      if (!eventKey) return acc;
+      if (!acc[eventKey]) acc[eventKey] = [];
+      acc[eventKey].push({
+        id: String(ticketRow.id),
+        name: ticketRow.name || 'General',
+        price: Number(ticketRow.price) || 0,
+      });
+      return acc;
+    }, {});
+
     const list = rows.map((row) => ({
       id: String(row.id),
       title: row.title,
@@ -336,6 +359,7 @@ export async function listAdminEvents(req, res) {
       price: row.price ?? 0,
       createdBy: row.createdBy,
       createdByName: row.createdBy == null ? 'Super Admin' : (names[String(row.createdBy)] ?? null),
+      ticketTypes: ticketTypesByEventId[String(row.id)] || [],
     }));
     return res.json(list);
   } catch (err) {
