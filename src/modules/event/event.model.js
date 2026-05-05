@@ -204,26 +204,57 @@ export const eventModel = {
       );
     }
     if (data.ticketTypes && Array.isArray(data.ticketTypes)) {
-      await query('DELETE FROM "TicketType" WHERE "eventId" = $1', [id]);
-      const now = new Date().toISOString();
+      const currentRows = await query(
+        'SELECT "id" FROM "TicketType" WHERE "eventId"::text = $1',
+        [String(id)]
+      );
+      const existingIds = new Set((currentRows.rows || []).map((r) => String(r.id)));
+      const incomingIds = new Set();
+
       for (const ticket of data.ticketTypes) {
-        const ticketId = ticket.id && /^[a-f0-9-]{36}$/i.test(ticket.id) ? ticket.id : createId();
-        const price = ticket.price ?? 0;
-        const type = ticket.type || (price === 0 ? 'free' : 'paid');
+        const parsedId = typeof ticket?.id === 'string' ? ticket.id.trim() : '';
+        const hasExistingId = parsedId.length > 0 && existingIds.has(parsedId);
+        if (hasExistingId) incomingIds.add(parsedId);
+
+        const price = Number(ticket?.price) || 0;
+        const quantity = Number(ticket?.quantity) || 0;
+        const type = ticket?.type === 'free' ? 'free' : (price === 0 ? 'free' : 'paid');
+        const name = ticket?.name || 'Ticket';
+        const description = ticket?.description ?? null;
+
+        if (hasExistingId) {
+          await query(
+            `UPDATE "TicketType"
+             SET "name" = $1,
+                 "description" = $2,
+                 "price" = $3,
+                 "quantity" = $4,
+                 "type" = $5,
+                 "updatedAt" = NOW()
+             WHERE "id"::text = $6 AND "eventId"::text = $7`,
+            [name, description, price, quantity, type, parsedId, String(id)]
+          );
+        } else {
+          await query(
+            `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "createdAt", "updatedAt")
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
+            [createId(), id, name, description, price, quantity, type]
+          );
+        }
+      }
+
+      for (const existingId of existingIds) {
+        if (incomingIds.has(existingId)) continue;
         await query(
-          `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "createdAt", "updatedAt")
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [
-            ticketId,
-            id,
-            ticket.name ?? 'Ticket',
-            ticket.description ?? null,
-            price,
-            ticket.quantity ?? 0,
-            type,
-            now,
-            now,
-          ]
+          `DELETE FROM "TicketType" tt
+           WHERE tt."id"::text = $1
+             AND tt."eventId"::text = $2
+             AND NOT EXISTS (
+               SELECT 1
+               FROM "OrderItem" oi
+               WHERE oi."ticketTypeId"::text = tt."id"::text
+             )`,
+          [existingId, String(id)]
         );
       }
     }
