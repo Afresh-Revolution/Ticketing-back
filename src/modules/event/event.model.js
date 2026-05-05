@@ -21,6 +21,13 @@ function rowToEvent(row) {
   };
 }
 
+function normalizeTicketTypeKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
 export const eventModel = {
   async findMany(opts = {}) {
     const limit = opts.take != null ? Math.max(0, opts.take) : null;
@@ -81,7 +88,9 @@ export const eventModel = {
       const { rows: soldRows } = await query(
         `SELECT oi."ticketTypeId", COALESCE(SUM(oi.quantity), 0)::int AS sold
          FROM "OrderItem" oi
-         INNER JOIN "Order" o ON o.id = oi."orderId" AND LOWER(TRIM(COALESCE(o.status, ''))) = 'paid'
+         INNER JOIN "Order" o
+           ON o.id = oi."orderId"
+          AND LOWER(TRIM(COALESCE(o.status, ''))) IN ('paid', 'completed', 'success', 'changed', 'true')
          WHERE oi."ticketTypeId" = ANY($1)
          GROUP BY oi."ticketTypeId"`,
         [ticketIds]
@@ -89,17 +98,19 @@ export const eventModel = {
       soldByTicketId = soldRows.reduce((acc, r) => { acc[r.ticketTypeId] = Number(r.sold) || 0; return acc; }, {});
     }
     const walkInSoldResult = await query(
-      `SELECT LOWER(TRIM(COALESCE("ticketType", 'General'))) AS ticket_name, COALESCE(SUM(quantity), 0)::int AS sold
+      `SELECT LOWER(REGEXP_REPLACE(TRIM(COALESCE("ticketType", 'General')), '[^a-z0-9]+', '', 'g')) AS ticket_name_key,
+              COALESCE(SUM(quantity), 0)::int AS sold
        FROM "WalkInSale"
-       WHERE "eventId"::text = $1 AND LOWER(TRIM(COALESCE("status", ''))) = 'paid'
-       GROUP BY LOWER(TRIM(COALESCE("ticketType", 'General')))` ,
+       WHERE "eventId"::text = $1
+         AND LOWER(TRIM(COALESCE("status", ''))) IN ('paid', 'completed', 'success', 'changed', 'true')
+       GROUP BY LOWER(REGEXP_REPLACE(TRIM(COALESCE("ticketType", 'General')), '[^a-z0-9]+', '', 'g'))` ,
       [String(id)]
     ).catch((e) => {
       if (e?.code === '42P01') return { rows: [] };
       throw e;
     });
     const walkInSoldByName = (walkInSoldResult.rows || []).reduce((acc, row) => {
-      const key = String(row.ticket_name || '').trim().toLowerCase();
+      const key = normalizeTicketTypeKey(row.ticket_name_key);
       if (!key) return acc;
       acc[key] = Number(row.sold) || 0;
       return acc;
@@ -111,7 +122,7 @@ export const eventModel = {
       price: t.price,
       quantity: t.quantity,
       type: t.type || (t.price === 0 ? 'free' : 'paid'),
-      sold: (soldByTicketId[t.id] || 0) + (walkInSoldByName[String(t.name || '').trim().toLowerCase()] || 0),
+      sold: (soldByTicketId[t.id] || 0) + (walkInSoldByName[normalizeTicketTypeKey(t.name)] || 0),
     }));
 
     return event;

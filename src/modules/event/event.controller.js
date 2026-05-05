@@ -33,7 +33,9 @@ export async function listForJoscity(req, res, next) {
       const { rows: soldRows } = await query(
         `SELECT oi."ticketTypeId", COALESCE(SUM(oi.quantity), 0)::int AS sold
          FROM "OrderItem" oi
-         INNER JOIN "Order" o ON o.id = oi."orderId" AND o.status = 'paid'
+         INNER JOIN "Order" o
+           ON o.id = oi."orderId"
+          AND LOWER(TRIM(COALESCE(o.status, ''))) IN ('paid', 'completed', 'success', 'changed', 'true')
          WHERE oi."ticketTypeId" = ANY($1)
          GROUP BY oi."ticketTypeId"`,
         [allTicketTypeIds]

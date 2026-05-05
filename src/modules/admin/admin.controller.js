@@ -14,6 +14,13 @@ function isSuperAdmin(req) {
   return role === 'superadmin' || id === 0 || id === '0';
 }
 
+function normalizeTicketTypeKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
 /** GET /api/admin/dashboard – stats and recent sales from Supabase; super admin sees all, others only their events. */
 export async function getDashboard(req, res) {
   try {
@@ -1926,6 +1933,63 @@ export async function createWalkInSale(req, res) {
   } catch (err) {
     console.error('createWalkInSale', err);
     return res.status(500).json({ error: err.message || 'Failed to create walk-in sale' });
+  }
+}
+
+/** POST /api/admin/events/:eventId/ticket-adjustments – manually increment sold count for a ticket type. */
+export async function incrementEventTicketSold(req, res) {
+  try {
+    const eventId = String(req.params.eventId || '').trim();
+    const body = req.body || {};
+    const quantity = Math.max(1, parseInt(body.quantity, 10) || 1);
+    const ticketTypeName = String(body.ticketType || body.ticketTypeName || '').trim();
+    const notes = String(body.notes || '').trim();
+    const userId = getUserId(req);
+
+    if (!eventId) return res.status(400).json({ error: 'eventId is required' });
+    if (!ticketTypeName) return res.status(400).json({ error: 'ticketType is required' });
+
+    const event = await resolveAdminEventIdentifier(eventId, req);
+    if (!event?.id) return res.status(404).json({ error: 'Event not found or access denied' });
+
+    const ticketRows = await query(
+      `SELECT "name", "price"
+       FROM "TicketType"
+       WHERE "eventId"::text = $1`,
+      [String(event.id)]
+    ).catch(() => ({ rows: [] }));
+    const ticket = (ticketRows.rows || []).find((row) => (
+      normalizeTicketTypeKey(row.name) === normalizeTicketTypeKey(ticketTypeName)
+    ));
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket type not found for this event' });
+    }
+
+    const amount = Math.max(0, (Number(ticket.price) || 0) * quantity);
+    const result = await query(
+      `INSERT INTO "WalkInSale" ("eventId", "fullName", "email", "phone", "ticketType", "quantity", "amount", "status", "notes", "recordedBy")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'paid', $8, $9)
+       RETURNING *`,
+      [
+        String(event.id),
+        'Manual ticket adjustment',
+        null,
+        null,
+        ticket.name,
+        quantity,
+        amount,
+        notes || `Manual sold increment by admin (+${quantity})`,
+        (userId === 0 || userId === '0') ? null : userId,
+      ]
+    );
+
+    return res.status(201).json({
+      message: 'Ticket sold count incremented',
+      adjustment: result.rows?.[0] || null,
+    });
+  } catch (err) {
+    console.error('incrementEventTicketSold', err);
+    return res.status(500).json({ error: err.message || 'Failed to increment ticket sold count' });
   }
 }
 

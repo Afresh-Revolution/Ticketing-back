@@ -25,6 +25,7 @@ router.get('/events', requireAuth, adminController.listAdminEvents);
 router.get('/events/:eventId/orders', requireAuth, adminController.getEventOrders);
 router.patch('/events/:eventId', requireAuth, adminController.patchAdminEvent);
 router.put('/events/:eventId', requireAuth, adminController.patchAdminEvent);
+router.post('/events/:eventId/ticket-adjustments', requireAuth, adminController.incrementEventTicketSold);
 router.patch('/events/:eventId/visibility', requireAuth, adminController.patchEventVisibility);
 router.get('/events/:eventId', requireAuth, adminController.getAdminEvent);
 router.get('/withdraw', requireAuth, adminController.getWithdrawPage);

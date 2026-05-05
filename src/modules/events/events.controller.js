@@ -5,6 +5,13 @@ import {
   uploadImageBufferToCloudinary,
 } from '../../shared/services/cloudinary.service.js';
 
+function normalizeTicketTypeKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
 /** GET /api/events - list events (?trending=true&take=3) */
 export async function listEvents(req, res) {
   try {
@@ -63,7 +70,9 @@ export async function getEvent(req, res) {
       const soldRows = await query(
         `SELECT oi."ticketTypeId", COALESCE(SUM(oi.quantity), 0)::int AS sold
          FROM "OrderItem" oi
-         INNER JOIN "Order" o ON o.id::text = oi."orderId"::text AND LOWER(TRIM(COALESCE(o.status, ''))) = 'paid'
+         INNER JOIN "Order" o
+           ON o.id::text = oi."orderId"::text
+          AND LOWER(TRIM(COALESCE(o.status, ''))) IN ('paid', 'completed', 'success', 'changed', 'true')
          WHERE oi."ticketTypeId"::text = ANY($1)
          GROUP BY oi."ticketTypeId"`,
         [ticketTypeIds]
@@ -78,17 +87,19 @@ export async function getEvent(req, res) {
       }, {});
     }
     const walkInSoldRows = await query(
-      `SELECT LOWER(TRIM(COALESCE("ticketType", 'General'))) AS ticket_name, COALESCE(SUM(quantity), 0)::int AS sold
+      `SELECT LOWER(REGEXP_REPLACE(TRIM(COALESCE("ticketType", 'General')), '[^a-z0-9]+', '', 'g')) AS ticket_name_key,
+              COALESCE(SUM(quantity), 0)::int AS sold
        FROM "WalkInSale"
-       WHERE "eventId"::text = $1 AND LOWER(TRIM(COALESCE("status", ''))) = 'paid'
-       GROUP BY LOWER(TRIM(COALESCE("ticketType", 'General')))` ,
+       WHERE "eventId"::text = $1
+         AND LOWER(TRIM(COALESCE("status", ''))) IN ('paid', 'completed', 'success', 'changed', 'true')
+       GROUP BY LOWER(REGEXP_REPLACE(TRIM(COALESCE("ticketType", 'General')), '[^a-z0-9]+', '', 'g'))` ,
       [eventId]
     ).then((r) => r.rows || []).catch((e) => {
       if (e?.code === '42P01') return [];
       throw e;
     });
     const walkInSoldByName = walkInSoldRows.reduce((acc, soldRow) => {
-      const key = String(soldRow.ticket_name || '').trim().toLowerCase();
+      const key = normalizeTicketTypeKey(soldRow.ticket_name_key);
       if (!key) return acc;
       acc[key] = Number(soldRow.sold) || 0;
       return acc;
@@ -104,7 +115,7 @@ export async function getEvent(req, res) {
         price,
         quantity: Number(t.quantity) || 0,
         type: t.type === 'free' ? 'free' : (price === 0 ? 'free' : 'paid'),
-        sold: (soldByTicketTypeId[id] || 0) + (walkInSoldByName[String(t.name || '').trim().toLowerCase()] || 0),
+        sold: (soldByTicketTypeId[id] || 0) + (walkInSoldByName[normalizeTicketTypeKey(t.name)] || 0),
       };
     });
 
