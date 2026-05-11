@@ -17,6 +17,8 @@ router.delete('/admins/:id', requireAuth, requireSuperAdmin, adminController.del
 router.get('/sales', requireAuth, adminController.getSales);
 router.patch('/sales/:orderId/status', requireAuth, adminController.updateSaleStatus);
 router.post('/sales/:orderId/resend', requireAuth, adminController.resendSaleTicket);
+router.delete('/sales/:orderId', requireAuth, adminController.deleteSale);
+router.delete('/orders/:orderId', requireAuth, adminController.deleteSale);
 router.get('/coupons', requireAuth, adminController.listCoupons);
 router.post('/coupons', requireAuth, adminController.createCoupon);
 router.patch('/coupons/:id', requireAuth, adminController.updateCoupon);

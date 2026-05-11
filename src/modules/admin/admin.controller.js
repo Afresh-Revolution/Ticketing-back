@@ -995,6 +995,44 @@ export async function resendSaleTicket(req, res) {
   }
 }
 
+/** DELETE /api/admin/sales/:orderId – delete an online sale (and linked rows) for owned event/admin scope. */
+export async function deleteSale(req, res) {
+  try {
+    const orderId = String(req.params.orderId || '').trim();
+    if (!orderId) return res.status(400).json({ error: 'Order id is required' });
+
+    const sale = await getSaleByIdForAdmin(orderId, req);
+    if (!sale) return res.status(404).json({ error: 'Sale not found' });
+
+    // Delete dependents first for schemas without ON DELETE CASCADE.
+    await query(`DELETE FROM "ScanLog" WHERE "orderId"::text = $1`, [orderId]).catch((e) => {
+      // relation might not exist in some deployments; ignore undefined-table errors.
+      if (e?.code === '42P01') return null;
+      throw e;
+    });
+    await query(`DELETE FROM "OrderItem" WHERE "orderId"::text = $1`, [orderId]).catch((e) => {
+      if (e?.code === '42P01') return null;
+      throw e;
+    });
+
+    const removed = await query(
+      `DELETE FROM "Order"
+       WHERE id::text = $1
+       RETURNING id::text AS id`,
+      [orderId]
+    ).catch((e) => {
+      if (e?.code === '42P01') return { rows: [] };
+      throw e;
+    });
+    if (!removed.rows?.length) return res.status(404).json({ error: 'Sale not found' });
+
+    return res.json({ message: 'Sale deleted', id: removed.rows[0].id });
+  } catch (err) {
+    console.error('deleteSale', err);
+    return res.status(500).json({ error: err.message || 'Failed to delete sale' });
+  }
+}
+
 /** GET /api/admin/coupons – list coupons; super admin sees all, others only their events. */
 export async function listCoupons(req, res) {
   try {
