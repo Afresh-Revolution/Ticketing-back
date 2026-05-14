@@ -1066,7 +1066,10 @@ export async function listCoupons(req, res) {
          c."expiresAt",
          c."createdAt",
          c."updatedAt",
-         e.title AS "eventTitle"
+         e.title AS "eventTitle",
+         (SELECT COUNT(*)::int
+          FROM "Order" o
+          WHERE o."couponId" IS NOT NULL AND o."couponId"::text = c.id::text) AS "liveUsedCount"
        FROM "Coupon" c
        LEFT JOIN "Event" e ON e.id::text = c."eventId"::text
        ${whereSql}
@@ -1086,7 +1089,7 @@ export async function listCoupons(req, res) {
       discountType: row.discountType,
       discountValue: Number(row.discountValue) || 0,
       maxUses: row.maxUses == null ? null : Number(row.maxUses),
-      usedCount: Number(row.usedCount) || 0,
+      usedCount: Number(row.liveUsedCount) || 0,
       isActive: !!row.isActive,
       expiresAt: row.expiresAt || null,
       createdAt: row.createdAt,

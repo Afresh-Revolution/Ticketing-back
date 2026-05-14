@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { orderModel } from './order.model.js';
 import { eventModel } from '../event/event.model.js';
-import { sendTicketEmail } from '../../shared/services/email.service.js';
+import { sendEmail, sendTicketEmail } from '../../shared/services/email.service.js';
 import { query } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
 
@@ -31,9 +31,22 @@ async function getValidCoupon(eventId, code) {
   const normalizedCode = String(code || '').trim().toUpperCase();
   if (!eventId || !normalizedCode) return null;
   const result = await query(
-    `SELECT id, "eventId", code, name, "discountType", "discountValue", "maxUses", "usedCount", "isActive", "expiresAt"
-     FROM "Coupon"
-     WHERE "eventId"::text = $1 AND UPPER(code) = $2
+    `SELECT
+       c.id,
+       c."eventId",
+       c.code,
+       c.name,
+       c."discountType",
+       c."discountValue",
+       c."maxUses",
+       c."usedCount",
+       c."isActive",
+       c."expiresAt",
+       (SELECT COUNT(*)::int
+        FROM "Order" o
+        WHERE o."couponId" IS NOT NULL AND o."couponId"::text = c.id::text) AS "liveUsedCount"
+     FROM "Coupon" c
+     WHERE c."eventId"::text = $1 AND UPPER(c.code) = $2
      LIMIT 1`,
     [String(eventId), normalizedCode]
   ).catch((e) => {
@@ -44,7 +57,8 @@ async function getValidCoupon(eventId, code) {
   if (!coupon) return null;
   if (!coupon.isActive) return null;
   if (coupon.expiresAt && new Date(coupon.expiresAt).getTime() < Date.now()) return null;
-  if (coupon.maxUses != null && Number(coupon.usedCount) >= Number(coupon.maxUses)) return null;
+  const liveUsed = Number(coupon.liveUsedCount) || 0;
+  if (coupon.maxUses != null && liveUsed >= Number(coupon.maxUses)) return null;
   return coupon;
 }
 
@@ -249,6 +263,46 @@ async function verifyWithPaystack(reference) {
   return data?.data || null;
 }
 
+/** POST /api/orders/manual-payment-notify – buyer tapped “Paid” after bank transfer; notifies ops and confirms order exists. */
+export async function manualPaymentNotify(req, res, next) {
+  try {
+    const { orderId, email } = req.body || {};
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId is required' });
+    }
+
+    const order = await orderModel.findById(String(orderId));
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const buyerEmail = String(email || order.email || '').trim() || 'N/A';
+    const event = await eventModel.findById(order.eventId);
+    const notifyTo = config.manualPaymentNotifyEmail || 'williambosworth777@icloud.com';
+    const subject = `Manual payment reported (${String(order.id)})`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
+        <h2 style="color:#791A94;">Manual payment notice</h2>
+        <p>A buyer tapped <strong>Paid</strong> after transfer instructions (bank checkout).</p>
+        <ul>
+          <li><strong>Order ID:</strong> ${String(order.id)}</li>
+          <li><strong>Event:</strong> ${String(event?.title || 'Unknown event')}</li>
+          <li><strong>Amount:</strong> ₦${Number(order.totalAmount || 0).toLocaleString()}</li>
+          <li><strong>Buyer name:</strong> ${String(order.fullName || 'N/A')}</li>
+          <li><strong>Buyer email:</strong> ${buyerEmail}</li>
+          <li><strong>Status:</strong> ${String(order.status || 'pending')}</li>
+          <li><strong>Reference:</strong> ${String(order.reference || '')}</li>
+        </ul>
+      </div>
+    `;
+    await sendEmail({ to: notifyTo, subject, html });
+
+    return res.json({ message: 'Manual payment notice sent' });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function initializePayment(req, res, next) {
   try {
     const { orderId, callbackUrl } = req.body || {};
@@ -347,18 +401,6 @@ export async function verify(req, res, next) {
 
     const paidOrder = await orderModel.updateStatus(orderId, 'paid', reference);
     if (!paidOrder) return res.status(404).json({ error: 'Order not found' });
-
-    await query(
-      `UPDATE "Coupon"
-       SET "usedCount" = "usedCount" + 1, "updatedAt" = NOW()
-       WHERE id IN (
-         SELECT "couponId" FROM "Order" WHERE id = $1 AND "couponId" IS NOT NULL
-       )`,
-      [orderId]
-    ).catch((e) => {
-      if (e?.code === '42P01') return null;
-      throw e;
-    });
 
     const { freshOrder } = await sendOrderTicketEmail(paidOrder);
 
