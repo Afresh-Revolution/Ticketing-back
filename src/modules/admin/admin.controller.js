@@ -995,14 +995,23 @@ export async function resendSaleTicket(req, res) {
   }
 }
 
-/** DELETE /api/admin/sales/:orderId – delete an online sale (and linked rows) for owned event/admin scope. */
+/** DELETE /api/admin/sales/:orderId – delete an online or walk-in sale for owned event/admin scope. */
 export async function deleteSale(req, res) {
   try {
     const orderId = String(req.params.orderId || '').trim();
     if (!orderId) return res.status(400).json({ error: 'Order id is required' });
 
     const sale = await getSaleByIdForAdmin(orderId, req);
-    if (!sale) return res.status(404).json({ error: 'Sale not found' });
+    if (!sale) {
+      const walkInId = Number.parseInt(orderId, 10);
+      if (Number.isNaN(walkInId)) return res.status(404).json({ error: 'Sale not found' });
+
+      const walkInSale = await getWalkInSaleByIdForAdmin(walkInId, req);
+      if (!walkInSale) return res.status(404).json({ error: 'Sale not found' });
+
+      await query('DELETE FROM "WalkInSale" WHERE id = $1', [walkInId]);
+      return res.json({ message: 'Sale deleted', id: String(walkInId), source: 'walk_in' });
+    }
 
     // Delete dependents first for schemas without ON DELETE CASCADE.
     await query(`DELETE FROM "ScanLog" WHERE "orderId"::text = $1`, [orderId]).catch((e) => {
@@ -1465,20 +1474,49 @@ export async function createWithdrawal(req, res) {
   }
 }
 
-/** GET /api/admin/banks – list banks (e.g. Paystack). */
+/** GET /api/admin/banks – Nigerian banks and wallets ({ name, code }). */
 export async function getBanks(req, res) {
+  const { NIGERIAN_BANKS_FALLBACK } = await import('./nigerianBanks.js');
+
+  const normalize = (rows) => {
+    const byCode = new Map();
+    for (const row of rows || []) {
+      const code = String(row.code ?? row.bank_code ?? '').trim();
+      const name = String(row.name ?? row.bank_name ?? '').trim();
+      if (!code || !name) continue;
+      if (!byCode.has(code)) byCode.set(code, { code, name });
+    }
+    return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name));
+  };
+
   try {
     const { config } = await import('../../shared/config/env.js');
     if (config.paystackSecretKey) {
-      const r = await fetch('https://api.paystack.co/bank?currency=NGN&perPage=100', {
-        headers: { Authorization: `Bearer ${config.paystackSecretKey}` },
-      });
-      const d = await r.json();
-      if (d.data) return res.json(d.data);
+      const byCode = new Map();
+      let page = 1;
+      while (page <= 50) {
+        const r = await fetch(
+          `https://api.paystack.co/bank?currency=NGN&perPage=100&page=${page}`,
+          { headers: { Authorization: `Bearer ${config.paystackSecretKey}` } }
+        );
+        const d = await r.json();
+        if (!d.status || !Array.isArray(d.data) || d.data.length === 0) break;
+        for (const b of d.data) {
+          if (b.active === false || b.supports_transfer === false) continue;
+          const code = String(b.code ?? '').trim();
+          const name = String(b.name ?? '').trim();
+          if (code && name && !byCode.has(code)) byCode.set(code, { code, name });
+        }
+        if (!d.meta?.next) break;
+        page += 1;
+      }
+      if (byCode.size > 0) {
+        return res.json([...byCode.values()].sort((a, b) => a.name.localeCompare(b.name)));
+      }
     }
-    return res.json([]);
+    return res.json(normalize(NIGERIAN_BANKS_FALLBACK));
   } catch {
-    return res.json([]);
+    return res.json(normalize(NIGERIAN_BANKS_FALLBACK));
   }
 }
 
