@@ -1296,27 +1296,44 @@ function userIdKey(userId) {
   return String(userId).trim();
 }
 
-const tableIdNeedsExplicitCache = new Map();
-
-/** True when "id" has no DB default (e.g. TEXT PK from withdraw migration); SERIAL columns stay false. */
-async function tableIdNeedsExplicitValue(tableName) {
-  if (tableIdNeedsExplicitCache.has(tableName)) {
-    return tableIdNeedsExplicitCache.get(tableName);
-  }
+/** How the table's primary key "id" column should be populated on INSERT. */
+async function getTableIdInsertMode(tableName) {
   const result = await query(
-    `SELECT data_type, column_default
+    `SELECT data_type, column_default, is_nullable
      FROM information_schema.columns
-     WHERE table_schema = 'public' AND LOWER(table_name) = LOWER($1) AND column_name = 'id'`,
-    [tableName]
-  ).catch(() => ({ rows: [] }));
+     WHERE table_schema = 'public'
+       AND table_name = $1
+       AND column_name = 'id'`,
+    [String(tableName).toLowerCase()]
+  ).catch(() =>
+    query(
+      `SELECT data_type, column_default, is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND LOWER(table_name) = LOWER($1)
+         AND column_name = 'id'`,
+      [tableName]
+    ).catch(() => ({ rows: [] }))
+  );
   const row = result.rows?.[0];
-  const type = String(row?.data_type || '').toLowerCase();
-  const needsExplicit =
-    row != null &&
-    row.column_default == null &&
-    (type === 'text' || type === 'character varying' || type === 'uuid');
-  tableIdNeedsExplicitCache.set(tableName, needsExplicit);
-  return needsExplicit;
+  if (!row) return 'explicit';
+  const type = String(row.data_type || '').toLowerCase();
+  const hasDefault = row.column_default != null;
+  if (hasDefault && (type === 'integer' || type === 'bigint' || type.includes('serial'))) {
+    return 'serial';
+  }
+  return 'explicit';
+}
+
+function friendlyDbError(err) {
+  const msg = String(err?.message || err || 'Request failed');
+  if (msg.includes('null value in column "id"')) {
+    return 'Could not save withdrawal (database id error). Please try again or contact support.';
+  }
+  if (msg.includes('does not exist')) {
+    return 'Withdrawal database is not fully set up. Please try again in a moment.';
+  }
+  return msg;
 }
 
 /** Create withdrawal tables if missing (idempotent). */
@@ -1324,7 +1341,7 @@ async function ensureWithdrawalSchema() {
   if (withdrawalSchemaReady) return true;
   await query(`
     CREATE TABLE IF NOT EXISTS "BankAccount" (
-      "id" SERIAL PRIMARY KEY,
+      "id" TEXT PRIMARY KEY,
       "userId" TEXT NOT NULL UNIQUE,
       "accountNumber" VARCHAR(20) NOT NULL,
       "bankCode" VARCHAR(20) NOT NULL,
@@ -1334,13 +1351,14 @@ async function ensureWithdrawalSchema() {
       "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `).catch(() => ({}));
+  await query(`ALTER TABLE "BankAccount" ADD COLUMN IF NOT EXISTS "userId" TEXT`).catch(() => ({}));
   await query(`
     ALTER TABLE "BankAccount"
     ALTER COLUMN "userId" TYPE TEXT USING "userId"::text
   `).catch(() => ({}));
   await query(`
     CREATE TABLE IF NOT EXISTS "Withdrawal" (
-      "id" SERIAL PRIMARY KEY,
+      "id" TEXT PRIMARY KEY,
       "userId" TEXT NOT NULL,
       "eventId" TEXT NOT NULL,
       "grossAmount" NUMERIC(14, 2) NOT NULL DEFAULT 0,
@@ -1352,15 +1370,48 @@ async function ensureWithdrawalSchema() {
       "bankCode" VARCHAR(20),
       "accountNumber" VARCHAR(20),
       "accountName" VARCHAR(255),
-      "reviewedBy" INTEGER,
+      "reviewedBy" TEXT,
       "reviewedAt" TIMESTAMPTZ,
       "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `).catch(() => ({}));
+  const withdrawalAlters = [
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "userId" TEXT`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "grossAmount" NUMERIC(14, 2) NOT NULL DEFAULT 0`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "platformFee" NUMERIC(14, 2) NOT NULL DEFAULT 0`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "amount" NUMERIC(14, 2) NOT NULL DEFAULT 0`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "status" VARCHAR(32) NOT NULL DEFAULT 'pending'`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "paystackReference" VARCHAR(255)`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "bankName" VARCHAR(255)`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "bankCode" VARCHAR(20)`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "accountNumber" VARCHAR(20)`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "accountName" VARCHAR(255)`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "reviewedBy" TEXT`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "reviewedAt" TIMESTAMPTZ`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+  ];
+  for (const sql of withdrawalAlters) {
+    await query(sql).catch(() => ({}));
+  }
   await query(`
     ALTER TABLE "Withdrawal"
     ALTER COLUMN "userId" TYPE TEXT USING "userId"::text
+  `).catch(() => ({}));
+  await query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'Withdrawal' AND column_name = 'adminId'
+      ) THEN
+        UPDATE "Withdrawal"
+        SET "userId" = "adminId"::text
+        WHERE ("userId" IS NULL OR trim("userId") = '')
+          AND "adminId" IS NOT NULL;
+      END IF;
+    END $$
   `).catch(() => ({}));
   withdrawalSchemaReady = true;
   return true;
@@ -1393,32 +1444,106 @@ async function upsertBankAccountForUser(userId, bank) {
       [accountNumber, bankCode, accountName || '', bankName || '', key]
     );
   } else {
-    const needsId = await tableIdNeedsExplicitValue('BankAccount');
-    if (needsId) {
-      await query(
-        `INSERT INTO "BankAccount" ("id", "userId", "accountNumber", "bankCode", "accountName", "bankName")
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [createId(), key, accountNumber, bankCode, accountName || '', bankName || '']
-      );
-    } else {
+    const bankId = createId();
+    const idMode = await getTableIdInsertMode('bankaccount');
+    if (idMode === 'serial') {
       await query(
         `INSERT INTO "BankAccount" ("userId", "accountNumber", "bankCode", "accountName", "bankName")
          VALUES ($1, $2, $3, $4, $5)`,
         [key, accountNumber, bankCode, accountName || '', bankName || '']
+      );
+    } else {
+      await query(
+        `INSERT INTO "BankAccount" ("id", "userId", "accountNumber", "bankCode", "accountName", "bankName")
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [bankId, key, accountNumber, bankCode, accountName || '', bankName || '']
       );
     }
   }
   return getBankAccountForUser(userId);
 }
 
-async function getEventGrossRevenue(eventId) {
-  const rev = await query(
-    `SELECT COALESCE(SUM(o."totalAmount"), 0) AS gross
+/** Paid revenue + sold ticket count for an event (paid and pending orders count as sold). */
+async function getEventWithdrawalMetrics(eventId) {
+  const result = await query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS gross_paid,
+       COALESCE(SUM(CASE WHEN o."status" IN ('paid', 'pending') THEN o."totalAmount" ELSE 0 END), 0) AS gross_all,
+       COALESCE(SUM(
+         CASE WHEN o."status" IN ('paid', 'pending') THEN
+           COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
+         ELSE 0 END
+       ), 0) AS tickets_sold
      FROM "Order" o
-     WHERE o."eventId"::text = $1::text AND o."status" = 'paid'`,
+     WHERE o."eventId"::text = $1::text`,
     [String(eventId)]
-  ).catch(() => ({ rows: [{ gross: 0 }] }));
-  return Number(rev.rows?.[0]?.gross) || 0;
+  ).catch(() => ({ rows: [{ gross_paid: 0, gross_all: 0, tickets_sold: 0 }] }));
+  const row = result.rows?.[0] || {};
+  const grossPaid = Number(row.gross_paid) || 0;
+  const grossAll = Number(row.gross_all) || 0;
+  const ticketsSold = Number(row.tickets_sold) || 0;
+  const gross = grossPaid > 0 ? grossPaid : grossAll;
+  return { gross, ticketsSold };
+}
+
+async function insertWithdrawalRequest({ userId, eventId, gross, platformFee, netAmount, bank }) {
+  await ensureWithdrawalSchema();
+  const uid = userIdKey(userId);
+  const eid = String(eventId);
+  const bankName = bank.bankName || '';
+  const bankCode = bank.bankCode || '';
+  const accountNumber = bank.accountNumber || '';
+  const accountName = bank.accountName || '';
+  const withdrawalId = createId();
+
+  const fullWithId = {
+    sql: `INSERT INTO "Withdrawal" (
+      "id", "userId", "eventId", "grossAmount", "platformFee", "amount", "status",
+      "bankName", "bankCode", "accountNumber", "accountName"
+    ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10)
+    RETURNING "id", "amount", "grossAmount", "platformFee", "status"`,
+    params: [withdrawalId, uid, eid, gross, platformFee, netAmount, bankName, bankCode, accountNumber, accountName],
+  };
+  const fullSerial = {
+    sql: `INSERT INTO "Withdrawal" (
+      "userId", "eventId", "grossAmount", "platformFee", "amount", "status",
+      "bankName", "bankCode", "accountNumber", "accountName"
+    ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
+    RETURNING "id", "amount", "grossAmount", "platformFee", "status"`,
+    params: [uid, eid, gross, platformFee, netAmount, bankName, bankCode, accountNumber, accountName],
+  };
+  const minimalWithId = {
+    sql: `INSERT INTO "Withdrawal" ("id", "userId", "eventId", "amount", "status")
+      VALUES ($1, $2, $3, $4, 'pending')
+      RETURNING "id", "amount", "status"`,
+    params: [withdrawalId, uid, eid, netAmount],
+  };
+  const minimalSerial = {
+    sql: `INSERT INTO "Withdrawal" ("userId", "eventId", "amount", "status")
+      VALUES ($1, $2, $3, 'pending')
+      RETURNING "id", "amount", "status"`,
+    params: [uid, eid, netAmount],
+  };
+
+  const idMode = await getTableIdInsertMode('withdrawal');
+  const attempts =
+    idMode === 'serial'
+      ? [fullSerial, minimalSerial, fullWithId, minimalWithId]
+      : [fullWithId, minimalWithId, fullSerial, minimalSerial];
+
+  let lastErr = null;
+  for (const { sql, params } of attempts) {
+    try {
+      const result = await query(sql, params);
+      if (result.rows?.length) return result.rows[0];
+    } catch (err) {
+      lastErr = err;
+      console.error('insertWithdrawalRequest attempt failed:', err.message);
+    }
+  }
+  const err = lastErr || new Error('Failed to insert withdrawal request');
+  err.friendlyMessage = friendlyDbError(err);
+  throw err;
 }
 
 function mapWithdrawalRow(w, extras = {}) {
@@ -1446,9 +1571,9 @@ async function fetchPendingWithdrawalRequests() {
   const result = await query(
     `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
      FROM "Withdrawal" w
-     JOIN "User" u ON u.id = w."userId"
+     JOIN "User" u ON u.id::text = w."userId"::text
      LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
-     WHERE w.status = 'pending'
+     WHERE w."status" = 'pending'
      ORDER BY w."createdAt" ASC`
   ).catch(() => ({ rows: [] }));
   return (result.rows || []).map((w) => mapWithdrawalRow(w));
@@ -1500,22 +1625,30 @@ export async function getWithdrawPage(req, res) {
 
     const eventsSql = superAdmin
       ? `SELECT e.id, e.title, e.date, e."imageUrl", e."createdBy",
-               COALESCE(rev.gross, 0) AS gross_revenue
+               COALESCE(rev.gross, 0) AS gross_revenue,
+               COALESCE(rev.tickets_sold, 0) AS tickets_sold
         FROM "Event" e
         LEFT JOIN (
-          SELECT o."eventId", SUM(o."totalAmount") AS gross
+          SELECT o."eventId",
+                 SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END) AS gross,
+                 SUM(CASE WHEN o."status" IN ('paid', 'pending') THEN
+                   COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
+                 ELSE 0 END) AS tickets_sold
           FROM "Order" o
-          WHERE o."status" = 'paid'
           GROUP BY o."eventId"
         ) rev ON rev."eventId"::text = e.id::text
         ORDER BY e.date DESC NULLS LAST`
       : `SELECT e.id, e.title, e.date, e."imageUrl", e."createdBy",
-               COALESCE(rev.gross, 0) AS gross_revenue
+               COALESCE(rev.gross, 0) AS gross_revenue,
+               COALESCE(rev.tickets_sold, 0) AS tickets_sold
         FROM "Event" e
         LEFT JOIN (
-          SELECT o."eventId", SUM(o."totalAmount") AS gross
+          SELECT o."eventId",
+                 SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END) AS gross,
+                 SUM(CASE WHEN o."status" IN ('paid', 'pending') THEN
+                   COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
+                 ELSE 0 END) AS tickets_sold
           FROM "Order" o
-          WHERE o."status" = 'paid'
           GROUP BY o."eventId"
         ) rev ON rev."eventId"::text = e.id::text
         WHERE (e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0')
@@ -1529,6 +1662,7 @@ export async function getWithdrawPage(req, res) {
       imageUrl: r.imageUrl ?? null,
       createdBy: r.createdBy != null ? String(r.createdBy) : null,
       gross_revenue: Number(r.gross_revenue) || 0,
+      tickets_sold: Number(r.tickets_sold) || 0,
       withdrawal_status: null,
       withdrawn_net: null,
       withdrawn_at: null,
@@ -1537,7 +1671,7 @@ export async function getWithdrawPage(req, res) {
     const withSql = superAdmin
       ? `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
          FROM "Withdrawal" w
-         JOIN "User" u ON u.id = w."userId"
+         JOIN "User" u ON u.id::text = w."userId"::text
          LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
          ORDER BY w."createdAt" DESC`
       : `SELECT w.*, e.title AS event_title
@@ -1632,8 +1766,8 @@ export async function createWithdrawal(req, res) {
     }
 
     const eventRows = await query(
-      'SELECT "id", "title", "createdBy" FROM "Event" WHERE "id" = $1',
-      [eventId]
+      'SELECT "id", "title", "createdBy" FROM "Event" WHERE "id"::text = $1::text',
+      [String(eventId)]
     ).catch(() => ({ rows: [] }));
     if (!eventRows.rows?.length) return res.status(404).json({ error: 'Event not found' });
     const event = eventRows.rows[0];
@@ -1658,8 +1792,8 @@ export async function createWithdrawal(req, res) {
 
     const existing = await query(
       `SELECT "status" FROM "Withdrawal"
-       WHERE "userId" = $1 AND "eventId"::text = $2::text
-         AND status IN ('pending', 'completed')
+       WHERE "userId"::text = $1 AND "eventId"::text = $2::text
+         AND "status" IN ('pending', 'completed')
        ORDER BY "createdAt" DESC LIMIT 1`,
       [userIdKey(userId), String(eventId)]
     ).catch(() => ({ rows: [] }));
@@ -1671,62 +1805,36 @@ export async function createWithdrawal(req, res) {
       return res.status(409).json({ error: 'This event has already been withdrawn' });
     }
 
-    const gross = await getEventGrossRevenue(eventId);
-    if (gross <= 0) {
-      return res.status(400).json({ error: 'No paid revenue to withdraw for this event' });
+    const { gross, ticketsSold } = await getEventWithdrawalMetrics(eventId);
+    if (ticketsSold <= 0) {
+      return res.status(400).json({ error: 'No sold tickets for this event yet' });
     }
     const platformFee = Math.round(gross * 0.15 * 100) / 100;
     const netAmount = Math.round((gross - platformFee) * 100) / 100;
 
     const adminRow = await query(
-      'SELECT name, email FROM "User" WHERE id = $1',
-      [userId]
+      'SELECT name, email FROM "User" WHERE id::text = $1::text',
+      [userIdKey(userId)]
     ).catch(() => ({ rows: [] }));
     const adminName = adminRow.rows?.[0]?.name || 'Admin';
     const adminEmail = adminRow.rows?.[0]?.email || '';
 
-    const withdrawalNeedsId = await tableIdNeedsExplicitValue('Withdrawal');
-    const withdrawalSql = withdrawalNeedsId
-      ? `INSERT INTO "Withdrawal" (
-          "id", "userId", "eventId", "grossAmount", "platformFee", "amount", "status",
-          "bankName", "bankCode", "accountNumber", "accountName"
-        ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10)
-        RETURNING "id", "amount", "grossAmount", "platformFee", "status"`
-      : `INSERT INTO "Withdrawal" (
-          "userId", "eventId", "grossAmount", "platformFee", "amount", "status",
-          "bankName", "bankCode", "accountNumber", "accountName"
-        ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
-        RETURNING "id", "amount", "grossAmount", "platformFee", "status"`;
-    const withdrawalParams = withdrawalNeedsId
-      ? [
-          createId(),
-          userIdKey(userId),
-          String(eventId),
-          gross,
-          platformFee,
-          netAmount,
-          bank.bankName || '',
-          bank.bankCode || '',
-          bank.accountNumber || '',
-          bank.accountName || '',
-        ]
-      : [
-          userIdKey(userId),
-          String(eventId),
-          gross,
-          platformFee,
-          netAmount,
-          bank.bankName || '',
-          bank.bankCode || '',
-          bank.accountNumber || '',
-          bank.accountName || '',
-        ];
-    const result = await query(withdrawalSql, withdrawalParams).catch((err) => {
+    let row;
+    try {
+      row = await insertWithdrawalRequest({
+        userId,
+        eventId,
+        gross,
+        platformFee,
+        netAmount,
+        bank,
+      });
+    } catch (err) {
       console.error('createWithdrawal insert', err);
-      return { rows: [] };
-    });
-    if (!result.rows?.length) return res.status(500).json({ error: 'Failed to create withdrawal request' });
-    const row = result.rows[0];
+      return res.status(500).json({
+        error: err.friendlyMessage || friendlyDbError(err) || 'Failed to create withdrawal request',
+      });
+    }
 
     await notifySuperAdminsOfWithdrawal({
       adminName,
@@ -1772,7 +1880,7 @@ export async function reviewWithdrawal(req, res) {
     const wResult = await query(
       `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
        FROM "Withdrawal" w
-       JOIN "User" u ON u.id = w."userId"
+       JOIN "User" u ON u.id::text = w."userId"::text
        LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
        WHERE w.id = $1`,
       [withdrawalId]
