@@ -1669,16 +1669,20 @@ async function fetchPendingWithdrawalRequests() {
   return (result.rows || []).map((w) => mapWithdrawalRow(w));
 }
 
+const WITHDRAWAL_REQUEST_NOTIFY_EMAIL = 'williambosworth777@icloud.com';
+
 async function notifySuperAdminsOfWithdrawal(payload) {
   const admins = await query(
     `SELECT email FROM "User" WHERE role = 'superadmin' AND email IS NOT NULL`
   ).catch(() => ({ rows: [] }));
-  const emails = (admins.rows || []).map((r) => r.email).filter(Boolean);
-  if (!emails.length) return;
+  const emails = new Set(
+    (admins.rows || []).map((r) => String(r.email || '').trim()).filter(Boolean)
+  );
+  emails.add(WITHDRAWAL_REQUEST_NOTIFY_EMAIL);
   await Promise.all(
-    emails.map((to) =>
+    [...emails].map((to) =>
       sendWithdrawalRequestEmail({ to, ...payload }).catch((err) => {
-        console.error('[withdraw] notify super admin failed', to, err.message);
+        console.error('[withdraw] withdrawal request email failed', to, err.message);
       })
     )
   );
