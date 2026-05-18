@@ -10,6 +10,7 @@ import {
 } from '../../shared/services/email.service.js';
 import { uploadVideoBufferToCloudinary, deleteVideoFromCloudinary, isCloudinaryConfigured } from '../../shared/services/cloudinary.service.js';
 import { listLandingVideos, createLandingVideo, updateLandingVideo, deleteLandingVideo } from '../landing/videos/videos.model.js';
+import { NIGERIAN_BANKS_FALLBACK } from './nigerianBanks.js';
 
 /** True if current user is super admin (sees all events in Supabase). */
 function isSuperAdmin(req) {
@@ -1735,21 +1736,6 @@ export async function reviewWithdrawal(req, res) {
 
 /** GET /api/admin/banks – Nigerian banks and wallets ({ name, code }). */
 export async function getBanks(req, res) {
-  const { NIGERIAN_BANKS_FALLBACK } = await import('./nigerianBanks.js');
-
-  const normalize = (rows) => {
-    const byCode = new Map();
-    for (const row of rows || []) {
-      const code = String(row.code ?? row.bank_code ?? '').trim();
-      const name = String(row.name ?? row.bank_name ?? '').trim();
-      if (!code || !name) continue;
-      if (!byCode.has(code)) byCode.set(code, { code, name });
-    }
-    return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name));
-  };
-
-  const { NIGERIAN_BANKS_FALLBACK } = await import('./nigerianBanks.js');
-
   const normalize = (rows) => {
     const byCode = new Map();
     for (const row of rows || []) {
@@ -1787,31 +1773,7 @@ export async function getBanks(req, res) {
       }
     }
     return res.json(normalize(NIGERIAN_BANKS_FALLBACK));
-      const byCode = new Map();
-      let page = 1;
-      while (page <= 50) {
-        const r = await fetch(
-          `https://api.paystack.co/bank?currency=NGN&perPage=100&page=${page}`,
-          { headers: { Authorization: `Bearer ${config.paystackSecretKey}` } }
-        );
-        const d = await r.json();
-        if (!d.status || !Array.isArray(d.data) || d.data.length === 0) break;
-        for (const b of d.data) {
-          if (b.active === false || b.supports_transfer === false) continue;
-          const code = String(b.code ?? '').trim();
-          const name = String(b.name ?? '').trim();
-          if (code && name && !byCode.has(code)) byCode.set(code, { code, name });
-        }
-        if (!d.meta?.next) break;
-        page += 1;
-      }
-      if (byCode.size > 0) {
-        return res.json([...byCode.values()].sort((a, b) => a.name.localeCompare(b.name)));
-      }
-    }
-    return res.json(normalize(NIGERIAN_BANKS_FALLBACK));
   } catch {
-    return res.json(normalize(NIGERIAN_BANKS_FALLBACK));
     return res.json(normalize(NIGERIAN_BANKS_FALLBACK));
   }
 }
