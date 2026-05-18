@@ -97,6 +97,147 @@ export async function ensureUserSequence() {
  * or integer PK without a sequence (matches db/schema.sql SERIAL behavior).
  * Idempotent; run on every startup.
  */
+/**
+ * Ensure table "id" has a default (uuid text or integer sequence) so INSERTs without id succeed.
+ * Idempotent; safe for legacy Withdrawal / BankAccount tables.
+ */
+export async function ensureTableIdDefault(tableName) {
+  if (!pool) return;
+  const rel = String(tableName || '').trim();
+  if (!rel) return;
+  try {
+    const exists = await query(
+      `SELECT 1 FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = $1`,
+      [rel]
+    );
+    if (exists.rows.length === 0) return;
+
+    const idCol = await query(
+      `SELECT a.atttypid::regtype::text AS typ,
+              COALESCE(pg_get_expr(ad.adbin, ad.adrelid), '') AS def
+       FROM pg_attribute a
+       JOIN pg_class c ON a.attrelid = c.oid
+       JOIN pg_namespace n ON c.relnamespace = n.oid
+       LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+       WHERE n.nspname = 'public' AND c.relname = $1
+         AND a.attname = 'id' AND a.attnum > 0 AND NOT a.attisdropped`,
+      [rel]
+    );
+    const typ = (idCol.rows[0]?.typ || '').toLowerCase();
+    const def = String(idCol.rows[0]?.def || '').trim();
+    if (!typ || def.length > 0) return;
+
+    if (typ === 'uuid') {
+      await query(`ALTER TABLE "${rel}" ALTER COLUMN "id" SET DEFAULT gen_random_uuid()`);
+    } else if (
+      typ === 'text' ||
+      typ.includes('varchar') ||
+      typ.includes('character varying')
+    ) {
+      await query(
+        `ALTER TABLE "${rel}" ALTER COLUMN "id" SET DEFAULT (gen_random_uuid()::text)`
+      );
+    } else if (typ === 'integer' || typ === 'bigint' || typ === 'smallint') {
+      const seq = `"${rel}_id_seq"`;
+      await query(`CREATE SEQUENCE IF NOT EXISTS ${seq}`);
+      const maxResult = await query(`SELECT COALESCE(MAX("id")::bigint, 0) AS mx FROM "${rel}"`);
+      const maxId = Number(maxResult.rows[0]?.mx ?? 0);
+      await query(`SELECT setval('${seq}', $1)`, [Math.max(1, maxId + 1)]);
+      await query(`ALTER SEQUENCE ${seq} OWNED BY "${rel}"."id"`);
+      await query(`ALTER TABLE "${rel}" ALTER COLUMN "id" SET DEFAULT nextval('${seq}')`);
+    }
+  } catch (err) {
+    console.warn(`[db] ensureTableIdDefault(${tableName}):`, err.message);
+  }
+}
+
+/**
+ * Withdrawal + BankAccount tables/columns for legacy Supabase schemas. Idempotent.
+ */
+export async function ensureWithdrawalDbSchema() {
+  if (!pool) return;
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS "BankAccount" (
+        "id" TEXT PRIMARY KEY,
+        "userId" TEXT NOT NULL UNIQUE,
+        "accountNumber" VARCHAR(20) NOT NULL,
+        "bankCode" VARCHAR(20) NOT NULL,
+        "accountName" VARCHAR(255) NOT NULL,
+        "bankName" VARCHAR(255) NOT NULL,
+        "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await query(`ALTER TABLE "BankAccount" ADD COLUMN IF NOT EXISTS "userId" TEXT`);
+    await query(`
+      CREATE TABLE IF NOT EXISTS "Withdrawal" (
+        "id" TEXT PRIMARY KEY,
+        "userId" TEXT NOT NULL,
+        "eventId" TEXT NOT NULL,
+        "grossAmount" NUMERIC(14, 2) NOT NULL DEFAULT 0,
+        "platformFee" NUMERIC(14, 2) NOT NULL DEFAULT 0,
+        "amount" NUMERIC(14, 2) NOT NULL DEFAULT 0,
+        "status" VARCHAR(32) NOT NULL DEFAULT 'pending',
+        "paystackReference" VARCHAR(255),
+        "bankName" VARCHAR(255),
+        "bankCode" VARCHAR(20),
+        "accountNumber" VARCHAR(20),
+        "accountName" VARCHAR(255),
+        "reviewedBy" TEXT,
+        "reviewedAt" TIMESTAMPTZ,
+        "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    const alters = [
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "userId" TEXT`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "grossAmount" NUMERIC(14, 2) NOT NULL DEFAULT 0`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "platformFee" NUMERIC(14, 2) NOT NULL DEFAULT 0`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "amount" NUMERIC(14, 2) NOT NULL DEFAULT 0`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "status" VARCHAR(32) NOT NULL DEFAULT 'pending'`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "paystackReference" VARCHAR(255)`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "bankName" VARCHAR(255)`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "bankCode" VARCHAR(20)`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "accountNumber" VARCHAR(20)`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "accountName" VARCHAR(255)`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "reviewedBy" TEXT`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "reviewedAt" TIMESTAMPTZ`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+    ];
+    for (const sql of alters) {
+      await query(sql).catch(() => ({}));
+    }
+    await query(`ALTER TABLE "BankAccount" ALTER COLUMN "userId" TYPE TEXT USING "userId"::text`).catch(
+      () => ({})
+    );
+    await query(`ALTER TABLE "Withdrawal" ALTER COLUMN "userId" TYPE TEXT USING "userId"::text`).catch(
+      () => ({})
+    );
+    await query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'Withdrawal' AND column_name = 'adminId'
+        ) THEN
+          UPDATE "Withdrawal"
+          SET "userId" = "adminId"::text
+          WHERE ("userId" IS NULL OR trim("userId") = '')
+            AND "adminId" IS NOT NULL;
+        END IF;
+      END $$
+    `).catch(() => ({}));
+    await ensureTableIdDefault('BankAccount');
+    await ensureTableIdDefault('Withdrawal');
+  } catch (err) {
+    console.warn('[db] ensureWithdrawalDbSchema:', err.message);
+  }
+}
+
 export async function ensureTopUserSchema() {
   if (!pool) return;
   try {

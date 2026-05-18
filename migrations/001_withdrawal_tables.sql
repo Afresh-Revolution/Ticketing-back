@@ -69,3 +69,39 @@ BEGIN
       AND "adminId" IS NOT NULL;
   END IF;
 END $$;
+
+-- Legacy INTEGER "id" PKs without defaults (prevents null value in column "id" on INSERT)
+DO $$
+DECLARE
+  rel text;
+  typ text;
+  def text;
+  seq text;
+  mx bigint;
+BEGIN
+  FOREACH rel IN ARRAY ARRAY['BankAccount', 'Withdrawal'] LOOP
+    SELECT a.atttypid::regtype::text, COALESCE(pg_get_expr(ad.adbin, ad.adrelid), '')
+    INTO typ, def
+    FROM pg_attribute a
+    JOIN pg_class c ON a.attrelid = c.oid
+    JOIN pg_namespace n ON c.relnamespace = n.oid
+    LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+    WHERE n.nspname = 'public' AND c.relname = rel AND a.attname = 'id'
+      AND a.attnum > 0 AND NOT a.attisdropped;
+    IF typ IS NULL OR length(trim(def)) > 0 THEN
+      CONTINUE;
+    END IF;
+    IF typ IN ('integer', 'bigint', 'smallint') THEN
+      seq := rel || '_id_seq';
+      EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I', seq);
+      EXECUTE format('SELECT COALESCE(MAX("id")::bigint, 0) FROM %I', rel) INTO mx;
+      EXECUTE format('SELECT setval(%L, %s)', seq, GREATEST(1, mx + 1));
+      EXECUTE format('ALTER SEQUENCE %I OWNED BY %I."id"', seq, rel);
+      EXECUTE format('ALTER TABLE %I ALTER COLUMN "id" SET DEFAULT nextval(%L)', rel, seq);
+    ELSIF typ = 'uuid' THEN
+      EXECUTE format('ALTER TABLE %I ALTER COLUMN "id" SET DEFAULT gen_random_uuid()', rel);
+    ELSIF typ IN ('text', 'character varying') THEN
+      EXECUTE format('ALTER TABLE %I ALTER COLUMN "id" SET DEFAULT (gen_random_uuid()::text)', rel);
+    END IF;
+  END LOOP;
+END $$;

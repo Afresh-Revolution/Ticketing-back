@@ -1,6 +1,12 @@
 import app from './app.js';
 import { config } from './shared/config/env.js';
-import { connectDb, disconnectDb, ensureUserSequence, ensureTopUserSchema } from './shared/config/db.js';
+import {
+  connectDb,
+  disconnectDb,
+  ensureUserSequence,
+  ensureTopUserSchema,
+  ensureWithdrawalDbSchema,
+} from './shared/config/db.js';
 
 const server = app.listen(config.port, async () => {
   const dbOk = await connectDb();
@@ -11,6 +17,7 @@ const server = app.listen(config.port, async () => {
     // Ensure the \"User\" id sequence/default exists so INSERTs that rely on it don't fail
     await ensureUserSequence();
     await ensureTopUserSchema();
+    await ensureWithdrawalDbSchema();
   } else {
     console.warn('[server] Database not connected. Set DATABASE_URL in .env and run: psql $DATABASE_URL -f db/schema.sql');
   }

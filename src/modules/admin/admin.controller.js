@@ -1,6 +1,11 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { query, createId } from '../../shared/config/db.js';
+import {
+  query,
+  createId,
+  ensureTableIdDefault,
+  ensureWithdrawalDbSchema,
+} from '../../shared/config/db.js';
 import { insertTopUserRecord } from '../landing/topUsers/topUsers.model.js';
 import {
   sendTicketEmail,
@@ -1296,39 +1301,59 @@ function userIdKey(userId) {
   return String(userId).trim();
 }
 
+async function getPublicTableColumns(tableName) {
+  const result = await query(
+    `SELECT column_name, data_type, is_nullable, column_default
+     FROM information_schema.columns
+     WHERE table_schema = 'public' AND LOWER(table_name) = LOWER($1)
+     ORDER BY ordinal_position`,
+    [tableName]
+  ).catch(() => ({ rows: [] }));
+  return result.rows || [];
+}
+
+function coerceColumnValue(dataType, value) {
+  const type = String(dataType || '').toLowerCase();
+  if (type === 'integer' || type === 'bigint' || type === 'smallint') {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.trunc(n) : value;
+  }
+  if (type === 'numeric' || type.includes('decimal') || type === 'double precision' || type === 'real') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return value == null ? null : String(value);
+}
+
 /** How the table's primary key "id" column should be populated on INSERT. */
 async function getTableIdInsertMode(tableName) {
+  await ensureTableIdDefault(tableName);
   const result = await query(
-    `SELECT data_type, column_default, is_nullable
+    `SELECT data_type, column_default
      FROM information_schema.columns
      WHERE table_schema = 'public'
-       AND table_name = $1
+       AND LOWER(table_name) = LOWER($1)
        AND column_name = 'id'`,
-    [String(tableName).toLowerCase()]
-  ).catch(() =>
-    query(
-      `SELECT data_type, column_default, is_nullable
-       FROM information_schema.columns
-       WHERE table_schema = 'public'
-         AND LOWER(table_name) = LOWER($1)
-         AND column_name = 'id'`,
-      [tableName]
-    ).catch(() => ({ rows: [] }))
-  );
+    [tableName]
+  ).catch(() => ({ rows: [] }));
   const row = result.rows?.[0];
   if (!row) return 'explicit';
   const type = String(row.data_type || '').toLowerCase();
   const hasDefault = row.column_default != null;
-  if (hasDefault && (type === 'integer' || type === 'bigint' || type.includes('serial'))) {
+  if (type === 'integer' || type === 'bigint' || type.includes('int')) {
     return 'serial';
   }
+  if (hasDefault) return 'serial';
   return 'explicit';
 }
 
 function friendlyDbError(err) {
   const msg = String(err?.message || err || 'Request failed');
-  if (msg.includes('null value in column "id"')) {
+  if (msg.includes('null value in column "id"') || msg.includes('invalid input syntax for type integer')) {
     return 'Could not save withdrawal (database id error). Please try again or contact support.';
+  }
+  if (msg.includes('null value in column') && (msg.includes('"userId"') || msg.includes('"adminId"') || msg.includes('"eventId"'))) {
+    return 'Could not save withdrawal (missing required fields). Please try again or contact support.';
   }
   if (msg.includes('does not exist')) {
     return 'Withdrawal database is not fully set up. Please try again in a moment.';
@@ -1339,80 +1364,7 @@ function friendlyDbError(err) {
 /** Create withdrawal tables if missing (idempotent). */
 async function ensureWithdrawalSchema() {
   if (withdrawalSchemaReady) return true;
-  await query(`
-    CREATE TABLE IF NOT EXISTS "BankAccount" (
-      "id" TEXT PRIMARY KEY,
-      "userId" TEXT NOT NULL UNIQUE,
-      "accountNumber" VARCHAR(20) NOT NULL,
-      "bankCode" VARCHAR(20) NOT NULL,
-      "accountName" VARCHAR(255) NOT NULL,
-      "bankName" VARCHAR(255) NOT NULL,
-      "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `).catch(() => ({}));
-  await query(`ALTER TABLE "BankAccount" ADD COLUMN IF NOT EXISTS "userId" TEXT`).catch(() => ({}));
-  await query(`
-    ALTER TABLE "BankAccount"
-    ALTER COLUMN "userId" TYPE TEXT USING "userId"::text
-  `).catch(() => ({}));
-  await query(`
-    CREATE TABLE IF NOT EXISTS "Withdrawal" (
-      "id" TEXT PRIMARY KEY,
-      "userId" TEXT NOT NULL,
-      "eventId" TEXT NOT NULL,
-      "grossAmount" NUMERIC(14, 2) NOT NULL DEFAULT 0,
-      "platformFee" NUMERIC(14, 2) NOT NULL DEFAULT 0,
-      "amount" NUMERIC(14, 2) NOT NULL DEFAULT 0,
-      "status" VARCHAR(32) NOT NULL DEFAULT 'pending',
-      "paystackReference" VARCHAR(255),
-      "bankName" VARCHAR(255),
-      "bankCode" VARCHAR(20),
-      "accountNumber" VARCHAR(20),
-      "accountName" VARCHAR(255),
-      "reviewedBy" TEXT,
-      "reviewedAt" TIMESTAMPTZ,
-      "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `).catch(() => ({}));
-  const withdrawalAlters = [
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "userId" TEXT`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "grossAmount" NUMERIC(14, 2) NOT NULL DEFAULT 0`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "platformFee" NUMERIC(14, 2) NOT NULL DEFAULT 0`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "amount" NUMERIC(14, 2) NOT NULL DEFAULT 0`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "status" VARCHAR(32) NOT NULL DEFAULT 'pending'`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "paystackReference" VARCHAR(255)`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "bankName" VARCHAR(255)`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "bankCode" VARCHAR(20)`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "accountNumber" VARCHAR(20)`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "accountName" VARCHAR(255)`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "reviewedBy" TEXT`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "reviewedAt" TIMESTAMPTZ`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
-    `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
-  ];
-  for (const sql of withdrawalAlters) {
-    await query(sql).catch(() => ({}));
-  }
-  await query(`
-    ALTER TABLE "Withdrawal"
-    ALTER COLUMN "userId" TYPE TEXT USING "userId"::text
-  `).catch(() => ({}));
-  await query(`
-    DO $$
-    BEGIN
-      IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'Withdrawal' AND column_name = 'adminId'
-      ) THEN
-        UPDATE "Withdrawal"
-        SET "userId" = "adminId"::text
-        WHERE ("userId" IS NULL OR trim("userId") = '')
-          AND "adminId" IS NOT NULL;
-      END IF;
-    END $$
-  `).catch(() => ({}));
+  await ensureWithdrawalDbSchema();
   withdrawalSchemaReady = true;
   return true;
 }
@@ -1486,64 +1438,119 @@ async function getEventWithdrawalMetrics(eventId) {
   return { gross, ticketsSold };
 }
 
-async function insertWithdrawalRequest({ userId, eventId, gross, platformFee, netAmount, bank }) {
-  await ensureWithdrawalSchema();
+let withdrawalUserColsCache = null;
+
+async function getWithdrawalUserColumns() {
+  if (withdrawalUserColsCache) return withdrawalUserColsCache;
+  const cols = await getPublicTableColumns('Withdrawal');
+  const names = new Set(cols.map((c) => c.column_name));
+  withdrawalUserColsCache = { hasUserId: names.has('userId'), hasAdminId: names.has('adminId') };
+  return withdrawalUserColsCache;
+}
+
+/** SQL expression matching withdrawal rows to a user (legacy adminId or userId). */
+async function withdrawalUserMatchSql(alias = 'w') {
+  const { hasUserId, hasAdminId } = await getWithdrawalUserColumns();
+  const parts = [];
+  if (hasUserId) parts.push(`(${alias}."userId" IS NOT NULL AND ${alias}."userId"::text = $1)`);
+  if (hasAdminId) parts.push(`(${alias}."adminId" IS NOT NULL AND ${alias}."adminId"::text = $1)`);
+  if (!parts.length) return `${alias}."userId"::text = $1`;
+  return `(${parts.join(' OR ')})`;
+}
+
+function withdrawalUserJoinSql(alias = 'w') {
+  return `u.id::text = COALESCE(${alias}."userId", ${alias}."adminId")::text`;
+}
+
+async function buildWithdrawalInsert({ userId, eventId, gross, platformFee, netAmount, bank }) {
+  const cols = await getPublicTableColumns('Withdrawal');
+  if (!cols.length) throw new Error('Withdrawal table not found');
+  const byName = Object.fromEntries(cols.map((c) => [c.column_name, c]));
+  if (!byName.userId && !byName.adminId) {
+    throw new Error('Withdrawal table missing userId/adminId column');
+  }
+  if (!byName.eventId) throw new Error('Withdrawal table missing eventId column');
+
+  await ensureTableIdDefault('Withdrawal');
+  const idMode = await getTableIdInsertMode('Withdrawal');
   const uid = userIdKey(userId);
   const eid = String(eventId);
-  const bankName = bank.bankName || '';
-  const bankCode = bank.bankCode || '';
-  const accountNumber = bank.accountNumber || '';
-  const accountName = bank.accountName || '';
-  const withdrawalId = createId();
-
-  const fullWithId = {
-    sql: `INSERT INTO "Withdrawal" (
-      "id", "userId", "eventId", "grossAmount", "platformFee", "amount", "status",
-      "bankName", "bankCode", "accountNumber", "accountName"
-    ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10)
-    RETURNING "id", "amount", "grossAmount", "platformFee", "status"`,
-    params: [withdrawalId, uid, eid, gross, platformFee, netAmount, bankName, bankCode, accountNumber, accountName],
-  };
-  const fullSerial = {
-    sql: `INSERT INTO "Withdrawal" (
-      "userId", "eventId", "grossAmount", "platformFee", "amount", "status",
-      "bankName", "bankCode", "accountNumber", "accountName"
-    ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
-    RETURNING "id", "amount", "grossAmount", "platformFee", "status"`,
-    params: [uid, eid, gross, platformFee, netAmount, bankName, bankCode, accountNumber, accountName],
-  };
-  const minimalWithId = {
-    sql: `INSERT INTO "Withdrawal" ("id", "userId", "eventId", "amount", "status")
-      VALUES ($1, $2, $3, $4, 'pending')
-      RETURNING "id", "amount", "status"`,
-    params: [withdrawalId, uid, eid, netAmount],
-  };
-  const minimalSerial = {
-    sql: `INSERT INTO "Withdrawal" ("userId", "eventId", "amount", "status")
-      VALUES ($1, $2, $3, 'pending')
-      RETURNING "id", "amount", "status"`,
-    params: [uid, eid, netAmount],
+  const payload = {
+    userId: uid,
+    adminId: uid,
+    eventId: eid,
+    grossAmount: gross,
+    platformFee: platformFee,
+    amount: netAmount,
+    status: 'pending',
+    bankName: bank?.bankName || '',
+    bankCode: bank?.bankCode || '',
+    accountNumber: bank?.accountNumber || '',
+    accountName: bank?.accountName || '',
   };
 
-  const idMode = await getTableIdInsertMode('withdrawal');
-  const attempts =
-    idMode === 'serial'
-      ? [fullSerial, minimalSerial, fullWithId, minimalWithId]
-      : [fullWithId, minimalWithId, fullSerial, minimalSerial];
+  const fields = [];
+  const placeholders = [];
+  const params = [];
 
-  let lastErr = null;
-  for (const { sql, params } of attempts) {
-    try {
-      const result = await query(sql, params);
-      if (result.rows?.length) return result.rows[0];
-    } catch (err) {
-      lastErr = err;
-      console.error('insertWithdrawalRequest attempt failed:', err.message);
-    }
+  if (idMode === 'explicit' && byName.id) {
+    fields.push('"id"');
+    placeholders.push(`$${params.length + 1}`);
+    params.push(coerceColumnValue(byName.id.data_type, createId()));
   }
-  const err = lastErr || new Error('Failed to insert withdrawal request');
-  err.friendlyMessage = friendlyDbError(err);
-  throw err;
+
+  const insertKeys = [
+    'userId',
+    'adminId',
+    'eventId',
+    'grossAmount',
+    'platformFee',
+    'amount',
+    'status',
+    'bankName',
+    'bankCode',
+    'accountNumber',
+    'accountName',
+  ];
+  for (const key of insertKeys) {
+    if (!byName[key] || payload[key] === undefined) continue;
+    fields.push(`"${key}"`);
+    placeholders.push(`$${params.length + 1}`);
+    params.push(coerceColumnValue(byName[key].data_type, payload[key]));
+  }
+
+  const returning = ['"id"'];
+  for (const key of ['amount', 'grossAmount', 'platformFee', 'status']) {
+    if (byName[key]) returning.push(`"${key}"`);
+  }
+
+  return {
+    sql: `INSERT INTO "Withdrawal" (${fields.join(', ')})
+      VALUES (${placeholders.join(', ')})
+      RETURNING ${returning.join(', ')}`,
+    params,
+  };
+}
+
+async function insertWithdrawalRequest({ userId, eventId, gross, platformFee, netAmount, bank }) {
+  await ensureWithdrawalSchema();
+  const { sql, params } = await buildWithdrawalInsert({
+    userId,
+    eventId,
+    gross,
+    platformFee,
+    netAmount,
+    bank,
+  });
+  try {
+    const result = await query(sql, params);
+    if (result.rows?.length) return result.rows[0];
+  } catch (err) {
+    console.error('insertWithdrawalRequest failed:', err.message, sql);
+    err.friendlyMessage = friendlyDbError(err);
+    throw err;
+  }
+  throw new Error('Failed to insert withdrawal request');
 }
 
 function mapWithdrawalRow(w, extras = {}) {
@@ -1571,10 +1578,10 @@ async function fetchPendingWithdrawalRequests() {
   const result = await query(
     `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
      FROM "Withdrawal" w
-     JOIN "User" u ON u.id::text = w."userId"::text
+     JOIN "User" u ON ${withdrawalUserJoinSql('w')}
      LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
      WHERE w."status" = 'pending'
-     ORDER BY w."createdAt" ASC`
+     ORDER BY w."createdAt" ASC NULLS LAST`
   ).catch(() => ({ rows: [] }));
   return (result.rows || []).map((w) => mapWithdrawalRow(w));
 }
@@ -1668,17 +1675,18 @@ export async function getWithdrawPage(req, res) {
       withdrawn_at: null,
     }));
 
+    const userMatch = await withdrawalUserMatchSql('w');
     const withSql = superAdmin
       ? `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
          FROM "Withdrawal" w
-         JOIN "User" u ON u.id::text = w."userId"::text
+         JOIN "User" u ON ${withdrawalUserJoinSql('w')}
          LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
-         ORDER BY w."createdAt" DESC`
+         ORDER BY w."createdAt" DESC NULLS LAST`
       : `SELECT w.*, e.title AS event_title
          FROM "Withdrawal" w
          LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
-         WHERE w."userId"::text = $1
-         ORDER BY w."createdAt" DESC`;
+         WHERE ${userMatch}
+         ORDER BY w."createdAt" DESC NULLS LAST`;
     const withParams = superAdmin ? [] : [userIdKey(userId)];
     const withResult = await query(withSql, withParams).catch(() => ({ rows: [] }));
     const withdrawals = (withResult.rows || []).map((w) => mapWithdrawalRow(w));
@@ -1744,8 +1752,9 @@ export async function getWithdrawPage(req, res) {
 export async function listWithdrawals(req, res) {
   try {
     const userId = getUserId(req);
+    const userMatch = await withdrawalUserMatchSql('w');
     const result = await query(
-      'SELECT * FROM "Withdrawal" WHERE "userId"::text = $1 ORDER BY "createdAt" DESC',
+      `SELECT * FROM "Withdrawal" w WHERE ${userMatch} ORDER BY w."createdAt" DESC NULLS LAST`,
       [userIdKey(userId)]
     ).catch(() => ({ rows: [] }));
     return res.json(result.rows || []);
@@ -1790,11 +1799,13 @@ export async function createWithdrawal(req, res) {
       return res.status(400).json({ error: 'Set up your bank account before requesting a withdrawal' });
     }
 
+    const userMatch = await withdrawalUserMatchSql('w');
     const existing = await query(
-      `SELECT "status" FROM "Withdrawal"
-       WHERE "userId"::text = $1 AND "eventId"::text = $2::text
-         AND "status" IN ('pending', 'completed')
-       ORDER BY "createdAt" DESC LIMIT 1`,
+      `SELECT "status" FROM "Withdrawal" w
+       WHERE ${userMatch}
+         AND w."eventId"::text = $2::text
+         AND w."status" IN ('pending', 'completed')
+       ORDER BY w."createdAt" DESC NULLS LAST LIMIT 1`,
       [userIdKey(userId), String(eventId)]
     ).catch(() => ({ rows: [] }));
     const existingStatus = existing.rows?.[0]?.status;
@@ -1880,10 +1891,10 @@ export async function reviewWithdrawal(req, res) {
     const wResult = await query(
       `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
        FROM "Withdrawal" w
-       JOIN "User" u ON u.id::text = w."userId"::text
+       JOIN "User" u ON u.id::text = COALESCE(w."userId", w."adminId")::text
        LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
-       WHERE w.id = $1`,
-      [withdrawalId]
+       WHERE w.id::text = $1::text`,
+      [String(withdrawalId)]
     ).catch(() => ({ rows: [] }));
     if (!wResult.rows?.length) return res.status(404).json({ error: 'Withdrawal request not found' });
     const w = wResult.rows[0];
@@ -1894,10 +1905,10 @@ export async function reviewWithdrawal(req, res) {
     const newStatus = action === 'approve' ? 'completed' : 'rejected';
     const updated = await query(
       `UPDATE "Withdrawal"
-       SET "status" = $1, "reviewedBy" = $2, "reviewedAt" = NOW(), "updatedAt" = NOW()
-       WHERE id = $3
+       SET "status" = $1, "reviewedBy" = $2::text, "reviewedAt" = NOW(), "updatedAt" = NOW()
+       WHERE id::text = $3::text
        RETURNING *`,
-      [newStatus, reviewerId, withdrawalId]
+      [newStatus, String(reviewerId ?? ''), String(withdrawalId)]
     ).catch(() => ({ rows: [] }));
     if (!updated.rows?.length) return res.status(500).json({ error: 'Failed to update withdrawal' });
 
