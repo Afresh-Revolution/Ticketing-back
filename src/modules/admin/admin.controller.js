@@ -1415,19 +1415,49 @@ async function upsertBankAccountForUser(userId, bank) {
   return getBankAccountForUser(userId);
 }
 
-/** Paid revenue + sold ticket count for an event (paid and pending orders count as sold). */
+/** Per-event sales rollup: online orders + walk-ins (paid revenue; paid/pending count as sold). */
+const EVENT_SALES_BY_EVENT_SQL = `
+  SELECT s."eventId",
+         SUM(s.gross)::numeric AS gross,
+         SUM(s.tickets_sold)::int AS tickets_sold
+  FROM (
+    SELECT o."eventId",
+           CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END AS gross,
+           CASE WHEN o."status" IN ('paid', 'pending') THEN
+             COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
+           ELSE 0 END AS tickets_sold
+    FROM "Order" o
+    UNION ALL
+    SELECT w."eventId",
+           CASE WHEN w."status" = 'paid' THEN w.amount ELSE 0 END AS gross,
+           CASE WHEN w."status" IN ('paid', 'pending') THEN COALESCE(w."quantity", 1) ELSE 0 END AS tickets_sold
+    FROM "WalkInSale" w
+  ) s
+  GROUP BY s."eventId"
+`;
+
+/** Paid revenue + sold ticket count for an event (paid and pending sales count as sold). */
 async function getEventWithdrawalMetrics(eventId) {
   const result = await query(
     `SELECT
-       COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS gross_paid,
-       COALESCE(SUM(CASE WHEN o."status" IN ('paid', 'pending') THEN o."totalAmount" ELSE 0 END), 0) AS gross_all,
-       COALESCE(SUM(
-         CASE WHEN o."status" IN ('paid', 'pending') THEN
-           COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
-         ELSE 0 END
-       ), 0) AS tickets_sold
-     FROM "Order" o
-     WHERE o."eventId"::text = $1::text`,
+       COALESCE(SUM(CASE WHEN src = 'paid' THEN amount ELSE 0 END), 0) AS gross_paid,
+       COALESCE(SUM(CASE WHEN src IN ('paid', 'pending') THEN amount ELSE 0 END), 0) AS gross_all,
+       COALESCE(SUM(tickets), 0) AS tickets_sold
+     FROM (
+       SELECT
+         CASE WHEN o."status" = 'paid' THEN 'paid' WHEN o."status" = 'pending' THEN 'pending' END AS src,
+         o."totalAmount" AS amount,
+         COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1) AS tickets
+       FROM "Order" o
+       WHERE o."eventId"::text = $1::text AND o."status" IN ('paid', 'pending')
+       UNION ALL
+       SELECT
+         CASE WHEN w."status" = 'paid' THEN 'paid' WHEN w."status" = 'pending' THEN 'pending' END AS src,
+         w.amount AS amount,
+         COALESCE(w."quantity", 1) AS tickets
+       FROM "WalkInSale" w
+       WHERE w."eventId"::text = $1::text AND w."status" IN ('paid', 'pending')
+     ) sales`,
     [String(eventId)]
   ).catch(() => ({ rows: [{ gross_paid: 0, gross_all: 0, tickets_sold: 0 }] }));
   const row = result.rows?.[0] || {};
@@ -1702,15 +1732,32 @@ export async function getWithdrawPage(req, res) {
 
     const userIdText = userId != null ? String(userId) : '';
     const revSql = superAdmin
-      ? `SELECT COALESCE(SUM(o."totalAmount"), 0) AS total
-         FROM "Order" o
-         JOIN "Event" e ON e.id::text = o."eventId"::text
-         WHERE o."status" = 'paid'`
-      : `SELECT COALESCE(SUM(o."totalAmount"), 0) AS total
-         FROM "Order" o
-         JOIN "Event" e ON e.id::text = o."eventId"::text
-         WHERE o."status" = 'paid'
-           AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))`;
+      ? `SELECT COALESCE(SUM(s.amount), 0) AS total
+         FROM (
+           SELECT o."totalAmount" AS amount
+           FROM "Order" o
+           JOIN "Event" e ON e.id::text = o."eventId"::text
+           WHERE o."status" = 'paid'
+           UNION ALL
+           SELECT w.amount AS amount
+           FROM "WalkInSale" w
+           JOIN "Event" e ON e.id::text = w."eventId"::text
+           WHERE w."status" = 'paid'
+         ) s`
+      : `SELECT COALESCE(SUM(s.amount), 0) AS total
+         FROM (
+           SELECT o."totalAmount" AS amount
+           FROM "Order" o
+           JOIN "Event" e ON e.id::text = o."eventId"::text
+           WHERE o."status" = 'paid'
+             AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))
+           UNION ALL
+           SELECT w.amount AS amount
+           FROM "WalkInSale" w
+           JOIN "Event" e ON e.id::text = w."eventId"::text
+           WHERE w."status" = 'paid'
+             AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))
+         ) s`;
     const revParams = superAdmin ? [] : [userIdText];
     const revResult = await query(revSql, revParams).catch(() => ({ rows: [{ total: 0 }] }));
     kpi.totalGross = Number(revResult.rows?.[0]?.total) || 0;
@@ -1720,29 +1767,13 @@ export async function getWithdrawPage(req, res) {
                COALESCE(rev.gross, 0) AS gross_revenue,
                COALESCE(rev.tickets_sold, 0) AS tickets_sold
         FROM "Event" e
-        LEFT JOIN (
-          SELECT o."eventId",
-                 SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END) AS gross,
-                 SUM(CASE WHEN o."status" IN ('paid', 'pending') THEN
-                   COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
-                 ELSE 0 END) AS tickets_sold
-          FROM "Order" o
-          GROUP BY o."eventId"
-        ) rev ON rev."eventId"::text = e.id::text
+        LEFT JOIN (${EVENT_SALES_BY_EVENT_SQL}) rev ON rev."eventId"::text = e.id::text
         ORDER BY e.date DESC NULLS LAST`
       : `SELECT e.id, e.title, e.date, e."imageUrl", e."createdBy",
                COALESCE(rev.gross, 0) AS gross_revenue,
                COALESCE(rev.tickets_sold, 0) AS tickets_sold
         FROM "Event" e
-        LEFT JOIN (
-          SELECT o."eventId",
-                 SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END) AS gross,
-                 SUM(CASE WHEN o."status" IN ('paid', 'pending') THEN
-                   COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
-                 ELSE 0 END) AS tickets_sold
-          FROM "Order" o
-          GROUP BY o."eventId"
-        ) rev ON rev."eventId"::text = e.id::text
+        LEFT JOIN (${EVENT_SALES_BY_EVENT_SQL}) rev ON rev."eventId"::text = e.id::text
         WHERE (e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0')
         ORDER BY e.date DESC NULLS LAST`;
     const eventsParams = superAdmin ? [] : [userIdText];
