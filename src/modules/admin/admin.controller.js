@@ -1296,6 +1296,29 @@ function userIdKey(userId) {
   return String(userId).trim();
 }
 
+const tableIdNeedsExplicitCache = new Map();
+
+/** True when "id" has no DB default (e.g. TEXT PK from withdraw migration); SERIAL columns stay false. */
+async function tableIdNeedsExplicitValue(tableName) {
+  if (tableIdNeedsExplicitCache.has(tableName)) {
+    return tableIdNeedsExplicitCache.get(tableName);
+  }
+  const result = await query(
+    `SELECT data_type, column_default
+     FROM information_schema.columns
+     WHERE table_schema = 'public' AND LOWER(table_name) = LOWER($1) AND column_name = 'id'`,
+    [tableName]
+  ).catch(() => ({ rows: [] }));
+  const row = result.rows?.[0];
+  const type = String(row?.data_type || '').toLowerCase();
+  const needsExplicit =
+    row != null &&
+    row.column_default == null &&
+    (type === 'text' || type === 'character varying' || type === 'uuid');
+  tableIdNeedsExplicitCache.set(tableName, needsExplicit);
+  return needsExplicit;
+}
+
 /** Create withdrawal tables if missing (idempotent). */
 async function ensureWithdrawalSchema() {
   if (withdrawalSchemaReady) return true;
@@ -1370,13 +1393,22 @@ async function upsertBankAccountForUser(userId, bank) {
       [accountNumber, bankCode, accountName || '', bankName || '', key]
     );
   } else {
-    await query(
-      `INSERT INTO "BankAccount" ("userId", "accountNumber", "bankCode", "accountName", "bankName")
-       VALUES ($1, $2, $3, $4, $5)`,
-      [key, accountNumber, bankCode, accountName || '', bankName || '']
-    );
+    const needsId = await tableIdNeedsExplicitValue('BankAccount');
+    if (needsId) {
+      await query(
+        `INSERT INTO "BankAccount" ("id", "userId", "accountNumber", "bankCode", "accountName", "bankName")
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [createId(), key, accountNumber, bankCode, accountName || '', bankName || '']
+      );
+    } else {
+      await query(
+        `INSERT INTO "BankAccount" ("userId", "accountNumber", "bankCode", "accountName", "bankName")
+         VALUES ($1, $2, $3, $4, $5)`,
+        [key, accountNumber, bankCode, accountName || '', bankName || '']
+      );
+    }
   }
-  return getBankAccountForUser(key);
+  return getBankAccountForUser(userId);
 }
 
 async function getEventGrossRevenue(eventId) {
@@ -1653,24 +1685,43 @@ export async function createWithdrawal(req, res) {
     const adminName = adminRow.rows?.[0]?.name || 'Admin';
     const adminEmail = adminRow.rows?.[0]?.email || '';
 
-    const result = await query(
-      `INSERT INTO "Withdrawal" (
-        "userId", "eventId", "grossAmount", "platformFee", "amount", "status",
-        "bankName", "bankCode", "accountNumber", "accountName"
-      ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
-      RETURNING "id", "amount", "grossAmount", "platformFee", "status"`,
-      [
-        userIdKey(userId),
-        String(eventId),
-        gross,
-        platformFee,
-        netAmount,
-        bank.bankName || '',
-        bank.bankCode || '',
-        bank.accountNumber || '',
-        bank.accountName || '',
-      ]
-    ).catch((err) => {
+    const withdrawalNeedsId = await tableIdNeedsExplicitValue('Withdrawal');
+    const withdrawalSql = withdrawalNeedsId
+      ? `INSERT INTO "Withdrawal" (
+          "id", "userId", "eventId", "grossAmount", "platformFee", "amount", "status",
+          "bankName", "bankCode", "accountNumber", "accountName"
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10)
+        RETURNING "id", "amount", "grossAmount", "platformFee", "status"`
+      : `INSERT INTO "Withdrawal" (
+          "userId", "eventId", "grossAmount", "platformFee", "amount", "status",
+          "bankName", "bankCode", "accountNumber", "accountName"
+        ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
+        RETURNING "id", "amount", "grossAmount", "platformFee", "status"`;
+    const withdrawalParams = withdrawalNeedsId
+      ? [
+          createId(),
+          userIdKey(userId),
+          String(eventId),
+          gross,
+          platformFee,
+          netAmount,
+          bank.bankName || '',
+          bank.bankCode || '',
+          bank.accountNumber || '',
+          bank.accountName || '',
+        ]
+      : [
+          userIdKey(userId),
+          String(eventId),
+          gross,
+          platformFee,
+          netAmount,
+          bank.bankName || '',
+          bank.bankCode || '',
+          bank.accountNumber || '',
+          bank.accountName || '',
+        ];
+    const result = await query(withdrawalSql, withdrawalParams).catch((err) => {
       console.error('createWithdrawal insert', err);
       return { rows: [] };
     });
