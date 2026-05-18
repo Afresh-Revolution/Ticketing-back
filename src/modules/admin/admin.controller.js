@@ -1474,7 +1474,19 @@ async function getEventWithdrawalMetrics(eventId) {
            COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
          ELSE 0 END
        ), 0) AS tickets_sold
+/** Paid revenue + sold ticket count for an event (paid and pending orders count as sold). */
+async function getEventWithdrawalMetrics(eventId) {
+  const result = await query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END), 0) AS gross_paid,
+       COALESCE(SUM(CASE WHEN o."status" IN ('paid', 'pending') THEN o."totalAmount" ELSE 0 END), 0) AS gross_all,
+       COALESCE(SUM(
+         CASE WHEN o."status" IN ('paid', 'pending') THEN
+           COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
+         ELSE 0 END
+       ), 0) AS tickets_sold
      FROM "Order" o
+     WHERE o."eventId"::text = $1::text`,
      WHERE o."eventId"::text = $1::text`,
     [String(eventId)]
   ).catch(() => ({ rows: [{ gross_paid: 0, gross_all: 0, tickets_sold: 0 }] }));
@@ -1572,7 +1584,9 @@ async function fetchPendingWithdrawalRequests() {
     `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
      FROM "Withdrawal" w
      JOIN "User" u ON u.id::text = w."userId"::text
+     JOIN "User" u ON u.id::text = w."userId"::text
      LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
+     WHERE w."status" = 'pending'
      WHERE w."status" = 'pending'
      ORDER BY w."createdAt" ASC`
   ).catch(() => ({ rows: [] }));
@@ -1627,8 +1641,15 @@ export async function getWithdrawPage(req, res) {
       ? `SELECT e.id, e.title, e.date, e."imageUrl", e."createdBy",
                COALESCE(rev.gross, 0) AS gross_revenue,
                COALESCE(rev.tickets_sold, 0) AS tickets_sold
+               COALESCE(rev.gross, 0) AS gross_revenue,
+               COALESCE(rev.tickets_sold, 0) AS tickets_sold
         FROM "Event" e
         LEFT JOIN (
+          SELECT o."eventId",
+                 SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END) AS gross,
+                 SUM(CASE WHEN o."status" IN ('paid', 'pending') THEN
+                   COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
+                 ELSE 0 END) AS tickets_sold
           SELECT o."eventId",
                  SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END) AS gross,
                  SUM(CASE WHEN o."status" IN ('paid', 'pending') THEN
@@ -1641,8 +1662,15 @@ export async function getWithdrawPage(req, res) {
       : `SELECT e.id, e.title, e.date, e."imageUrl", e."createdBy",
                COALESCE(rev.gross, 0) AS gross_revenue,
                COALESCE(rev.tickets_sold, 0) AS tickets_sold
+               COALESCE(rev.gross, 0) AS gross_revenue,
+               COALESCE(rev.tickets_sold, 0) AS tickets_sold
         FROM "Event" e
         LEFT JOIN (
+          SELECT o."eventId",
+                 SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END) AS gross,
+                 SUM(CASE WHEN o."status" IN ('paid', 'pending') THEN
+                   COALESCE((SELECT SUM(oi.quantity)::int FROM "OrderItem" oi WHERE oi."orderId"::text = o.id::text), 1)
+                 ELSE 0 END) AS tickets_sold
           SELECT o."eventId",
                  SUM(CASE WHEN o."status" = 'paid' THEN o."totalAmount" ELSE 0 END) AS gross,
                  SUM(CASE WHEN o."status" IN ('paid', 'pending') THEN
@@ -1663,6 +1691,7 @@ export async function getWithdrawPage(req, res) {
       createdBy: r.createdBy != null ? String(r.createdBy) : null,
       gross_revenue: Number(r.gross_revenue) || 0,
       tickets_sold: Number(r.tickets_sold) || 0,
+      tickets_sold: Number(r.tickets_sold) || 0,
       withdrawal_status: null,
       withdrawn_net: null,
       withdrawn_at: null,
@@ -1671,6 +1700,7 @@ export async function getWithdrawPage(req, res) {
     const withSql = superAdmin
       ? `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
          FROM "Withdrawal" w
+         JOIN "User" u ON u.id::text = w."userId"::text
          JOIN "User" u ON u.id::text = w."userId"::text
          LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
          ORDER BY w."createdAt" DESC`
@@ -1768,6 +1798,8 @@ export async function createWithdrawal(req, res) {
     const eventRows = await query(
       'SELECT "id", "title", "createdBy" FROM "Event" WHERE "id"::text = $1::text',
       [String(eventId)]
+      'SELECT "id", "title", "createdBy" FROM "Event" WHERE "id"::text = $1::text',
+      [String(eventId)]
     ).catch(() => ({ rows: [] }));
     if (!eventRows.rows?.length) return res.status(404).json({ error: 'Event not found' });
     const event = eventRows.rows[0];
@@ -1794,6 +1826,8 @@ export async function createWithdrawal(req, res) {
       `SELECT "status" FROM "Withdrawal"
        WHERE "userId"::text = $1 AND "eventId"::text = $2::text
          AND "status" IN ('pending', 'completed')
+       WHERE "userId"::text = $1 AND "eventId"::text = $2::text
+         AND "status" IN ('pending', 'completed')
        ORDER BY "createdAt" DESC LIMIT 1`,
       [userIdKey(userId), String(eventId)]
     ).catch(() => ({ rows: [] }));
@@ -1808,6 +1842,9 @@ export async function createWithdrawal(req, res) {
     const { gross, ticketsSold } = await getEventWithdrawalMetrics(eventId);
     if (ticketsSold <= 0) {
       return res.status(400).json({ error: 'No sold tickets for this event yet' });
+    const { gross, ticketsSold } = await getEventWithdrawalMetrics(eventId);
+    if (ticketsSold <= 0) {
+      return res.status(400).json({ error: 'No sold tickets for this event yet' });
     }
     const platformFee = Math.round(gross * 0.15 * 100) / 100;
     const netAmount = Math.round((gross - platformFee) * 100) / 100;
@@ -1815,10 +1852,23 @@ export async function createWithdrawal(req, res) {
     const adminRow = await query(
       'SELECT name, email FROM "User" WHERE id::text = $1::text',
       [userIdKey(userId)]
+      'SELECT name, email FROM "User" WHERE id::text = $1::text',
+      [userIdKey(userId)]
     ).catch(() => ({ rows: [] }));
     const adminName = adminRow.rows?.[0]?.name || 'Admin';
     const adminEmail = adminRow.rows?.[0]?.email || '';
 
+    let row;
+    try {
+      row = await insertWithdrawalRequest({
+        userId,
+        eventId,
+        gross,
+        platformFee,
+        netAmount,
+        bank,
+      });
+    } catch (err) {
     let row;
     try {
       row = await insertWithdrawalRequest({
@@ -1880,6 +1930,7 @@ export async function reviewWithdrawal(req, res) {
     const wResult = await query(
       `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
        FROM "Withdrawal" w
+       JOIN "User" u ON u.id::text = w."userId"::text
        JOIN "User" u ON u.id::text = w."userId"::text
        LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
        WHERE w.id = $1`,
