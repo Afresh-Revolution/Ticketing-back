@@ -1002,10 +1002,6 @@ export async function resendSaleTicket(req, res) {
 }
 
 /** DELETE /api/admin/sales/:orderId – delete an online or walk-in sale for owned event/admin scope. */
-<<<<<<< HEAD
-=======
-/** DELETE /api/admin/sales/:orderId – delete an online or walk-in sale for owned event/admin scope. */
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
 export async function deleteSale(req, res) {
   try {
     const orderId = String(req.params.orderId || '').trim();
@@ -1022,19 +1018,6 @@ export async function deleteSale(req, res) {
       await query('DELETE FROM "WalkInSale" WHERE id = $1', [walkInId]);
       return res.json({ message: 'Sale deleted', id: String(walkInId), source: 'walk_in' });
     }
-<<<<<<< HEAD
-=======
-    if (!sale) {
-      const walkInId = Number.parseInt(orderId, 10);
-      if (Number.isNaN(walkInId)) return res.status(404).json({ error: 'Sale not found' });
-
-      const walkInSale = await getWalkInSaleByIdForAdmin(walkInId, req);
-      if (!walkInSale) return res.status(404).json({ error: 'Sale not found' });
-
-      await query('DELETE FROM "WalkInSale" WHERE id = $1', [walkInId]);
-      return res.json({ message: 'Sale deleted', id: String(walkInId), source: 'walk_in' });
-    }
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
 
     // Delete dependents first for schemas without ON DELETE CASCADE.
     await query(`DELETE FROM "ScanLog" WHERE "orderId"::text = $1`, [orderId]).catch((e) => {
@@ -1308,25 +1291,18 @@ function getUserId(req) {
 
 let withdrawalSchemaReady = false;
 
-<<<<<<< HEAD
 function userIdKey(userId) {
   if (userId == null) return '';
   return String(userId).trim();
 }
 
-=======
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
 /** Create withdrawal tables if missing (idempotent). */
 async function ensureWithdrawalSchema() {
   if (withdrawalSchemaReady) return true;
   await query(`
     CREATE TABLE IF NOT EXISTS "BankAccount" (
       "id" SERIAL PRIMARY KEY,
-<<<<<<< HEAD
       "userId" TEXT NOT NULL UNIQUE,
-=======
-      "userId" INTEGER NOT NULL UNIQUE,
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
       "accountNumber" VARCHAR(20) NOT NULL,
       "bankCode" VARCHAR(20) NOT NULL,
       "accountName" VARCHAR(255) NOT NULL,
@@ -1336,7 +1312,6 @@ async function ensureWithdrawalSchema() {
     )
   `).catch(() => ({}));
   await query(`
-<<<<<<< HEAD
     ALTER TABLE "BankAccount"
     ALTER COLUMN "userId" TYPE TEXT USING "userId"::text
   `).catch(() => ({}));
@@ -1344,11 +1319,6 @@ async function ensureWithdrawalSchema() {
     CREATE TABLE IF NOT EXISTS "Withdrawal" (
       "id" SERIAL PRIMARY KEY,
       "userId" TEXT NOT NULL,
-=======
-    CREATE TABLE IF NOT EXISTS "Withdrawal" (
-      "id" SERIAL PRIMARY KEY,
-      "userId" INTEGER NOT NULL,
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
       "eventId" TEXT NOT NULL,
       "grossAmount" NUMERIC(14, 2) NOT NULL DEFAULT 0,
       "platformFee" NUMERIC(14, 2) NOT NULL DEFAULT 0,
@@ -1365,18 +1335,14 @@ async function ensureWithdrawalSchema() {
       "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `).catch(() => ({}));
-<<<<<<< HEAD
   await query(`
     ALTER TABLE "Withdrawal"
     ALTER COLUMN "userId" TYPE TEXT USING "userId"::text
   `).catch(() => ({}));
-=======
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
   withdrawalSchemaReady = true;
   return true;
 }
 
-<<<<<<< HEAD
 async function getBankAccountForUser(userId) {
   const key = userIdKey(userId);
   if (!key) return null;
@@ -1413,8 +1379,6 @@ async function upsertBankAccountForUser(userId, bank) {
   return getBankAccountForUser(key);
 }
 
-=======
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
 async function getEventGrossRevenue(eventId) {
   const rev = await query(
     `SELECT COALESCE(SUM(o."totalAmount"), 0) AS gross
@@ -1547,15 +1511,9 @@ export async function getWithdrawPage(req, res) {
       : `SELECT w.*, e.title AS event_title
          FROM "Withdrawal" w
          LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
-<<<<<<< HEAD
          WHERE w."userId"::text = $1
          ORDER BY w."createdAt" DESC`;
     const withParams = superAdmin ? [] : [userIdKey(userId)];
-=======
-         WHERE w."userId" = $1
-         ORDER BY w."createdAt" DESC`;
-    const withParams = superAdmin ? [] : [userId];
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
     const withResult = await query(withSql, withParams).catch(() => ({ rows: [] }));
     const withdrawals = (withResult.rows || []).map((w) => mapWithdrawalRow(w));
 
@@ -1621,8 +1579,8 @@ export async function listWithdrawals(req, res) {
   try {
     const userId = getUserId(req);
     const result = await query(
-      'SELECT * FROM "Withdrawal" WHERE "userId" = $1 ORDER BY "createdAt" DESC',
-      [userId]
+      'SELECT * FROM "Withdrawal" WHERE "userId"::text = $1 ORDER BY "createdAt" DESC',
+      [userIdKey(userId)]
     ).catch(() => ({ rows: [] }));
     return res.json(result.rows || []);
   } catch {
@@ -1651,7 +1609,6 @@ export async function createWithdrawal(req, res) {
       return res.status(403).json({ error: 'You can only withdraw from events you created' });
     }
 
-<<<<<<< HEAD
     let bank = await getBankAccountForUser(userId);
     if (!bank) {
       const bodyBank = req.body?.bankAccount || req.body || {};
@@ -1666,27 +1623,13 @@ export async function createWithdrawal(req, res) {
     if (!bank) {
       return res.status(400).json({ error: 'Set up your bank account before requesting a withdrawal' });
     }
-=======
-    const baResult = await query(
-      'SELECT "accountNumber", "bankCode", "accountName", "bankName" FROM "BankAccount" WHERE "userId" = $1',
-      [userId]
-    ).catch(() => ({ rows: [] }));
-    if (!baResult.rows?.length) {
-      return res.status(400).json({ error: 'Set up your bank account before requesting a withdrawal' });
-    }
-    const bank = baResult.rows[0];
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
 
     const existing = await query(
       `SELECT "status" FROM "Withdrawal"
        WHERE "userId" = $1 AND "eventId"::text = $2::text
          AND status IN ('pending', 'completed')
        ORDER BY "createdAt" DESC LIMIT 1`,
-<<<<<<< HEAD
       [userIdKey(userId), String(eventId)]
-=======
-      [userId, String(eventId)]
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
     ).catch(() => ({ rows: [] }));
     const existingStatus = existing.rows?.[0]?.status;
     if (existingStatus === 'pending') {
@@ -1717,11 +1660,7 @@ export async function createWithdrawal(req, res) {
       ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
       RETURNING "id", "amount", "grossAmount", "platformFee", "status"`,
       [
-<<<<<<< HEAD
         userIdKey(userId),
-=======
-        userId,
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
         String(eventId),
         gross,
         platformFee,
@@ -1837,11 +1776,6 @@ export async function reviewWithdrawal(req, res) {
 
 /** GET /api/admin/banks – Nigerian banks and wallets ({ name, code }). */
 export async function getBanks(req, res) {
-<<<<<<< HEAD
-  const { NIGERIAN_BANKS_FALLBACK } = await import('./nigerianBanks.js');
-
-=======
->>>>>>> 62fd3a98ac2ae4840026d4afdcbc4f437ef80671
   const normalize = (rows) => {
     const byCode = new Map();
     for (const row of rows || []) {
