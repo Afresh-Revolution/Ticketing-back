@@ -1555,14 +1555,30 @@ async function insertWithdrawalRequest({ userId, eventId, gross, platformFee, ne
   throw new Error('Failed to insert withdrawal request');
 }
 
+function withdrawalNetAmount(w) {
+  const gross = Number(w.grossAmount) || 0;
+  const fee = Number(w.platformFee) || 0;
+  const storedNet = Number(w.netAmount ?? w.amount) || 0;
+  if (storedNet > 0 && (gross <= 0 || storedNet <= gross)) return storedNet;
+  if (gross > 0) {
+    const computedFee = fee > 0 ? fee : Math.round(gross * 0.15 * 100) / 100;
+    return Math.round((gross - computedFee) * 100) / 100;
+  }
+  return storedNet;
+}
+
 function mapWithdrawalRow(w, extras = {}) {
+  const gross = Number(w.grossAmount) || 0;
+  const platformFee =
+    Number(w.platformFee) || (gross > 0 ? Math.round(gross * 0.15 * 100) / 100 : 0);
+  const netAmount = withdrawalNetAmount({ ...w, grossAmount: gross, platformFee });
   return {
     id: String(w.id),
     eventId: String(w.eventId),
     adminId: String(w.userId ?? w.adminId ?? ''),
-    grossAmount: Number(w.grossAmount) || 0,
-    platformFee: Number(w.platformFee) || 0,
-    netAmount: Number(w.netAmount ?? w.amount) || 0,
+    grossAmount: gross,
+    platformFee,
+    netAmount,
     status: w.status || 'pending',
     paystackReference: w.paystackReference ?? null,
     createdAt: w.createdAt ?? '',
@@ -1574,6 +1590,71 @@ function mapWithdrawalRow(w, extras = {}) {
     accountNumber: w.accountNumber ?? extras.accountNumber ?? null,
     accountName: w.accountName ?? extras.accountName ?? null,
   };
+}
+
+async function fetchWithdrawalWithDetails(whereSql, params) {
+  const result = await query(
+    `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
+     FROM "Withdrawal" w
+     JOIN "User" u ON ${withdrawalUserJoinSql('w')}
+     LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
+     WHERE ${whereSql}`,
+    params
+  ).catch(() => ({ rows: [] }));
+  return result.rows?.[0] || null;
+}
+
+async function findWithdrawalForReview(withdrawalId) {
+  const key = String(withdrawalId);
+  let row = await fetchWithdrawalWithDetails('w.id::text = $1::text', [key]);
+  if (row) return row;
+  row = await fetchWithdrawalWithDetails(
+    `w."eventId"::text = $1::text AND w."status" = 'pending'`,
+    [key]
+  );
+  return row;
+}
+
+async function patchWithdrawalStatus(row, { newStatus, reviewerId }) {
+  const cols = await getPublicTableColumns('Withdrawal');
+  const byName = Object.fromEntries(cols.map((c) => [c.column_name, c]));
+  const sets = ['"status" = $1'];
+  const params = [newStatus];
+  let n = 2;
+
+  if (byName.reviewedBy) {
+    sets.push(`"reviewedBy" = $${n}`);
+    const rv = reviewerId != null && String(reviewerId).trim() !== '' ? reviewerId : null;
+    params.push(coerceColumnValue(byName.reviewedBy.data_type, rv));
+    n += 1;
+  }
+  if (byName.reviewedAt) sets.push('"reviewedAt" = NOW()');
+  if (byName.updatedAt) sets.push('"updatedAt" = NOW()');
+
+  const idKey = row.id != null ? String(row.id) : null;
+  const eventKey = row.eventId != null ? String(row.eventId) : null;
+
+  if (idKey != null) {
+    params.push(idKey);
+    const sql = `UPDATE "Withdrawal" SET ${sets.join(', ')} WHERE id::text = $${n}::text RETURNING *`;
+    const result = await query(sql, params).catch((err) => {
+      console.error('patchWithdrawalStatus by id', err.message);
+      return { rows: [] };
+    });
+    if (result.rows?.length) return result.rows[0];
+  }
+
+  if (eventKey != null) {
+    const paramsEv = [...params.slice(0, -1), eventKey];
+    const sql = `UPDATE "Withdrawal" SET ${sets.join(', ')} WHERE "eventId"::text = $${n}::text AND "status" = 'pending' RETURNING *`;
+    const result = await query(sql, paramsEv).catch((err) => {
+      console.error('patchWithdrawalStatus by eventId', err.message);
+      return { rows: [] };
+    });
+    if (result.rows?.length) return result.rows[0];
+  }
+
+  return null;
 }
 
 async function fetchPendingWithdrawalRequests() {
@@ -1629,8 +1710,6 @@ export async function getWithdrawPage(req, res) {
     const revParams = superAdmin ? [] : [userIdText];
     const revResult = await query(revSql, revParams).catch(() => ({ rows: [{ total: 0 }] }));
     kpi.totalGross = Number(revResult.rows?.[0]?.total) || 0;
-    kpi.totalFees = Math.round(kpi.totalGross * 0.15);
-    kpi.availableToWithdraw = kpi.totalGross - kpi.totalFees;
 
     const eventsSql = superAdmin
       ? `SELECT e.id, e.title, e.date, e."imageUrl", e."createdBy",
@@ -1692,6 +1771,23 @@ export async function getWithdrawPage(req, res) {
     const withParams = superAdmin ? [] : [userIdKey(userId)];
     const withResult = await query(withSql, withParams).catch(() => ({ rows: [] }));
     const withdrawals = (withResult.rows || []).map((w) => mapWithdrawalRow(w));
+
+    const completedWithdrawals = withdrawals.filter((w) => w.status === 'completed');
+    const completedGrossTotal = completedWithdrawals.reduce(
+      (sum, w) => sum + (Number(w.grossAmount) || 0),
+      0
+    );
+    const collectedFeesTotal = completedWithdrawals.reduce(
+      (sum, w) => sum + (Number(w.platformFee) || 0),
+      0
+    );
+    const remainingGross = Math.max(0, kpi.totalGross - completedGrossTotal);
+
+    kpi.totalFees = superAdmin
+      ? collectedFeesTotal
+      : Math.round(kpi.totalGross * 0.15 * 100) / 100;
+    // Only the net (85%) of events not yet paid out — never subtract gross + fee again
+    kpi.availableToWithdraw = Math.round(remainingGross * 0.85 * 100) / 100;
 
     const pendingRequests = superAdmin ? await fetchPendingWithdrawalRequests() : [];
 
@@ -1890,31 +1986,17 @@ export async function reviewWithdrawal(req, res) {
     }
 
     const reviewerId = getUserId(req);
-    const wResult = await query(
-      `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
-       FROM "Withdrawal" w
-       JOIN "User" u ON u.id::text = COALESCE(w."userId", w."adminId")::text
-       LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
-       WHERE w.id::text = $1::text`,
-      [String(withdrawalId)]
-    ).catch(() => ({ rows: [] }));
-    if (!wResult.rows?.length) return res.status(404).json({ error: 'Withdrawal request not found' });
-    const w = wResult.rows[0];
+    const w = await findWithdrawalForReview(withdrawalId);
+    if (!w) return res.status(404).json({ error: 'Withdrawal request not found' });
     if (w.status !== 'pending') {
       return res.status(409).json({ error: `Request is already ${w.status}` });
     }
 
     const newStatus = action === 'approve' ? 'completed' : 'rejected';
-    const updated = await query(
-      `UPDATE "Withdrawal"
-       SET "status" = $1, "reviewedBy" = $2::text, "reviewedAt" = NOW(), "updatedAt" = NOW()
-       WHERE id::text = $3::text
-       RETURNING *`,
-      [newStatus, String(reviewerId ?? ''), String(withdrawalId)]
-    ).catch(() => ({ rows: [] }));
-    if (!updated.rows?.length) return res.status(500).json({ error: 'Failed to update withdrawal' });
+    const updatedRow = await patchWithdrawalStatus(w, { newStatus, reviewerId });
+    if (!updatedRow) return res.status(500).json({ error: 'Failed to update withdrawal' });
 
-    const mapped = mapWithdrawalRow(updated.rows[0], {
+    const mapped = mapWithdrawalRow(updatedRow, {
       admin_name: w.admin_name,
       admin_email: w.admin_email,
       event_title: w.event_title,
@@ -1925,7 +2007,7 @@ export async function reviewWithdrawal(req, res) {
         to: w.admin_email,
         adminName: w.admin_name,
         eventTitle: w.event_title,
-        netAmount: w.netAmount ?? w.amount,
+        netAmount: withdrawalNetAmount(w),
         bankName: w.bankName,
         accountNumber: w.accountNumber,
       }).catch((err) => console.error('[withdraw] approval email failed', err.message));
