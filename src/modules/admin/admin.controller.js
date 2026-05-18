@@ -1482,6 +1482,7 @@ async function buildWithdrawalInsert({ userId, eventId, gross, platformFee, netA
     grossAmount: gross,
     platformFee: platformFee,
     amount: netAmount,
+    netAmount,
     status: 'pending',
     bankName: bank?.bankName || '',
     bankCode: bank?.bankCode || '',
@@ -1506,6 +1507,7 @@ async function buildWithdrawalInsert({ userId, eventId, gross, platformFee, netA
     'grossAmount',
     'platformFee',
     'amount',
+    'netAmount',
     'status',
     'bankName',
     'bankCode',
@@ -1520,7 +1522,7 @@ async function buildWithdrawalInsert({ userId, eventId, gross, platformFee, netA
   }
 
   const returning = ['"id"'];
-  for (const key of ['amount', 'grossAmount', 'platformFee', 'status']) {
+  for (const key of ['amount', 'netAmount', 'grossAmount', 'platformFee', 'status']) {
     if (byName[key]) returning.push(`"${key}"`);
   }
 
@@ -1560,7 +1562,7 @@ function mapWithdrawalRow(w, extras = {}) {
     adminId: String(w.userId ?? w.adminId ?? ''),
     grossAmount: Number(w.grossAmount) || 0,
     platformFee: Number(w.platformFee) || 0,
-    netAmount: Number(w.amount) || 0,
+    netAmount: Number(w.netAmount ?? w.amount) || 0,
     status: w.status || 'pending',
     paystackReference: w.paystackReference ?? null,
     createdAt: w.createdAt ?? '',
@@ -1863,7 +1865,7 @@ export async function createWithdrawal(req, res) {
       message: 'Withdrawal request sent to super admin for approval',
       withdrawal: {
         id: row.id,
-        net: Number(row.amount) || 0,
+        net: Number(row.netAmount ?? row.amount) || 0,
         gross: Number(row.grossAmount) || 0,
         status: row.status,
       },
@@ -1923,7 +1925,7 @@ export async function reviewWithdrawal(req, res) {
         to: w.admin_email,
         adminName: w.admin_name,
         eventTitle: w.event_title,
-        netAmount: w.amount,
+        netAmount: w.netAmount ?? w.amount,
         bankName: w.bankName,
         accountNumber: w.accountNumber,
       }).catch((err) => console.error('[withdraw] approval email failed', err.message));
