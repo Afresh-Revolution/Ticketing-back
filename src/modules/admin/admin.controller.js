@@ -2,7 +2,12 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { query, createId } from '../../shared/config/db.js';
 import { insertTopUserRecord } from '../landing/topUsers/topUsers.model.js';
-import { sendTicketEmail } from '../../shared/services/email.service.js';
+import {
+  sendTicketEmail,
+  sendWithdrawalRequestEmail,
+  sendWithdrawalApprovedEmail,
+  sendWithdrawalRejectedEmail,
+} from '../../shared/services/email.service.js';
 import { uploadVideoBufferToCloudinary, deleteVideoFromCloudinary, isCloudinaryConfigured } from '../../shared/services/cloudinary.service.js';
 import { listLandingVideos, createLandingVideo, updateLandingVideo, deleteLandingVideo } from '../landing/videos/videos.model.js';
 
@@ -995,14 +1000,23 @@ export async function resendSaleTicket(req, res) {
   }
 }
 
-/** DELETE /api/admin/sales/:orderId – delete an online sale (and linked rows) for owned event/admin scope. */
+/** DELETE /api/admin/sales/:orderId – delete an online or walk-in sale for owned event/admin scope. */
 export async function deleteSale(req, res) {
   try {
     const orderId = String(req.params.orderId || '').trim();
     if (!orderId) return res.status(400).json({ error: 'Order id is required' });
 
     const sale = await getSaleByIdForAdmin(orderId, req);
-    if (!sale) return res.status(404).json({ error: 'Sale not found' });
+    if (!sale) {
+      const walkInId = Number.parseInt(orderId, 10);
+      if (Number.isNaN(walkInId)) return res.status(404).json({ error: 'Sale not found' });
+
+      const walkInSale = await getWalkInSaleByIdForAdmin(walkInId, req);
+      if (!walkInSale) return res.status(404).json({ error: 'Sale not found' });
+
+      await query('DELETE FROM "WalkInSale" WHERE id = $1', [walkInId]);
+      return res.json({ message: 'Sale deleted', id: String(walkInId), source: 'walk_in' });
+    }
 
     // Delete dependents first for schemas without ON DELETE CASCADE.
     await query(`DELETE FROM "ScanLog" WHERE "orderId"::text = $1`, [orderId]).catch((e) => {
@@ -1274,9 +1288,109 @@ function getUserId(req) {
   return req.user?.id ?? req.userId;
 }
 
+let withdrawalSchemaReady = false;
+
+/** Create withdrawal tables if missing (idempotent). */
+async function ensureWithdrawalSchema() {
+  if (withdrawalSchemaReady) return true;
+  await query(`
+    CREATE TABLE IF NOT EXISTS "BankAccount" (
+      "id" SERIAL PRIMARY KEY,
+      "userId" INTEGER NOT NULL UNIQUE,
+      "accountNumber" VARCHAR(20) NOT NULL,
+      "bankCode" VARCHAR(20) NOT NULL,
+      "accountName" VARCHAR(255) NOT NULL,
+      "bankName" VARCHAR(255) NOT NULL,
+      "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `).catch(() => ({}));
+  await query(`
+    CREATE TABLE IF NOT EXISTS "Withdrawal" (
+      "id" SERIAL PRIMARY KEY,
+      "userId" INTEGER NOT NULL,
+      "eventId" TEXT NOT NULL,
+      "grossAmount" NUMERIC(14, 2) NOT NULL DEFAULT 0,
+      "platformFee" NUMERIC(14, 2) NOT NULL DEFAULT 0,
+      "amount" NUMERIC(14, 2) NOT NULL DEFAULT 0,
+      "status" VARCHAR(32) NOT NULL DEFAULT 'pending',
+      "paystackReference" VARCHAR(255),
+      "bankName" VARCHAR(255),
+      "bankCode" VARCHAR(20),
+      "accountNumber" VARCHAR(20),
+      "accountName" VARCHAR(255),
+      "reviewedBy" INTEGER,
+      "reviewedAt" TIMESTAMPTZ,
+      "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `).catch(() => ({}));
+  withdrawalSchemaReady = true;
+  return true;
+}
+
+async function getEventGrossRevenue(eventId) {
+  const rev = await query(
+    `SELECT COALESCE(SUM(o."totalAmount"), 0) AS gross
+     FROM "Order" o
+     WHERE o."eventId"::text = $1::text AND o."status" = 'paid'`,
+    [String(eventId)]
+  ).catch(() => ({ rows: [{ gross: 0 }] }));
+  return Number(rev.rows?.[0]?.gross) || 0;
+}
+
+function mapWithdrawalRow(w, extras = {}) {
+  return {
+    id: String(w.id),
+    eventId: String(w.eventId),
+    adminId: String(w.userId ?? w.adminId ?? ''),
+    grossAmount: Number(w.grossAmount) || 0,
+    platformFee: Number(w.platformFee) || 0,
+    netAmount: Number(w.amount) || 0,
+    status: w.status || 'pending',
+    paystackReference: w.paystackReference ?? null,
+    createdAt: w.createdAt ?? '',
+    event_title: extras.event_title ?? w.event_title ?? '',
+    admin_name: extras.admin_name ?? w.admin_name ?? null,
+    admin_email: extras.admin_email ?? w.admin_email ?? null,
+    bankName: w.bankName ?? extras.bankName ?? null,
+    bankCode: w.bankCode ?? extras.bankCode ?? null,
+    accountNumber: w.accountNumber ?? extras.accountNumber ?? null,
+    accountName: w.accountName ?? extras.accountName ?? null,
+  };
+}
+
+async function fetchPendingWithdrawalRequests() {
+  const result = await query(
+    `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
+     FROM "Withdrawal" w
+     JOIN "User" u ON u.id = w."userId"
+     LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
+     WHERE w.status = 'pending'
+     ORDER BY w."createdAt" ASC`
+  ).catch(() => ({ rows: [] }));
+  return (result.rows || []).map((w) => mapWithdrawalRow(w));
+}
+
+async function notifySuperAdminsOfWithdrawal(payload) {
+  const admins = await query(
+    `SELECT email FROM "User" WHERE role = 'superadmin' AND email IS NOT NULL`
+  ).catch(() => ({ rows: [] }));
+  const emails = (admins.rows || []).map((r) => r.email).filter(Boolean);
+  if (!emails.length) return;
+  await Promise.all(
+    emails.map((to) =>
+      sendWithdrawalRequestEmail({ to, ...payload }).catch((err) => {
+        console.error('[withdraw] notify super admin failed', to, err.message);
+      })
+    )
+  );
+}
+
 /** GET /api/admin/withdraw – full withdraw page: kpi, events, withdrawals, bankAccount, isSuperAdmin. */
 export async function getWithdrawPage(req, res) {
   try {
+    await ensureWithdrawalSchema();
     const superAdmin = isSuperAdmin(req);
     const userId = getUserId(req);
     if (userId == null && userId !== 0) {
@@ -1338,24 +1452,22 @@ export async function getWithdrawPage(req, res) {
       withdrawn_at: null,
     }));
 
-    const withResult = await query(
-      'SELECT * FROM "Withdrawal" WHERE "userId" = $1 ORDER BY "createdAt" DESC',
-      [userId]
-    ).catch(() => ({ rows: [] }));
-    const withdrawals = (withResult.rows || []).map((w) => ({
-      id: String(w.id),
-      eventId: String(w.eventId),
-      adminId: String(w.userId ?? w.adminId ?? ''),
-      grossAmount: 0,
-      platformFee: 0,
-      netAmount: Number(w.amount) || 0,
-      status: w.status || 'pending',
-      paystackReference: w.paystackReference ?? null,
-      createdAt: w.createdAt ?? '',
-      event_title: '',
-      admin_name: null,
-      admin_email: null,
-    }));
+    const withSql = superAdmin
+      ? `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
+         FROM "Withdrawal" w
+         JOIN "User" u ON u.id = w."userId"
+         LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
+         ORDER BY w."createdAt" DESC`
+      : `SELECT w.*, e.title AS event_title
+         FROM "Withdrawal" w
+         LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
+         WHERE w."userId" = $1
+         ORDER BY w."createdAt" DESC`;
+    const withParams = superAdmin ? [] : [userId];
+    const withResult = await query(withSql, withParams).catch(() => ({ rows: [] }));
+    const withdrawals = (withResult.rows || []).map((w) => mapWithdrawalRow(w));
+
+    const pendingRequests = superAdmin ? await fetchPendingWithdrawalRequests() : [];
 
     const latestByEvent = new Map();
     for (const w of withdrawals) {
@@ -1399,6 +1511,7 @@ export async function getWithdrawPage(req, res) {
       kpi,
       events,
       withdrawals,
+      pendingRequests,
       bankAccount,
       isSuperAdmin: !!superAdmin,
     });
@@ -1408,6 +1521,7 @@ export async function getWithdrawPage(req, res) {
       kpi: { totalGross: 0, availableToWithdraw: 0, totalFees: 0 },
       events: [],
       withdrawals: [],
+      pendingRequests: [],
       bankAccount: null,
       isSuperAdmin: false,
     });
@@ -1428,57 +1542,229 @@ export async function listWithdrawals(req, res) {
   }
 }
 
-/** Withdrawals: admins can only withdraw from events they created; superadmin only from events with createdBy null. */
+/** POST /api/admin/withdraw/:eventId – admin submits withdrawal request for super admin approval. */
 export async function createWithdrawal(req, res) {
   try {
+    await ensureWithdrawalSchema();
     const eventId = req.params.eventId;
     if (!eventId) return res.status(400).json({ error: 'eventId required' });
     const userId = getUserId(req);
-    const superAdmin = isSuperAdmin(req);
-
-    const eventRows = await query('SELECT "id", "createdBy" FROM "Event" WHERE "id" = $1', [eventId]).catch(() => ({ rows: [] }));
-    if (!eventRows.rows?.length) return res.status(404).json({ error: 'Event not found' });
-    const event = eventRows.rows[0];
-    const createdBy = event.createdBy;
-
-    if (superAdmin) {
-      if (createdBy != null && Number(createdBy) !== 0) {
-        return res.status(403).json({ error: 'Super admin can only withdraw from their own events, not another admin\'s' });
-      }
-    } else {
-      if (String(createdBy) !== String(userId)) {
-        return res.status(403).json({ error: 'You can only withdraw from events you created' });
-      }
+    if (isSuperAdmin(req)) {
+      return res.status(403).json({ error: 'Super admins approve requests in Pending Requests, they do not submit withdrawal requests.' });
     }
 
-    const result = await query(
-      `INSERT INTO "Withdrawal" ("userId", "eventId", "amount", "status") VALUES ($1, $2, 0, 'pending') RETURNING "id", "amount"`,
-      [userId, eventId]
+    const eventRows = await query(
+      'SELECT "id", "title", "createdBy" FROM "Event" WHERE "id" = $1',
+      [eventId]
     ).catch(() => ({ rows: [] }));
-    if (!result.rows?.length) return res.status(501).json({ error: 'Withdrawals not configured' });
+    if (!eventRows.rows?.length) return res.status(404).json({ error: 'Event not found' });
+    const event = eventRows.rows[0];
+    if (String(event.createdBy) !== String(userId)) {
+      return res.status(403).json({ error: 'You can only withdraw from events you created' });
+    }
+
+    const baResult = await query(
+      'SELECT "accountNumber", "bankCode", "accountName", "bankName" FROM "BankAccount" WHERE "userId" = $1',
+      [userId]
+    ).catch(() => ({ rows: [] }));
+    if (!baResult.rows?.length) {
+      return res.status(400).json({ error: 'Set up your bank account before requesting a withdrawal' });
+    }
+    const bank = baResult.rows[0];
+
+    const existing = await query(
+      `SELECT "status" FROM "Withdrawal"
+       WHERE "userId" = $1 AND "eventId"::text = $2::text
+         AND status IN ('pending', 'completed')
+       ORDER BY "createdAt" DESC LIMIT 1`,
+      [userId, String(eventId)]
+    ).catch(() => ({ rows: [] }));
+    const existingStatus = existing.rows?.[0]?.status;
+    if (existingStatus === 'pending') {
+      return res.status(409).json({ error: 'A withdrawal request is already pending for this event' });
+    }
+    if (existingStatus === 'completed') {
+      return res.status(409).json({ error: 'This event has already been withdrawn' });
+    }
+
+    const gross = await getEventGrossRevenue(eventId);
+    if (gross <= 0) {
+      return res.status(400).json({ error: 'No paid revenue to withdraw for this event' });
+    }
+    const platformFee = Math.round(gross * 0.15 * 100) / 100;
+    const netAmount = Math.round((gross - platformFee) * 100) / 100;
+
+    const adminRow = await query(
+      'SELECT name, email FROM "User" WHERE id = $1',
+      [userId]
+    ).catch(() => ({ rows: [] }));
+    const adminName = adminRow.rows?.[0]?.name || 'Admin';
+    const adminEmail = adminRow.rows?.[0]?.email || '';
+
+    const result = await query(
+      `INSERT INTO "Withdrawal" (
+        "userId", "eventId", "grossAmount", "platformFee", "amount", "status",
+        "bankName", "bankCode", "accountNumber", "accountName"
+      ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
+      RETURNING "id", "amount", "grossAmount", "platformFee", "status"`,
+      [
+        userId,
+        String(eventId),
+        gross,
+        platformFee,
+        netAmount,
+        bank.bankName || '',
+        bank.bankCode || '',
+        bank.accountNumber || '',
+        bank.accountName || '',
+      ]
+    ).catch((err) => {
+      console.error('createWithdrawal insert', err);
+      return { rows: [] };
+    });
+    if (!result.rows?.length) return res.status(500).json({ error: 'Failed to create withdrawal request' });
     const row = result.rows[0];
+
+    await notifySuperAdminsOfWithdrawal({
+      adminName,
+      adminEmail,
+      eventTitle: event.title || 'Event',
+      grossAmount: gross,
+      platformFee,
+      netAmount,
+      bankName: bank.bankName,
+      accountName: bank.accountName,
+      accountNumber: bank.accountNumber,
+    });
+
     return res.status(201).json({
-      withdrawal: { id: row.id, net: Number(row.amount) || 0 },
+      message: 'Withdrawal request sent to super admin for approval',
+      withdrawal: {
+        id: row.id,
+        net: Number(row.amount) || 0,
+        gross: Number(row.grossAmount) || 0,
+        status: row.status,
+      },
     });
   } catch (err) {
     return res.status(500).json({ error: err.message || 'Failed' });
   }
 }
 
-/** GET /api/admin/banks – list banks (e.g. Paystack). */
+/** PATCH /api/admin/withdraw/:withdrawalId/review – super admin approves or rejects a request. */
+export async function reviewWithdrawal(req, res) {
+  try {
+    await ensureWithdrawalSchema();
+    if (!isSuperAdmin(req)) {
+      return res.status(403).json({ error: 'Only super admin can review withdrawal requests' });
+    }
+    const withdrawalId = req.params.withdrawalId;
+    const action = String(req.body?.action || '').toLowerCase();
+    if (!withdrawalId) return res.status(400).json({ error: 'withdrawalId required' });
+    if (action !== 'approve' && action !== 'disapprove') {
+      return res.status(400).json({ error: 'action must be approve or disapprove' });
+    }
+
+    const reviewerId = getUserId(req);
+    const wResult = await query(
+      `SELECT w.*, u.name AS admin_name, u.email AS admin_email, e.title AS event_title
+       FROM "Withdrawal" w
+       JOIN "User" u ON u.id = w."userId"
+       LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
+       WHERE w.id = $1`,
+      [withdrawalId]
+    ).catch(() => ({ rows: [] }));
+    if (!wResult.rows?.length) return res.status(404).json({ error: 'Withdrawal request not found' });
+    const w = wResult.rows[0];
+    if (w.status !== 'pending') {
+      return res.status(409).json({ error: `Request is already ${w.status}` });
+    }
+
+    const newStatus = action === 'approve' ? 'completed' : 'rejected';
+    const updated = await query(
+      `UPDATE "Withdrawal"
+       SET "status" = $1, "reviewedBy" = $2, "reviewedAt" = NOW(), "updatedAt" = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [newStatus, reviewerId, withdrawalId]
+    ).catch(() => ({ rows: [] }));
+    if (!updated.rows?.length) return res.status(500).json({ error: 'Failed to update withdrawal' });
+
+    const mapped = mapWithdrawalRow(updated.rows[0], {
+      admin_name: w.admin_name,
+      admin_email: w.admin_email,
+      event_title: w.event_title,
+    });
+
+    if (action === 'approve' && w.admin_email) {
+      await sendWithdrawalApprovedEmail({
+        to: w.admin_email,
+        adminName: w.admin_name,
+        eventTitle: w.event_title,
+        netAmount: w.amount,
+        bankName: w.bankName,
+        accountNumber: w.accountNumber,
+      }).catch((err) => console.error('[withdraw] approval email failed', err.message));
+    } else if (action === 'disapprove' && w.admin_email) {
+      await sendWithdrawalRejectedEmail({
+        to: w.admin_email,
+        adminName: w.admin_name,
+        eventTitle: w.event_title,
+      }).catch((err) => console.error('[withdraw] rejection email failed', err.message));
+    }
+
+    return res.json({
+      message: action === 'approve' ? 'Withdrawal approved' : 'Withdrawal disapproved',
+      withdrawal: mapped,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed' });
+  }
+}
+
+/** GET /api/admin/banks – Nigerian banks and wallets ({ name, code }). */
 export async function getBanks(req, res) {
+  const { NIGERIAN_BANKS_FALLBACK } = await import('./nigerianBanks.js');
+
+  const normalize = (rows) => {
+    const byCode = new Map();
+    for (const row of rows || []) {
+      const code = String(row.code ?? row.bank_code ?? '').trim();
+      const name = String(row.name ?? row.bank_name ?? '').trim();
+      if (!code || !name) continue;
+      if (!byCode.has(code)) byCode.set(code, { code, name });
+    }
+    return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name));
+  };
+
   try {
     const { config } = await import('../../shared/config/env.js');
     if (config.paystackSecretKey) {
-      const r = await fetch('https://api.paystack.co/bank?currency=NGN&perPage=100', {
-        headers: { Authorization: `Bearer ${config.paystackSecretKey}` },
-      });
-      const d = await r.json();
-      if (d.data) return res.json(d.data);
+      const byCode = new Map();
+      let page = 1;
+      while (page <= 50) {
+        const r = await fetch(
+          `https://api.paystack.co/bank?currency=NGN&perPage=100&page=${page}`,
+          { headers: { Authorization: `Bearer ${config.paystackSecretKey}` } }
+        );
+        const d = await r.json();
+        if (!d.status || !Array.isArray(d.data) || d.data.length === 0) break;
+        for (const b of d.data) {
+          if (b.active === false || b.supports_transfer === false) continue;
+          const code = String(b.code ?? '').trim();
+          const name = String(b.name ?? '').trim();
+          if (code && name && !byCode.has(code)) byCode.set(code, { code, name });
+        }
+        if (!d.meta?.next) break;
+        page += 1;
+      }
+      if (byCode.size > 0) {
+        return res.json([...byCode.values()].sort((a, b) => a.name.localeCompare(b.name)));
+      }
     }
-    return res.json([]);
+    return res.json(normalize(NIGERIAN_BANKS_FALLBACK));
   } catch {
-    return res.json([]);
+    return res.json(normalize(NIGERIAN_BANKS_FALLBACK));
   }
 }
 

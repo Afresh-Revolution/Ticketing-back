@@ -32,6 +32,7 @@ router.patch('/events/:eventId/visibility', requireAuth, adminController.patchEv
 router.get('/events/:eventId', requireAuth, adminController.getAdminEvent);
 router.get('/withdraw', requireAuth, adminController.getWithdrawPage);
 router.post('/withdraw/:eventId', requireAuth, adminController.createWithdrawal);
+router.patch('/withdraw/:withdrawalId/review', requireAuth, requireSuperAdmin, adminController.reviewWithdrawal);
 router.get('/banks', requireAuth, adminController.getBanks);
 router.get('/bank-account', requireAuth, adminController.getBankAccount);
 router.post('/bank-account', requireAuth, adminController.saveBankAccount);

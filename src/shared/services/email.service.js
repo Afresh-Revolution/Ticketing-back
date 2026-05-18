@@ -108,3 +108,77 @@ export async function sendTicketEmail({ to, fullName, ticketCode, eventTitle, ev
   `;
   return sendEmail({ to, subject, html });
 }
+
+function naira(amount) {
+  return `₦${Number(amount || 0).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** Notify super admins of a new withdrawal request. */
+export function sendWithdrawalRequestEmail({
+  to,
+  adminName,
+  adminEmail,
+  eventTitle,
+  grossAmount,
+  platformFee,
+  netAmount,
+  bankName,
+  accountName,
+  accountNumber,
+}) {
+  const subject = `Withdrawal request – ${eventTitle || 'Event'}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
+      <h2 style="color: #791A94;">New withdrawal request</h2>
+      <p>An admin has requested a withdrawal. Review it in the admin dashboard.</p>
+      <table style="width:100%; border-collapse: collapse; font-size: 14px;">
+        <tr><td style="padding: 6px 0; color:#666;">Admin</td><td style="padding: 6px 0;"><strong>${adminName || '—'}</strong> (${adminEmail || '—'})</td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Event</td><td style="padding: 6px 0;"><strong>${eventTitle || '—'}</strong></td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Gross</td><td style="padding: 6px 0;">${naira(grossAmount)}</td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Platform fee (15%)</td><td style="padding: 6px 0;">${naira(platformFee)}</td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Net payout</td><td style="padding: 6px 0;"><strong>${naira(netAmount)}</strong></td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Bank</td><td style="padding: 6px 0;">${bankName || '—'}</td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Account name</td><td style="padding: 6px 0;">${accountName || '—'}</td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Account number</td><td style="padding: 6px 0;">${accountNumber || '—'}</td></tr>
+      </table>
+    </div>
+  `;
+  return sendEmail({ to, subject, html });
+}
+
+/** Notify admin their withdrawal was approved. */
+export function sendWithdrawalApprovedEmail({
+  to,
+  adminName,
+  eventTitle,
+  netAmount,
+  bankName,
+  accountNumber,
+}) {
+  const subject = `Withdrawal approved – ${eventTitle || 'Event'}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
+      <h2 style="color: #166534;">Withdrawal approved</h2>
+      <p>Hi ${adminName || 'there'},</p>
+      <p>Your withdrawal request for <strong>${eventTitle || 'your event'}</strong> has been approved.</p>
+      <p style="font-size: 18px;"><strong>Net amount: ${naira(netAmount)}</strong></p>
+      <p style="color:#666; font-size: 14px;">Funds will be sent to ${bankName || 'your bank'} ···${String(accountNumber || '').slice(-4)}.</p>
+      <p style="color:#999; font-size: 12px;">Thank you for using Gatewave.</p>
+    </div>
+  `;
+  return sendEmail({ to, subject, html });
+}
+
+/** Notify admin their withdrawal was rejected. */
+export function sendWithdrawalRejectedEmail({ to, adminName, eventTitle }) {
+  const subject = `Withdrawal not approved – ${eventTitle || 'Event'}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
+      <h2 style="color: #991b1b;">Withdrawal not approved</h2>
+      <p>Hi ${adminName || 'there'},</p>
+      <p>Your withdrawal request for <strong>${eventTitle || 'your event'}</strong> was not approved by the super admin.</p>
+      <p style="color:#666; font-size: 14px;">You may submit a new request from the Withdraw page if needed.</p>
+    </div>
+  `;
+  return sendEmail({ to, subject, html });
+}
