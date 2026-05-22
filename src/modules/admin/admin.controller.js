@@ -1436,6 +1436,28 @@ const EVENT_SALES_BY_EVENT_SQL = `
   GROUP BY s."eventId"
 `;
 
+/** Sum completed withdrawal gross amounts per event. */
+function sumCompletedGrossByEvent(withdrawals) {
+  const map = new Map();
+  for (const w of withdrawals) {
+    if (String(w.status || '').toLowerCase() !== 'completed') continue;
+    const eventId = String(w.eventId || '');
+    if (!eventId) continue;
+    map.set(eventId, (map.get(eventId) || 0) + (Number(w.grossAmount) || 0));
+  }
+  return map;
+}
+
+/** Remaining paid gross for an event after completed withdrawals. */
+function eventRemainingGross(eventGrossRevenue, withdrawnGross) {
+  return Math.max(0, (Number(eventGrossRevenue) || 0) - (Number(withdrawnGross) || 0));
+}
+
+/** Net amount organizer can withdraw (85% of remaining gross). */
+function netFromRemainingGross(remainingGross) {
+  return Math.round(Math.max(0, remainingGross) * 0.85 * 100) / 100;
+}
+
 /** Paid revenue + sold ticket count for an event (paid and pending sales count as sold). */
 async function getEventWithdrawalMetrics(eventId) {
   const result = await query(
@@ -1826,6 +1848,18 @@ export async function getWithdrawPage(req, res) {
 
     const pendingRequests = superAdmin ? await fetchPendingWithdrawalRequests() : [];
 
+    const withdrawnGrossByEvent = sumCompletedGrossByEvent(withdrawals);
+    const withdrawnNetByEvent = new Map();
+    for (const w of withdrawals) {
+      if (String(w.status || '').toLowerCase() !== 'completed') continue;
+      const eventId = String(w.eventId || '');
+      if (!eventId) continue;
+      withdrawnNetByEvent.set(
+        eventId,
+        (withdrawnNetByEvent.get(eventId) || 0) + (Number(w.netAmount) || 0)
+      );
+    }
+
     const latestByEvent = new Map();
     for (const w of withdrawals) {
       const current = latestByEvent.get(w.eventId);
@@ -1839,12 +1873,29 @@ export async function getWithdrawPage(req, res) {
     }
     events = events.map((ev) => {
       const latest = latestByEvent.get(ev.id);
-      if (!latest) return ev;
+      const withdrawnGross = withdrawnGrossByEvent.get(ev.id) || 0;
+      const remainingGross = eventRemainingGross(ev.gross_revenue, withdrawnGross);
+      const available_to_withdraw = netFromRemainingGross(remainingGross);
+      const withdrawn_net = withdrawnNetByEvent.get(ev.id) || null;
+
+      let withdrawal_status = null;
+      if (latest?.status === 'pending') {
+        withdrawal_status = 'pending';
+      } else if (available_to_withdraw > 0) {
+        withdrawal_status = 'eligible';
+      } else if (latest?.status === 'completed') {
+        withdrawal_status = 'completed';
+      } else if (latest?.status === 'rejected') {
+        withdrawal_status = 'rejected';
+      }
+
       return {
         ...ev,
-        withdrawal_status: latest.status || null,
-        withdrawn_net: latest.netAmount ?? null,
-        withdrawn_at: latest.createdAt || null,
+        withdrawn_gross: withdrawnGross,
+        available_to_withdraw,
+        withdrawal_status,
+        withdrawn_net: withdrawn_net > 0 ? withdrawn_net : (latest?.netAmount ?? null),
+        withdrawn_at: latest?.createdAt || null,
       };
     });
 
@@ -1934,27 +1985,36 @@ export async function createWithdrawal(req, res) {
 
     const userMatch = await withdrawalUserMatchSql('w');
     const existing = await query(
-      `SELECT "status" FROM "Withdrawal" w
+      `SELECT "status", "grossAmount" FROM "Withdrawal" w
        WHERE ${userMatch}
          AND w."eventId"::text = $2::text
-         AND w."status" IN ('pending', 'completed')
-       ORDER BY w."createdAt" DESC NULLS LAST LIMIT 1`,
+       ORDER BY w."createdAt" DESC NULLS LAST`,
       [userIdKey(userId), String(eventId)]
     ).catch(() => ({ rows: [] }));
-    const existingStatus = existing.rows?.[0]?.status;
-    if (existingStatus === 'pending') {
+    const rows = existing.rows || [];
+    if (rows.some((r) => String(r.status || '').toLowerCase() === 'pending')) {
       return res.status(409).json({ error: 'A withdrawal request is already pending for this event' });
     }
-    if (existingStatus === 'completed') {
-      return res.status(409).json({ error: 'This event has already been withdrawn' });
-    }
 
-    const { gross, ticketsSold } = await getEventWithdrawalMetrics(eventId);
+    const completedGrossTotal = rows
+      .filter((r) => String(r.status || '').toLowerCase() === 'completed')
+      .reduce((sum, r) => sum + (Number(r.grossAmount) || 0), 0);
+
+    const { gross: eventGrossPaid, ticketsSold } = await getEventWithdrawalMetrics(eventId);
     if (ticketsSold <= 0) {
       return res.status(400).json({ error: 'No sold tickets for this event yet' });
     }
+
+    const gross = eventRemainingGross(eventGrossPaid, completedGrossTotal);
+    if (gross <= 0) {
+      return res.status(400).json({ error: 'No remaining balance to withdraw for this event' });
+    }
+
     const platformFee = Math.round(gross * 0.15 * 100) / 100;
-    const netAmount = Math.round((gross - platformFee) * 100) / 100;
+    const netAmount = netFromRemainingGross(gross);
+    if (netAmount <= 0) {
+      return res.status(400).json({ error: 'Available balance must be above ₦0' });
+    }
 
     const adminRow = await query(
       'SELECT name, email FROM "User" WHERE id::text = $1::text',
