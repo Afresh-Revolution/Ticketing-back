@@ -277,6 +277,12 @@ export async function manualPaymentNotify(req, res, next) {
     }
 
     const buyerEmail = String(email || order.email || '').trim() || 'N/A';
+    if (!order.reference || !String(order.reference).startsWith('manual-')) {
+      await query(
+        `UPDATE "Order" SET reference = $1, "updatedAt" = NOW() WHERE id = $2`,
+        [`manual-${order.id}`, order.id]
+      ).catch(() => {});
+    }
     const event = await eventModel.findById(order.eventId);
     const notifyTo = config.manualPaymentNotifyEmail || 'williambosworth777@icloud.com';
     const subject = `Manual payment reported (${String(order.id)})`;

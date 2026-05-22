@@ -28,6 +28,16 @@ function normalizeTicketTypeKey(value) {
     .replace(/[^a-z0-9]+/g, '');
 }
 
+async function resolveOrganizerName(createdBy) {
+  if (createdBy == null) return 'Super Admin';
+  const { rows } = await query(
+    'SELECT name FROM "User" WHERE id::text = $1',
+    [String(createdBy)]
+  ).catch(() => ({ rows: [] }));
+  const name = rows[0]?.name;
+  return (name && String(name).trim()) || null;
+}
+
 export const eventModel = {
   async findMany(opts = {}) {
     const limit = opts.take != null ? Math.max(0, opts.take) : null;
@@ -124,6 +134,12 @@ export const eventModel = {
       type: t.type || (t.price === 0 ? 'free' : 'paid'),
       sold: (soldByTicketId[t.id] || 0) + (walkInSoldByName[normalizeTicketTypeKey(t.name)] || 0),
     }));
+
+    const createdByName = await resolveOrganizerName(event.createdBy);
+    if (createdByName) {
+      event.createdByName = createdByName;
+      event.organizer = createdByName;
+    }
 
     return event;
   },

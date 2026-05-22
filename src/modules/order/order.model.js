@@ -27,7 +27,11 @@ export const orderModel = {
   async create(data) {
     const id = createId();
     const now = new Date().toISOString();
-    
+    const status = data.status ?? 'pending';
+    const reference =
+      data.reference ??
+      (status === 'pending' && Number(data.totalAmount) > 0 ? `manual-${id}` : null);
+
     // Start simple without transaction for now, but in prod use transaction
     // 1. Create Order
     await query(
@@ -42,8 +46,8 @@ export const orderModel = {
         data.phone ?? null,
         data.address ?? null,
         data.totalAmount,
-        data.status ?? 'pending',
-        data.reference ?? null,
+        status,
+        reference,
         data.couponId ?? null,
         data.couponCode ?? null,
         data.originalAmount ?? data.totalAmount,
