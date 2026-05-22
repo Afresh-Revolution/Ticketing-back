@@ -1,67 +1,35 @@
-# Ticketing-back
+# Ticketing-back (API)
 
-Backend for Gatewav Ticketing: auth, organizer (Become an Organizer) flow, and email (OTP).
+GateWav ticketing API. Run from this folder when developing with the frontend in the parent repo.
 
 ## Setup
 
-1. **Install dependencies**
+```bash
+npm install
+cp .env.example .env
+# Edit .env with database and secrets
+```
 
-   ```bash
-   cd Ticketing-back
-   npm install
-   ```
+## Run
 
-2. **Environment**
-   - Copy `.env.example` to `.env` and set:
-     - `DATABASE_URL` – PostgreSQL connection string
-     - `JWT_SECRET` – secret for signing admin/organizer JWTs
-     - `RESEND_API_KEY` and `RESEND_FROM` – for sending OTP emails
-     - `FRONTEND_BASE_URL` – base URL of the frontend (e.g. `http://localhost:5173`) for links in emails
+```bash
+npm run dev
+```
 
-3. **Database**
-   - Create a PostgreSQL database and run the schema:
-     ```bash
-     psql "$DATABASE_URL" -f db/schema.sql
-     ```
-   - For organizer signup only (e.g. adding `username` to existing DB):
-     ```bash
-     psql "$DATABASE_URL" -f db/schema-organizer.sql
-     ```
-   - Or with npm (if `psql` is on your PATH):
-     ```bash
-     npm run db:schema
-     ```
+API listens on `http://localhost:3000` by default.
 
-4. **Run**
-   ```bash
-   npm run dev
-   ```
-   Server listens on `PORT` (default 3000).
+## Frontend
 
-## Schema (Become an Organizer)
+From the parent `Ticketing` folder, Vite uses `http://localhost:3000` in dev unless `VITE_API_URL` is set.
 
-- **db/schema.sql** – Main schema. **User** (id, email, name, username, passwordHash, role, emailVerified) and **VerificationCode** (email, code, type, expiresAt). Organizer form fields: username → `name`, email → `email`, password → `passwordHash`; after OTP, `emailVerified` = true, `role` = 'admin'.
-- **db/schema-organizer.sql** – Optional migration: adds `username` to User and documents organizer OTP type `organizer_verify`.
+```bash
+cd ..
+npm run dev
+```
 
-Verify auth is up: `GET https://your-api/api/auth/health` returns `{ ok: true, endpoints: [...] }`.
+## Recent API behaviour
 
-## API (organizer flow)
-
-| Method | Path                           | Auth | Description |
-| ------ | ------------------------------ | ---- | ----------- |
-| POST   | /api/auth/organizer-signup     | —    | Register as organizer (username, email, password). Sends OTP to email. |
-| POST   | /api/auth/organizer-verify-otp | —    | Verify OTP (email, otp). Sets emailVerified so user can sign in at admin login. |
-| GET    | /api/auth/health              | —    | Returns { ok, endpoints } to confirm auth routes are loaded. |
-
-Other auth: signin, signup, forgot-password, reset-password, resend-verification, create-admin (Super Admin).
-
-## Deploy (e.g. Render)
-
-1. Deploy the repo and set env vars (including `DATABASE_URL`, `JWT_SECRET`, `RESEND_*`, `FRONTEND_BASE_URL`).
-2. Run the schema against the production DB (e.g. `psql $DATABASE_URL -f db/schema.sql`).
-3. After deploy, check `GET https://your-service/api/auth/health` – you should see `organizer-signup` and `organizer-verify-otp` in the list. If you get 404 on `POST /api/auth/organizer-signup`, redeploy so the latest routes are live.
-
-## Troubleshooting
-
-- **500 on organizer-signup** – If the database and signup logic succeed but sending the OTP email fails (e.g. Resend API or TLS error), the server now returns **201** with a message that the email could not be sent, so the flow continues. Check Render logs for `organizerSignup: email send failed` to debug email.
-- **Self-signed certificate in certificate chain** – This can happen when the **backend** calls Resend over HTTPS (e.g. on Render) or when the **frontend** calls the API. On the server: set `ALLOW_INSECURE_TLS_OUTBOUND=1` in your env only if you must (insecure). On the frontend: use a stable HTTPS URL for the API (e.g. Render’s default URL); if you’re behind a corporate proxy, you may need to add a certificate exception in your environment.
+- **Withdrawals:** Multiple payouts per event while balance remains; `POST /api/admin/withdraw/:eventId` uses remaining gross (85% net), not full event total.
+- **Withdraw page:** `GET /api/admin/withdraw` returns `available_to_withdraw` per event.
+- **Manual checkout:** Pending orders get `manual-{orderId}` reference; admin sales list shows each order.
+- **Events:** `GET /api/events/:id` includes `createdByName` / `organizer`.
