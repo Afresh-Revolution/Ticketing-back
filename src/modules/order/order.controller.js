@@ -284,11 +284,19 @@ export async function manualPaymentNotify(req, res, next) {
       ).catch(() => {});
     }
     const event = await eventModel.findById(order.eventId);
-    const notifyTo = config.manualPaymentNotifyEmail || 'williambosworth777@icloud.com';
-    const subject = `Manual payment reported (${String(order.id)})`;
+    const notifyTo =
+      (await eventModel.getOwnerEmail(order.eventId)) ||
+      config.manualPaymentNotifyEmail ||
+      null;
+    if (!notifyTo) {
+      return res.status(500).json({
+        error: 'Could not notify organizer: no owner email for this event',
+      });
+    }
+    const subject = `Payment requested (${String(order.id)})`;
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
-        <h2 style="color:#791A94;">Manual payment notice</h2>
+        <h2 style="color:#791A94;">Payment Notice</h2>
         <p>A buyer tapped <strong>Paid</strong> after transfer instructions (bank checkout).</p>
         <ul>
           <li><strong>Order ID:</strong> ${String(order.id)}</li>
@@ -303,7 +311,7 @@ export async function manualPaymentNotify(req, res, next) {
     `;
     await sendEmail({ to: notifyTo, subject, html });
 
-    return res.json({ message: 'Manual payment notice sent' });
+    return res.json({ message: 'Payment notice sent' });
   } catch (err) {
     next(err);
   }

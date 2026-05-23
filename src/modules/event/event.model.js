@@ -38,7 +38,26 @@ async function resolveOrganizerName(createdBy) {
   return (name && String(name).trim()) || null;
 }
 
+async function resolveOwnerEmail(createdBy) {
+  if (createdBy == null || createdBy === '' || String(createdBy) === '0') return null;
+  const { rows } = await query(
+    'SELECT email FROM "User" WHERE id::text = $1',
+    [String(createdBy)]
+  ).catch(() => ({ rows: [] }));
+  const email = String(rows[0]?.email || '').trim();
+  return email.includes('@') ? email : null;
+}
+
 export const eventModel = {
+  /** Email the admin used at signup (Event.createdBy → User.email). */
+  async getOwnerEmail(eventId) {
+    if (!eventId) return null;
+    const { rows } = await query(
+      'SELECT "createdBy" FROM "Event" WHERE id::text = $1 LIMIT 1',
+      [String(eventId)]
+    ).catch(() => ({ rows: [] }));
+    return resolveOwnerEmail(rows[0]?.createdBy);
+  },
   async findMany(opts = {}) {
     const limit = opts.take != null ? Math.max(0, opts.take) : null;
     let sql = 'SELECT * FROM "Event"';

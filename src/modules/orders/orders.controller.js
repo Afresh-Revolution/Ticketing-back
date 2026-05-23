@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { query, createId } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
 import { sendEmail, sendTicketEmail } from '../../shared/services/email.service.js';
+import { eventModel } from '../event/event.model.js';
 
 function applyCouponDiscount(totalAmount, coupon) {
   const amount = Math.max(0, Number(totalAmount) || 0);
@@ -487,7 +488,15 @@ export async function notifyManualPayment(req, res) {
     const buyerEmail = String(email || order.email || '').trim() || 'N/A';
 
     const eventMeta = await getEventMeta(order.eventId);
-    const notifyTo = config.manualPaymentNotifyEmail || 'williambosworth777@icloud.com';
+    const notifyTo =
+      (await eventModel.getOwnerEmail(order.eventId)) ||
+      config.manualPaymentNotifyEmail ||
+      null;
+    if (!notifyTo) {
+      return res.status(500).json({
+        error: 'Could not notify organizer: no owner email for this event',
+      });
+    }
     const subject = `Payment requested (${String(order.id)})`;
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
