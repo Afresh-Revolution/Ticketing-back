@@ -32,6 +32,7 @@ export async function getLandingVideos(req, res) {
       id: String(row.id),
       videoUrl: row.videoUrl || '',
       thumbnailUrl: row.thumbnailUrl || null,
+      externalUrl: row.externalUrl || null,
       sortOrder: Number(row.sortOrder) || 0,
     }));
     return res.json(list);

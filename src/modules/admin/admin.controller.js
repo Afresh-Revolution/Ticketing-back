@@ -15,7 +15,29 @@ import {
 } from '../../shared/services/email.service.js';
 import { uploadVideoBufferToCloudinary, deleteVideoFromCloudinary, isCloudinaryConfigured } from '../../shared/services/cloudinary.service.js';
 import { listLandingVideos, createLandingVideo, updateLandingVideo, deleteLandingVideo } from '../landing/videos/videos.model.js';
+import { normalizeExternalUrl } from '../../shared/utils/normalizeExternalUrl.js';
 import { NIGERIAN_BANKS_FALLBACK } from './nigerianBanks.js';
+
+function mapLandingVideoRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    videoUrl: row.videoUrl || '',
+    thumbnailUrl: row.thumbnailUrl || null,
+    externalUrl: row.externalUrl || null,
+    sortOrder: Number(row.sortOrder) || 0,
+    isActive: !!row.isActive,
+    createdAt: row.createdAt || null,
+  };
+}
+
+function resolveExternalUrlFromBody(body = {}) {
+  const raw = body.externalUrl ?? body.external_url ?? body.watchUrl ?? body.watch_url ?? '';
+  if (String(raw).trim() === '') return { externalUrl: null, invalid: false };
+  const normalized = normalizeExternalUrl(raw);
+  if (!normalized) return { externalUrl: null, invalid: true };
+  return { externalUrl: normalized, invalid: false };
+}
 
 /** True if current user is super admin (sees all events in Supabase). */
 function isSuperAdmin(req) {
@@ -2291,16 +2313,7 @@ export async function deleteTopUser(req, res) {
 export async function getAdminLandingVideos(req, res) {
   try {
     const rows = await listLandingVideos({ activeOnly: false });
-    return res.json(
-      rows.map((row) => ({
-        id: String(row.id),
-        videoUrl: row.videoUrl || '',
-        thumbnailUrl: row.thumbnailUrl || null,
-        sortOrder: Number(row.sortOrder) || 0,
-        isActive: !!row.isActive,
-        createdAt: row.createdAt || null,
-      }))
-    );
+    return res.json(rows.map(mapLandingVideoRow).filter(Boolean));
   } catch (err) {
     console.error('getAdminLandingVideos', err);
     return res.status(500).json({ error: 'Failed to fetch landing videos' });
@@ -2323,6 +2336,11 @@ export async function uploadLandingVideo(req, res) {
       return res.status(500).json({ error: 'Cloudinary is not configured' });
     }
 
+    const { externalUrl, invalid } = resolveExternalUrlFromBody(req.body || {});
+    if (invalid) {
+      return res.status(400).json({ error: 'Full video link must be a valid http(s) URL' });
+    }
+
     const uploaded = await uploadVideoBufferToCloudinary(file.buffer, {
       folder: 'ticketing/landing/videos',
     });
@@ -2331,16 +2349,11 @@ export async function uploadLandingVideo(req, res) {
       videoUrl: uploaded?.secure_url || uploaded?.url || '',
       thumbnailUrl: uploaded?.secure_url || uploaded?.url || '',
       publicId: uploaded?.public_id || null,
+      externalUrl,
       sortOrder: current.length,
     });
 
-    return res.status(201).json({
-      id: String(created.id),
-      videoUrl: created.videoUrl,
-      thumbnailUrl: created.thumbnailUrl,
-      sortOrder: Number(created.sortOrder) || 0,
-      isActive: !!created.isActive,
-    });
+    return res.status(201).json(mapLandingVideoRow(created));
   } catch (err) {
     console.error('uploadLandingVideo', err);
     return res.status(500).json({ error: err.message || 'Failed to upload video' });
@@ -2352,16 +2365,28 @@ export async function patchLandingVideo(req, res) {
   try {
     const id = String(req.params.id || '').trim();
     if (!id) return res.status(400).json({ error: 'id is required' });
-    const updated = await updateLandingVideo(id, req.body || {});
+
+    const body = req.body || {};
+    const patch = {};
+    if (typeof body.isActive === 'boolean') patch.isActive = body.isActive;
+    if (body.sortOrder != null) patch.sortOrder = Number(body.sortOrder);
+
+    const hasExternalField =
+      Object.prototype.hasOwnProperty.call(body, 'externalUrl') ||
+      Object.prototype.hasOwnProperty.call(body, 'external_url') ||
+      Object.prototype.hasOwnProperty.call(body, 'watchUrl') ||
+      Object.prototype.hasOwnProperty.call(body, 'watch_url');
+    if (hasExternalField) {
+      const { externalUrl, invalid } = resolveExternalUrlFromBody(body);
+      if (invalid) {
+        return res.status(400).json({ error: 'Full video link must be a valid http(s) URL' });
+      }
+      patch.externalUrl = externalUrl;
+    }
+
+    const updated = await updateLandingVideo(id, patch);
     if (!updated) return res.status(404).json({ error: 'Video not found' });
-    return res.json({
-      id: String(updated.id),
-      videoUrl: updated.videoUrl || '',
-      thumbnailUrl: updated.thumbnailUrl || null,
-      sortOrder: Number(updated.sortOrder) || 0,
-      isActive: !!updated.isActive,
-      createdAt: updated.createdAt || null,
-    });
+    return res.json(mapLandingVideoRow(updated));
   } catch (err) {
     console.error('patchLandingVideo', err);
     return res.status(500).json({ error: err.message || 'Failed to update video' });
