@@ -29,8 +29,11 @@ export const orderModel = {
     const now = new Date().toISOString();
     const status = data.status ?? 'pending';
     const reference =
-      data.reference ??
-      (status === 'pending' && Number(data.totalAmount) > 0 ? `manual-${id}` : null);
+      data.reference !== undefined
+        ? data.reference
+        : status === 'pending' && Number(data.totalAmount) > 0
+          ? `manual-${id}`
+          : null;
 
     // Start simple without transaction for now, but in prod use transaction
     // 1. Create Order

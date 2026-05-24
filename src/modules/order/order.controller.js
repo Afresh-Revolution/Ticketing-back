@@ -119,6 +119,8 @@ export async function create(req, res, next) {
     }
     const pricing = applyCouponDiscount(amount, coupon);
     const isFreeOrder = pricing.finalAmount === 0;
+    const paymentMethod = String(req.body?.paymentMethod || 'manual').trim().toLowerCase();
+    const isPaystackCheckout = paymentMethod === 'paystack';
 
     // Identify user if logged in (optionalAuth sets req.user; some middlewares set req.userId)
     const userId = req.user?.id ?? req.userId ?? null;
@@ -136,8 +138,8 @@ export async function create(req, res, next) {
       couponCode: coupon?.code ?? null,
       originalAmount: pricing.originalAmount,
       discountAmount: pricing.discountAmount,
-      status: isFreeOrder ? 'paid' : 'pending',
-      reference: isFreeOrder ? `free_${Date.now()}` : null
+      status: isFreeOrder ? 'paid' : isPaystackCheckout ? 'awaiting_payment' : 'pending',
+      reference: isFreeOrder ? `free_${Date.now()}` : isPaystackCheckout ? null : undefined,
     });
 
     // Free orders: generate ticket code and send email immediately (no Paystack)
@@ -265,6 +267,11 @@ export async function manualPaymentNotify(req, res, next) {
     if (!order) {
       return res.status(404).json({ error: 'Order not found' });
     }
+    if (String(order.status || '').toLowerCase() === 'awaiting_payment') {
+      return res.status(400).json({
+        error: 'This order is waiting for online payment. Complete Paystack checkout or start a new bank transfer order.',
+      });
+    }
 
     const buyerEmail = String(email || order.email || '').trim() || 'N/A';
     if (!order.reference || !String(order.reference).startsWith('manual-')) {
@@ -321,8 +328,15 @@ export async function initializePayment(req, res, next) {
 
     const order = await orderModel.findById(orderId);
     if (!order) return res.status(404).json({ error: 'Order not found' });
-    if (String(order.status || '').toLowerCase() === 'paid') {
+    const orderStatus = String(order.status || '').toLowerCase();
+    if (orderStatus === 'paid') {
       return res.status(400).json({ error: 'Order is already paid' });
+    }
+    if (
+      orderStatus === 'pending' &&
+      String(order.reference || '').startsWith('manual-')
+    ) {
+      return res.status(400).json({ error: 'This order uses manual bank transfer, not online payment' });
     }
     if (!order.email || !String(order.email).includes('@')) {
       return res.status(400).json({ error: 'Order email is invalid' });
@@ -415,6 +429,18 @@ export async function verify(req, res, next) {
 
     const paidOrder = await orderModel.updateStatus(orderId, 'paid', reference);
     if (!paidOrder) return res.status(404).json({ error: 'Order not found' });
+
+    await query(
+      `UPDATE "Coupon"
+       SET "usedCount" = "usedCount" + 1, "updatedAt" = NOW()
+       WHERE id IN (
+         SELECT "couponId" FROM "Order" WHERE id = $1 AND "couponId" IS NOT NULL
+       )`,
+      [orderId]
+    ).catch((e) => {
+      if (e?.code === '42P01') return null;
+      throw e;
+    });
 
     const { freshOrder } = await sendOrderTicketEmail(paidOrder);
 

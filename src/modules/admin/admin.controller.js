@@ -598,7 +598,9 @@ export async function getEventOrders(req, res) {
     if (!check.rows?.length) return res.status(404).json({ error: 'Event not found' });
 
     const result = await query(
-      'SELECT * FROM "Order" WHERE "eventId" = $1 ORDER BY "createdAt" DESC',
+      `SELECT * FROM "Order"
+       WHERE "eventId" = $1 AND "status" IN ('paid', 'pending')
+       ORDER BY "createdAt" DESC`,
       [eventId]
     ).catch(() => ({ rows: [] }));
     return res.json(result.rows || []);
@@ -636,6 +638,7 @@ export async function getSales(req, res) {
            ), 'General x1') AS ticket_breakdown
          FROM "Order" o
          LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
+         WHERE o."status" IN ('paid', 'pending')
          ORDER BY o."createdAt" DESC
          LIMIT 100`
       : `SELECT
@@ -658,7 +661,8 @@ export async function getSales(req, res) {
            ), 'General x1') AS ticket_breakdown
          FROM "Order" o
          LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
-         WHERE (e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0')
+         WHERE o."status" IN ('paid', 'pending')
+           AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))
          ORDER BY o."createdAt" DESC
          LIMIT 100`;
     const params = superAdmin ? [] : [userIdParam];
