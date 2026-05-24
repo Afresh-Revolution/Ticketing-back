@@ -12,7 +12,15 @@ import {
   sendWithdrawalRequestEmail,
   sendWithdrawalApprovedEmail,
   sendWithdrawalRejectedEmail,
+  sendManualWithdrawalPayoutEmail,
 } from '../../shared/services/email.service.js';
+import {
+  isPaystackConfigured,
+  createTransferRecipient,
+  initiateTransfer,
+  generateWithdrawalTransferReference,
+  listBanks as paystackListBanks,
+} from '../../shared/services/paystack.service.js';
 import { uploadVideoBufferToCloudinary, deleteVideoFromCloudinary, isCloudinaryConfigured } from '../../shared/services/cloudinary.service.js';
 import { listLandingVideos, createLandingVideo, updateLandingVideo, deleteLandingVideo } from '../landing/videos/videos.model.js';
 import { normalizeExternalUrl } from '../../shared/utils/normalizeExternalUrl.js';
@@ -1395,11 +1403,125 @@ async function getBankAccountForUser(userId) {
   const key = userIdKey(userId);
   if (!key) return null;
   const result = await query(
-    `SELECT "id", "accountNumber", "bankCode", "accountName", "bankName"
+    `SELECT "id", "accountNumber", "bankCode", "accountName", "bankName", "recipientCode"
      FROM "BankAccount" WHERE "userId"::text = $1`,
     [key]
   ).catch(() => ({ rows: [] }));
   return result.rows?.[0] || null;
+}
+
+async function savePaystackRecipientCode(userId, recipientCode) {
+  const key = userIdKey(userId);
+  if (!key || !recipientCode) return;
+  await query(
+    `UPDATE "BankAccount" SET "recipientCode" = $1, "updatedAt" = NOW() WHERE "userId"::text = $2`,
+    [String(recipientCode), key]
+  ).catch((err) => console.warn('[withdraw] save recipientCode failed:', err.message));
+}
+
+async function resolvePaystackRecipient(userId, bank) {
+  if (!isPaystackConfigured()) {
+    throw new Error('Paystack is not configured');
+  }
+  const accountNumber = String(bank?.accountNumber || '').trim();
+  const bankCode = String(bank?.bankCode || '').trim();
+  const accountName = String(bank?.accountName || '').trim();
+  if (!accountNumber || !bankCode) {
+    throw new Error('Bank account details are incomplete');
+  }
+
+  const stored = await getBankAccountForUser(userId);
+  if (stored?.recipientCode) return String(stored.recipientCode);
+
+  const recipient = await createTransferRecipient({
+    accountName: accountName || 'Gatewav Admin',
+    accountNumber,
+    bankCode,
+  });
+  const recipientCode = recipient?.recipient_code || recipient?.recipientCode;
+  if (!recipientCode) {
+    throw new Error('Paystack did not return a transfer recipient code');
+  }
+  await savePaystackRecipientCode(userId, recipientCode);
+  return String(recipientCode);
+}
+
+async function executeWithdrawalPayout(withdrawal) {
+  const netAmount = withdrawalNetAmount(withdrawal);
+  const amountKobo = Math.round(netAmount * 100);
+  const manualReference = `manual-${String(withdrawal.id)}`;
+
+  if (amountKobo < 100) {
+    return {
+      method: 'manual',
+      reference: manualReference,
+      reason: 'Withdrawal amount must be at least ₦1',
+    };
+  }
+
+  if (!isPaystackConfigured()) {
+    return {
+      method: 'manual',
+      reference: manualReference,
+      reason: 'PAYSTACK_SECRET_KEY is not configured',
+    };
+  }
+
+  try {
+    const userId = withdrawal.userId ?? withdrawal.adminId;
+    const recipientCode = await resolvePaystackRecipient(userId, {
+      accountNumber: withdrawal.accountNumber,
+      bankCode: withdrawal.bankCode,
+      accountName: withdrawal.accountName,
+      bankName: withdrawal.bankName,
+    });
+    const reference = generateWithdrawalTransferReference(withdrawal.id);
+    const transfer = await initiateTransfer({
+      amountKobo,
+      recipientCode,
+      reference,
+      reason: `Gatewav withdrawal – ${withdrawal.event_title || 'event'}`,
+    });
+    const paystackRef =
+      transfer?.reference ||
+      transfer?.transfer_code ||
+      transfer?.id ||
+      reference;
+    return { method: 'paystack', reference: String(paystackRef) };
+  } catch (err) {
+    console.error('[withdraw] Paystack transfer failed, using manual fallback:', err.message);
+    return {
+      method: 'manual',
+      reference: manualReference,
+      reason: err.message || 'Paystack transfer failed',
+    };
+  }
+}
+
+async function notifyManualWithdrawalPayout(withdrawal, reason) {
+  const admins = await query(
+    `SELECT email FROM "User" WHERE role = 'superadmin' AND email IS NOT NULL`
+  ).catch(() => ({ rows: [] }));
+  const emails = new Set(
+    (admins.rows || []).map((r) => String(r.email || '').trim()).filter(Boolean)
+  );
+  emails.add(WITHDRAWAL_REQUEST_NOTIFY_EMAIL);
+  const netAmount = withdrawalNetAmount(withdrawal);
+  await Promise.all(
+    [...emails].map((to) =>
+      sendManualWithdrawalPayoutEmail({
+        to,
+        adminName: withdrawal.admin_name,
+        adminEmail: withdrawal.admin_email,
+        eventTitle: withdrawal.event_title,
+        netAmount,
+        bankName: withdrawal.bankName,
+        accountName: withdrawal.accountName,
+        accountNumber: withdrawal.accountNumber,
+        reason,
+      }).catch((err) => console.error('[withdraw] manual payout email failed', to, err.message))
+    )
+  );
 }
 
 async function upsertBankAccountForUser(userId, bank) {
@@ -1413,7 +1535,8 @@ async function upsertBankAccountForUser(userId, bank) {
   if (existing?.id) {
     await query(
       `UPDATE "BankAccount"
-       SET "accountNumber" = $1, "bankCode" = $2, "accountName" = $3, "bankName" = $4, "updatedAt" = NOW()
+       SET "accountNumber" = $1, "bankCode" = $2, "accountName" = $3, "bankName" = $4,
+           "recipientCode" = NULL, "updatedAt" = NOW()
        WHERE "userId"::text = $5`,
       [accountNumber, bankCode, accountName || '', bankName || '', key]
     );
@@ -1434,7 +1557,15 @@ async function upsertBankAccountForUser(userId, bank) {
       );
     }
   }
-  return getBankAccountForUser(userId);
+  const saved = await getBankAccountForUser(userId);
+  if (saved && isPaystackConfigured()) {
+    try {
+      await resolvePaystackRecipient(userId, saved);
+    } catch (err) {
+      console.warn('[withdraw] Paystack recipient on bank save:', err.message);
+    }
+  }
+  return saved;
 }
 
 /** Per-event sales rollup: online orders + walk-ins (paid revenue; paid/pending count as sold). */
@@ -1667,6 +1798,7 @@ function mapWithdrawalRow(w, extras = {}) {
     netAmount,
     status: w.status || 'pending',
     paystackReference: w.paystackReference ?? null,
+    payoutMethod: w.payoutMethod ?? null,
     createdAt: w.createdAt ?? '',
     event_title: extras.event_title ?? w.event_title ?? '',
     admin_name: extras.admin_name ?? w.admin_name ?? null,
@@ -1701,12 +1833,23 @@ async function findWithdrawalForReview(withdrawalId) {
   return row;
 }
 
-async function patchWithdrawalStatus(row, { newStatus, reviewerId }) {
+async function patchWithdrawalStatus(row, { newStatus, reviewerId, paystackReference, payoutMethod }) {
   const cols = await getPublicTableColumns('Withdrawal');
   const byName = Object.fromEntries(cols.map((c) => [c.column_name, c]));
   const sets = ['"status" = $1'];
   const params = [newStatus];
   let n = 2;
+
+  if (byName.paystackReference && paystackReference != null) {
+    sets.push(`"paystackReference" = $${n}`);
+    params.push(String(paystackReference));
+    n += 1;
+  }
+  if (byName.payoutMethod && payoutMethod != null) {
+    sets.push(`"payoutMethod" = $${n}`);
+    params.push(String(payoutMethod));
+    n += 1;
+  }
 
   if (byName.reviewedBy) {
     sets.push(`"reviewedBy" = $${n}`);
@@ -2118,7 +2261,17 @@ export async function reviewWithdrawal(req, res) {
     }
 
     const newStatus = action === 'approve' ? 'completed' : 'rejected';
-    const updatedRow = await patchWithdrawalStatus(w, { newStatus, reviewerId });
+    let payout = { method: null, reference: null, reason: null };
+    if (action === 'approve') {
+      payout = await executeWithdrawalPayout(w);
+    }
+
+    const updatedRow = await patchWithdrawalStatus(w, {
+      newStatus,
+      reviewerId,
+      paystackReference: payout.reference,
+      payoutMethod: payout.method,
+    });
     if (!updatedRow) return res.status(500).json({ error: 'Failed to update withdrawal' });
 
     const mapped = mapWithdrawalRow(updatedRow, {
@@ -2135,7 +2288,12 @@ export async function reviewWithdrawal(req, res) {
         netAmount: withdrawalNetAmount(w),
         bankName: w.bankName,
         accountNumber: w.accountNumber,
+        isManualPayout: payout.method === 'manual',
       }).catch((err) => console.error('[withdraw] approval email failed', err.message));
+
+      if (payout.method === 'manual') {
+        await notifyManualWithdrawalPayout(w, payout.reason);
+      }
     } else if (action === 'disapprove' && w.admin_email) {
       await sendWithdrawalRejectedEmail({
         to: w.admin_email,
@@ -2145,8 +2303,14 @@ export async function reviewWithdrawal(req, res) {
     }
 
     return res.json({
-      message: action === 'approve' ? 'Withdrawal approved' : 'Withdrawal disapproved',
+      message:
+        action === 'approve'
+          ? payout.method === 'paystack'
+            ? 'Withdrawal approved and payout sent via Paystack'
+            : 'Withdrawal approved — complete payout manually (Paystack unavailable)'
+          : 'Withdrawal disapproved',
       withdrawal: mapped,
+      payoutMethod: payout.method,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message || 'Failed' });
@@ -2167,28 +2331,10 @@ export async function getBanks(req, res) {
   };
 
   try {
-    const { config } = await import('../../shared/config/env.js');
-    if (config.paystackSecretKey) {
-      const byCode = new Map();
-      let page = 1;
-      while (page <= 50) {
-        const r = await fetch(
-          `https://api.paystack.co/bank?currency=NGN&perPage=100&page=${page}`,
-          { headers: { Authorization: `Bearer ${config.paystackSecretKey}` } }
-        );
-        const d = await r.json();
-        if (!d.status || !Array.isArray(d.data) || d.data.length === 0) break;
-        for (const b of d.data) {
-          if (b.active === false || b.supports_transfer === false) continue;
-          const code = String(b.code ?? '').trim();
-          const name = String(b.name ?? '').trim();
-          if (code && name && !byCode.has(code)) byCode.set(code, { code, name });
-        }
-        if (!d.meta?.next) break;
-        page += 1;
-      }
-      if (byCode.size > 0) {
-        return res.json([...byCode.values()].sort((a, b) => a.name.localeCompare(b.name)));
+    if (isPaystackConfigured()) {
+      const banks = await paystackListBanks();
+      if (banks.length > 0) {
+        return res.json(banks);
       }
     }
     return res.json(normalize(NIGERIAN_BANKS_FALLBACK));

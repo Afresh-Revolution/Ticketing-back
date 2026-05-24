@@ -154,16 +154,51 @@ export function sendWithdrawalApprovedEmail({
   netAmount,
   bankName,
   accountNumber,
+  isManualPayout = false,
 }) {
   const subject = `Withdrawal approved – ${eventTitle || 'Event'}`;
+  const payoutNote = isManualPayout
+    ? `Your payout will be sent via manual bank transfer to ${bankName || 'your bank'} ···${String(accountNumber || '').slice(-4)}.`
+    : `Funds are being sent via Paystack to ${bankName || 'your bank'} ···${String(accountNumber || '').slice(-4)}.`;
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
       <h2 style="color: #166534;">Withdrawal approved</h2>
       <p>Hi ${adminName || 'there'},</p>
       <p>Your withdrawal request for <strong>${eventTitle || 'your event'}</strong> has been approved.</p>
       <p style="font-size: 18px;"><strong>Net amount: ${naira(netAmount)}</strong></p>
-      <p style="color:#666; font-size: 14px;">Funds will be sent to ${bankName || 'your bank'} ···${String(accountNumber || '').slice(-4)}.</p>
+      <p style="color:#666; font-size: 14px;">${payoutNote}</p>
       <p style="color:#999; font-size: 12px;">Thank you for using Gatewave.</p>
+    </div>
+  `;
+  return sendEmail({ to, subject, html });
+}
+
+/** Notify super admin to complete a withdrawal manually when Paystack transfer fails. */
+export function sendManualWithdrawalPayoutEmail({
+  to,
+  adminName,
+  adminEmail,
+  eventTitle,
+  netAmount,
+  bankName,
+  accountName,
+  accountNumber,
+  reason,
+}) {
+  const subject = `Manual withdrawal payout required – ${eventTitle || 'Event'}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto;">
+      <h2 style="color: #991b1b;">Manual payout required</h2>
+      <p>Paystack could not send this withdrawal automatically. Please transfer the net amount manually.</p>
+      ${reason ? `<p style="color:#666; font-size:14px;"><strong>Reason:</strong> ${reason}</p>` : ''}
+      <table style="width:100%; border-collapse: collapse; font-size: 14px;">
+        <tr><td style="padding: 6px 0; color:#666;">Admin</td><td style="padding: 6px 0;"><strong>${adminName || '—'}</strong> (${adminEmail || '—'})</td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Event</td><td style="padding: 6px 0;"><strong>${eventTitle || '—'}</strong></td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Net payout</td><td style="padding: 6px 0;"><strong>${naira(netAmount)}</strong></td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Bank</td><td style="padding: 6px 0;">${bankName || '—'}</td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Account name</td><td style="padding: 6px 0;">${accountName || '—'}</td></tr>
+        <tr><td style="padding: 6px 0; color:#666;">Account number</td><td style="padding: 6px 0;">${accountNumber || '—'}</td></tr>
+      </table>
     </div>
   `;
   return sendEmail({ to, subject, html });

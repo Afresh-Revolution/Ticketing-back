@@ -167,11 +167,13 @@ export async function ensureWithdrawalDbSchema() {
         "bankCode" VARCHAR(20) NOT NULL,
         "accountName" VARCHAR(255) NOT NULL,
         "bankName" VARCHAR(255) NOT NULL,
+        "recipientCode" TEXT,
         "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
     await query(`ALTER TABLE "BankAccount" ADD COLUMN IF NOT EXISTS "userId" TEXT`);
+    await query(`ALTER TABLE "BankAccount" ADD COLUMN IF NOT EXISTS "recipientCode" TEXT`);
     await query(`
       CREATE TABLE IF NOT EXISTS "Withdrawal" (
         "id" TEXT PRIMARY KEY,
@@ -182,6 +184,7 @@ export async function ensureWithdrawalDbSchema() {
         "amount" NUMERIC(14, 2) NOT NULL DEFAULT 0,
         "status" VARCHAR(32) NOT NULL DEFAULT 'pending',
         "paystackReference" VARCHAR(255),
+        "payoutMethod" VARCHAR(32),
         "bankName" VARCHAR(255),
         "bankCode" VARCHAR(20),
         "accountNumber" VARCHAR(20),
@@ -199,6 +202,7 @@ export async function ensureWithdrawalDbSchema() {
       `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "amount" NUMERIC(14, 2) NOT NULL DEFAULT 0`,
       `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "status" VARCHAR(32) NOT NULL DEFAULT 'pending'`,
       `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "paystackReference" VARCHAR(255)`,
+      `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "payoutMethod" VARCHAR(32)`,
       `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "bankName" VARCHAR(255)`,
       `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "bankCode" VARCHAR(20)`,
       `ALTER TABLE "Withdrawal" ADD COLUMN IF NOT EXISTS "accountNumber" VARCHAR(20)`,

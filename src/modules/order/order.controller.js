@@ -2,6 +2,12 @@ import crypto from 'crypto';
 import { orderModel } from './order.model.js';
 import { eventModel } from '../event/event.model.js';
 import { sendEmail, sendTicketEmail } from '../../shared/services/email.service.js';
+import {
+  generateOrderReference,
+  initializeTransaction,
+  isPaystackConfigured,
+  verifyTransaction,
+} from '../../shared/services/paystack.service.js';
 import { query } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
 
@@ -203,8 +209,11 @@ function generateTicketCode() {
   return crypto.randomBytes(6).toString('hex').toUpperCase();
 }
 
-function generatePaystackReference() {
-  return `ord_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+async function verifyWithPaystack(reference) {
+  if (!isPaystackConfigured()) {
+    throw new Error('PAYSTACK_SECRET_KEY is missing in backend environment');
+  }
+  return verifyTransaction(reference);
 }
 
 async function ensureOrderTicketCode(orderId, currentTicketCode) {
@@ -242,25 +251,6 @@ async function sendOrderTicketEmail(order) {
     console.error('[order] Ticket email failed:', emailErr.message);
   }
   return { freshOrder, ticketCode };
-}
-
-async function verifyWithPaystack(reference) {
-  const secret = config.paystackSecretKey;
-  if (!secret) {
-    throw new Error('PAYSTACK_SECRET_KEY is missing in backend environment');
-  }
-  const response = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${secret}`,
-      'Content-Type': 'application/json',
-    },
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data?.status !== true) {
-    throw new Error(data?.message || 'Paystack verification failed');
-  }
-  return data?.data || null;
 }
 
 /** POST /api/orders/manual-payment-notify – buyer tapped “Paid” after bank transfer; notifies ops and confirms order exists. */
@@ -323,7 +313,10 @@ export async function initializePayment(req, res, next) {
     if (!orderId) return res.status(400).json({ error: 'orderId is required' });
 
     if (!config.paystackSecretKey) {
-      return res.status(500).json({ error: 'Payment is not configured on backend' });
+      return res.status(500).json({
+        error: 'Payment is not configured on backend',
+        hint: 'Set PAYSTACK_SECRET_KEY in Ticketing-back/.env and restart backend',
+      });
     }
 
     const order = await orderModel.findById(orderId);
@@ -340,42 +333,45 @@ export async function initializePayment(req, res, next) {
       return res.status(400).json({ error: 'Order amount must be at least ₦1' });
     }
 
-    const reference = generatePaystackReference();
+    const reference = generateOrderReference();
     await query(
       `UPDATE "Order" SET "reference" = $1, "updatedAt" = NOW() WHERE id = $2`,
       [reference, orderId]
     );
 
-    const payload = {
+    if (process.env.PAYSTACK_MOCK_INIT === '1') {
+      const mockUrl = callbackUrl
+        ? `${callbackUrl}${callbackUrl.includes('?') ? '&' : '?'}reference=${encodeURIComponent(reference)}&trxref=${encodeURIComponent(reference)}&status=success`
+        : `${config.frontendBaseUrl}/#/payment-success?orderId=${encodeURIComponent(String(order.id))}&reference=${encodeURIComponent(reference)}&trxref=${encodeURIComponent(reference)}&status=success`;
+      return res.json({
+        authorizationUrl: mockUrl,
+        accessCode: `mock_${reference}`,
+        reference,
+        orderId: String(order.id),
+        mock: true,
+      });
+    }
+
+    const paystackData = await initializeTransaction({
       email: String(order.email).trim(),
-      amount: amountKobo,
+      amountKobo,
       reference,
-      currency: 'NGN',
+      callbackUrl: callbackUrl || `${config.frontendBaseUrl}/#/payment-success`,
       metadata: {
         orderId: String(order.id),
         eventId: String(order.eventId || ''),
         fullName: String(order.fullName || ''),
       },
-      callback_url: callbackUrl || `${config.frontendBaseUrl}/#/payment-success`,
-    };
-
-    const paystackResponse = await fetch('https://api.paystack.co/transaction/initialize', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.paystackSecretKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
     });
-    const data = await paystackResponse.json().catch(() => ({}));
-    if (!paystackResponse.ok || data?.status !== true || !data?.data?.authorization_url) {
-      return res.status(400).json({ error: data?.message || 'Failed to initialize payment' });
+
+    if (!paystackData?.authorization_url) {
+      return res.status(400).json({ error: 'Failed to initialize payment' });
     }
 
     return res.json({
-      authorizationUrl: data.data.authorization_url,
-      accessCode: data.data.access_code,
-      reference: data.data.reference,
+      authorizationUrl: paystackData.authorization_url,
+      accessCode: paystackData.access_code,
+      reference: paystackData.reference || reference,
       orderId: String(order.id),
     });
   } catch (err) {
@@ -402,15 +398,19 @@ export async function verify(req, res, next) {
       return res.status(400).json({ error: 'Reference does not match this order' });
     }
 
-    const paystackTx = await verifyWithPaystack(reference);
-    if (!paystackTx || String(paystackTx.status || '').toLowerCase() !== 'success') {
-      return res.status(400).json({ error: 'Payment was not successful' });
-    }
+    const isMockReference =
+      process.env.PAYSTACK_MOCK_INIT === '1' && String(reference).startsWith('ord_');
+    if (!isMockReference) {
+      const paystackTx = await verifyWithPaystack(reference);
+      if (!paystackTx || String(paystackTx.status || '').toLowerCase() !== 'success') {
+        return res.status(400).json({ error: 'Payment was not successful' });
+      }
 
-    const paidAmountKobo = Number(paystackTx.amount || 0);
-    const expectedAmountKobo = Math.round((Number(existingOrder.totalAmount) || 0) * 100);
-    if (paidAmountKobo !== expectedAmountKobo) {
-      return res.status(400).json({ error: 'Payment amount does not match order amount' });
+      const paidAmountKobo = Number(paystackTx.amount || 0);
+      const expectedAmountKobo = Math.round((Number(existingOrder.totalAmount) || 0) * 100);
+      if (paidAmountKobo !== expectedAmountKobo) {
+        return res.status(400).json({ error: 'Payment amount does not match order amount' });
+      }
     }
 
     const paidOrder = await orderModel.updateStatus(orderId, 'paid', reference);
