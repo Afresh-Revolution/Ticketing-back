@@ -27,6 +27,23 @@ cd ..
 npm run dev
 ```
 
+## My Tickets (`GET /api/user/orders`)
+
+Returns paid orders for the signed-in user where either:
+
+- `Order.userId` matches the account, or
+- `Order.email` matches the account email (case-insensitive), including guest checkouts
+
+On each request, guest orders with a matching email are linked to the account (`userId` backfill).
+
+Fallback route: `GET /api/orders` (same handler).
+
+Optional migration for faster email lookups:
+
+```bash
+# run 009_order_email_lower_idx.sql against your database
+```
+
 ## Recent API behaviour
 
 - **Withdrawals:** Multiple payouts per event while balance remains; `POST /api/admin/withdraw/:eventId` uses remaining gross (85% net), not full event total.

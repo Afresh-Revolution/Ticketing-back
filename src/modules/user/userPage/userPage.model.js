@@ -46,8 +46,9 @@ export const userPageModel = {
     }));
   },
 
-  /** Fetches paid orders for the user with event and order item details (ticket purchases). */
-  async getMyOrders(userId) {
+  /** Fetches paid orders linked to the account or purchased with the same email. */
+  async getMyOrders(userId, userEmail) {
+    const normalizedEmail = String(userEmail || '').trim().toLowerCase();
     const { rows } = await query(
       `SELECT o.id AS "orderId", o."eventId", o."fullName", o.email, o."totalAmount", o.status, o."ticketCode", o."createdAt" AS "orderCreatedAt",
               e.title AS "event_title", e.description AS "event_description", e.date AS "event_date",
@@ -55,9 +56,13 @@ export const userPageModel = {
               e."startTime" AS "event_startTime"
        FROM "Order" o
        JOIN "Event" e ON e.id = o."eventId"
-       WHERE o."userId" = $1 AND o.status = 'paid'
+       WHERE o.status = 'paid'
+         AND (
+           o."userId" = $1
+           OR ($2::text <> '' AND LOWER(TRIM(o.email)) = $2)
+         )
        ORDER BY o."createdAt" DESC`,
-      [userId]
+      [userId, normalizedEmail]
     );
     const orders = [];
     for (const r of rows) {

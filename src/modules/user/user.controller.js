@@ -7,7 +7,9 @@ export async function getMyOrders(req, res) {
     if (!userId) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
-    const orders = await userPageModel.getMyOrders(userId);
+    const profile = await userPageModel.getProfile(userId);
+    const userEmail = profile?.email ?? req.user?.email ?? '';
+    const orders = await userPageModel.getMyOrders(userId, userEmail);
     const list = orders.map((o) => ({
       id: String(o.id),
       eventId: o.eventId != null ? String(o.eventId) : null,
