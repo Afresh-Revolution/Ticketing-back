@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import * as adminController from './admin.controller.js';
+import { adminMerchRouter } from '../merch/merch.routes.js';
 import { requireAuth, requireSuperAdmin } from '../../middleware/auth.js';
 
 const router = Router();
@@ -49,6 +50,7 @@ router.get('/password-change-status', requireAuth, adminController.getPasswordCh
 router.post('/verify-password', requireAuth, adminController.verifyPassword);
 router.post('/change-password', requireAuth, adminController.changePassword);
 router.post('/verify-ticket', requireAuth, adminController.verifyTicket);
+router.use(adminMerchRouter);
 
 // Landing videos (superadmin only)
 router.get('/landing-videos', requireAuth, requireSuperAdmin, adminController.getAdminLandingVideos);

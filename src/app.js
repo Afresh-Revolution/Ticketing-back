@@ -12,6 +12,7 @@ import eventRoutes from './modules/event/event.routes.js';
 import orderRoutes from './modules/order/order.routes.js';
 import membershipRoutes from './modules/membership/membership.routes.js';
 import adminRoutes from './modules/admin/admin.routes.js';
+import merchOrderRoutes, { saveRequestRouter } from './modules/merch/merch.routes.js';
 
 const app = express();
 
@@ -47,6 +48,8 @@ app.use('/api/booking', bookingRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/orders', paymentRateLimit, orderRoutes);
+app.use('/api/merch-orders', paymentRateLimit, merchOrderRoutes);
+app.use('/api/merch-save-requests', saveRequestRouter);
 app.use('/api/memberships', membershipRoutes);
 app.use('/api/admin', adminRateLimit, adminRoutes);
 

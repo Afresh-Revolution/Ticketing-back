@@ -1,4 +1,5 @@
 import { query, createId } from '../../shared/config/db.js';
+import { fetchMerchByEventId } from '../merch/merch.model.js';
 
 function rowToEvent(row) {
   if (!row) return null;
@@ -159,6 +160,8 @@ export const eventModel = {
       event.createdByName = createdByName;
       event.organizer = createdByName;
     }
+
+    event.merch = await fetchMerchByEventId(id).catch(() => []);
 
     return event;
   },

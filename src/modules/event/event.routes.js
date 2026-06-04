@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import * as eventController from './event.controller.js';
+import * as merchController from '../merch/merch.controller.js';
 import { authMiddleware } from '../../shared/middleware/authMiddleware.js';
 
 const router = Router();
@@ -15,6 +16,8 @@ const upload = multer({
 
 router.get('/', eventController.list);
 router.get('/feed/joscity', eventController.listForJoscity);
+router.get('/:id/merch', merchController.listByEvent);
+router.post('/:id/merch', authMiddleware, merchController.replaceForEvent);
 router.get('/:id', eventController.getById);
 router.post('/upload-image', authMiddleware, upload.single('image'), eventController.uploadImage);
 router.post('/', authMiddleware, eventController.create);
