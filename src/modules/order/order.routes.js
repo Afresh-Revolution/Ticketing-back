@@ -1,8 +1,13 @@
 import { Router } from 'express';
 import * as orderController from './order.controller.js';
+import { getMyOrders } from '../user/user.controller.js';
 import { optionalAuth } from '../../shared/middleware/authMiddleware.js';
+import { requireAuth } from '../../middleware/auth.js';
 
 const router = Router();
+
+// List current user's paid tickets (fallback for GET /api/user/orders)
+router.get('/', requireAuth, getMyOrders);
 
 // Create order (optional auth to attach user if logged in)
 router.post('/', optionalAuth, orderController.create);

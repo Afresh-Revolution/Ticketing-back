@@ -14,7 +14,13 @@ export function optionalAuth(req, res, next) {
     const payload = jwt.verify(token, config.jwtSecret);
     const resolvedUserId = payload.userId ?? payload.id ?? null;
     req.userId = resolvedUserId;
-    req.userRole = payload.role || 'admin';
+    req.userRole = payload.role || 'user';
+    req.user = {
+      id: resolvedUserId,
+      role: req.userRole,
+      email: payload.email ?? null,
+      name: payload.name ?? null,
+    };
     next();
   } catch {
     next();
@@ -42,8 +48,13 @@ export function requireAuth(req, res, next) {
     const payload = jwt.verify(token, config.jwtSecret);
     const resolvedUserId = payload.userId ?? payload.id ?? null;
     req.userId = resolvedUserId;
-    req.userRole = payload.role || 'admin';
-    req.user = { id: resolvedUserId, role: req.userRole };
+    req.userRole = payload.role || 'user';
+    req.user = {
+      id: resolvedUserId,
+      role: req.userRole,
+      email: payload.email ?? null,
+      name: payload.name ?? null,
+    };
     next();
   } catch {
     return res.status(401).json({

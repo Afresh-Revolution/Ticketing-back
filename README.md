@@ -1,52 +1,59 @@
-# Ticketing-back (API)
+# Ticketing-back — Merch module
 
-GateWav ticketing API. Run from this folder when developing with the frontend in the parent repo.
+PostgreSQL schema and Express routes for event merch (online purchase, at-event save requests, admin dashboard).
 
 ## Setup
 
-```bash
-npm install
-cp .env.example .env
-# Edit .env with database and secrets
-```
-
-## Run
+1. Run migration against your PostgreSQL database:
 
 ```bash
-npm run dev
+psql "$DATABASE_URL" -f migrations/002_event_merch.sql
 ```
 
-API listens on `http://localhost:3000` by default.
+2. Mount the router in your main Express app:
 
-## Frontend
+```js
+import { createMerchRouter, insertMerchForEvent } from './src/merch/routes.js';
 
-From the parent `Ticketing` folder, Vite uses `http://localhost:3000` in dev unless `VITE_API_URL` is set.
-
-```bash
-cd ..
-npm run dev
+app.use(createMerchRouter({
+  pool,
+  authAdmin: yourAdminMiddleware,
+  authOptional: yourOptionalAuthMiddleware,
+  sendEmail: yourSendEmailFn,
+  paystack: { initialize, verify },
+  getAdminEmailsForEvent: async (eventId) => ['admin@example.com'],
+}));
 ```
 
-## My Tickets (`GET /api/user/orders`)
+3. When creating/updating events, after inserting the event row:
 
-Returns paid orders for the signed-in user where either:
-
-- `Order.userId` matches the account, or
-- `Order.email` matches the account email (case-insensitive), including guest checkouts
-
-On each request, guest orders with a matching email are linked to the account (`userId` backfill).
-
-Fallback route: `GET /api/orders` (same handler).
-
-Optional migration for faster email lookups:
-
-```bash
-# run 009_order_email_lower_idx.sql against your database
+```js
+if (body.merch?.length) {
+  await insertMerchForEvent(pool, event.id, body.merch);
+}
 ```
 
-## Recent API behaviour
+4. Include merch on public event detail:
 
-- **Withdrawals:** Multiple payouts per event while balance remains; `POST /api/admin/withdraw/:eventId` uses remaining gross (85% net), not full event total.
-- **Withdraw page:** `GET /api/admin/withdraw` returns `available_to_withdraw` per event.
-- **Manual checkout:** Pending orders get `manual-{orderId}` reference; admin sales list shows each order.
-- **Events:** `GET /api/events/:id` includes `createdByName` / `organizer`.
+```js
+const merch = await fetchMerchByEventId(pool, eventId);
+res.json({ ...event, merch });
+```
+
+## API (added by this module)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/events/:eventId/merch` | List merch for event |
+| POST | `/api/events/:eventId/merch` | Replace merch (admin) |
+| POST | `/api/merch-orders` | Create merch order |
+| POST | `/api/merch-orders/initialize-payment` | Paystack redirect |
+| POST | `/api/merch-orders/verify` | Verify Paystack return |
+| POST | `/api/merch-orders/manual-payment-notify` | Notify admin (pending) |
+| POST | `/api/merch-save-requests` | At-event save request |
+| GET | `/api/admin/merch-orders` | Admin merch sales |
+| PATCH | `/api/admin/merch-orders/:id/status` | Mark paid/pending |
+| GET | `/api/admin/merch-save-requests` | Pending save requests |
+| PATCH | `/api/admin/merch-save-requests/:id/status` | Approve/reject |
+
+Event create payload may include `merch: [...]` array (same shape as POST merch body).

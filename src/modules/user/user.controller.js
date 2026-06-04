@@ -1,6 +1,6 @@
 import { userPageModel } from './userPage/userPage.model.js';
 
-/** GET /api/user/orders - current user's orders (tickets) with event, items, ticketCode for My Tickets page */
+/** GET /api/user/orders - paid tickets for the signed-in user (by account id or purchase email) */
 export async function getMyOrders(req, res) {
   try {
     const userId = req.userId;
@@ -9,6 +9,10 @@ export async function getMyOrders(req, res) {
     }
     const profile = await userPageModel.getProfile(userId);
     const userEmail = profile?.email ?? req.user?.email ?? '';
+    if (!userEmail) {
+      return res.status(400).json({ error: 'Account email not found' });
+    }
+    await userPageModel.linkGuestOrdersToUser(userId, userEmail);
     const orders = await userPageModel.getMyOrders(userId, userEmail);
     const list = orders.map((o) => ({
       id: String(o.id),

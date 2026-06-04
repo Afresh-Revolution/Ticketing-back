@@ -21,7 +21,11 @@ export async function getMyTickets(req, res, next) {
 
 export async function getMyOrders(req, res, next) {
   try {
-    const data = await userPageModel.getMyOrders(req.user.id);
+    const userId = req.user?.id ?? req.userId;
+    const profile = await userPageModel.getProfile(userId);
+    const userEmail = profile?.email ?? req.user?.email ?? '';
+    await userPageModel.linkGuestOrdersToUser(userId, userEmail);
+    const data = await userPageModel.getMyOrders(userId, userEmail);
     res.json(data);
   } catch (e) {
     next(e);

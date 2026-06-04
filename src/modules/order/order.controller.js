@@ -10,6 +10,7 @@ import {
 } from '../../shared/services/paystack.service.js';
 import { query } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
+import { normalizeBuyerEmail } from '../../shared/utils/email.js';
 
 function extractTicketTypes(items) {
   if (!Array.isArray(items)) return [];
@@ -124,12 +125,13 @@ export async function create(req, res, next) {
 
     // Identify user if logged in (optionalAuth sets req.user; some middlewares set req.userId)
     const userId = req.user?.id ?? req.userId ?? null;
+    const buyerEmail = normalizeBuyerEmail(email);
 
     const order = await orderModel.create({
       eventId,
       userId,
       fullName,
-      email,
+      email: buyerEmail,
       phone,
       address,
       items,

@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { query, createId } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
 import { sendEmail, sendTicketEmail } from '../../shared/services/email.service.js';
+import { normalizeBuyerEmail } from '../../shared/utils/email.js';
 import { eventModel } from '../event/event.model.js';
 
 function applyCouponDiscount(totalAmount, coupon) {
@@ -212,7 +213,8 @@ export async function createOrder(req, res) {
   try {
     const { eventId, items, fullName, email, phone, address } = req.body || {};
     const { couponCode, originalAmount } = resolveOrderCouponInput(req.body || {});
-    const userId = req.userId || null;
+    const userId = req.user?.id ?? req.userId ?? null;
+    const buyerEmail = normalizeBuyerEmail(email);
     if (!eventId || !items || !Array.isArray(items) || items.length === 0 || originalAmount == null) {
       return res.status(400).json({ error: 'eventId, items and totalAmount required' });
     }
@@ -238,7 +240,7 @@ export async function createOrder(req, res) {
         eventId,
         userId,
         (fullName || '').trim() || null,
-        (email || '').trim() || null,
+        buyerEmail || null,
         (phone || '').trim() || null,
         (address || '').trim() || null,
         pricing.finalAmount,

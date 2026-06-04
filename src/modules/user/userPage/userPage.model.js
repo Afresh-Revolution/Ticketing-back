@@ -1,4 +1,5 @@
 import { query } from '../../../shared/config/db.js';
+import { normalizeBuyerEmail } from '../../../shared/utils/email.js';
 
 export const userPageModel = {
   async getProfile(userId) {
@@ -46,9 +47,24 @@ export const userPageModel = {
     }));
   },
 
+  /**
+   * Attach guest checkout orders (null userId) to the signed-in account when emails match.
+   */
+  async linkGuestOrdersToUser(userId, userEmail) {
+    const normalizedEmail = normalizeBuyerEmail(userEmail);
+    if (!userId || !normalizedEmail) return;
+    await query(
+      `UPDATE "Order"
+       SET "userId" = $1, "updatedAt" = NOW()
+       WHERE "userId" IS NULL
+         AND LOWER(TRIM(email)) = $2`,
+      [userId, normalizedEmail]
+    );
+  },
+
   /** Fetches paid orders linked to the account or purchased with the same email. */
   async getMyOrders(userId, userEmail) {
-    const normalizedEmail = String(userEmail || '').trim().toLowerCase();
+    const normalizedEmail = normalizeBuyerEmail(userEmail);
     const { rows } = await query(
       `SELECT o.id AS "orderId", o."eventId", o."fullName", o.email, o."totalAmount", o.status, o."ticketCode", o."createdAt" AS "orderCreatedAt",
               e.title AS "event_title", e.description AS "event_description", e.date AS "event_date",
