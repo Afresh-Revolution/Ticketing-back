@@ -112,9 +112,24 @@ export async function getDashboard(req, res) {
     const r = await query(revSql, revParams).catch(() => ({ rows: [{ ticket_rev: 0, tickets_sold: 0 }] }));
     if (r.rows?.[0]) {
       stats.ticketRevenue = Number(r.rows[0].ticket_rev) || 0;
-      stats.totalRevenue = stats.ticketRevenue;
       stats.ticketsSold = Number(r.rows[0].tickets_sold) || 0;
     }
+
+    const merchRevSql = superAdmin
+      ? `SELECT COALESCE(SUM(mo.total_amount), 0) AS merch_rev
+         FROM merch_orders mo
+         WHERE mo.status = 'paid'`
+      : `SELECT COALESCE(SUM(mo.total_amount), 0) AS merch_rev
+         FROM merch_orders mo
+         INNER JOIN "Event" e ON e.id::text = mo.event_id::text
+         WHERE mo.status = 'paid'
+           AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))`;
+    const merchRevParams = superAdmin ? [] : [userIdParam];
+    const merchR = await query(merchRevSql, merchRevParams).catch(() => ({
+      rows: [{ merch_rev: 0 }],
+    }));
+    const merchRevenue = Number(merchR.rows?.[0]?.merch_rev) || 0;
+    stats.totalRevenue = stats.ticketRevenue + merchRevenue;
 
     // Event counts: all for super admin, else only events created by this admin (or createdBy IS NULL = super admin’s)
     const countSql = superAdmin
@@ -1589,6 +1604,11 @@ const EVENT_SALES_BY_EVENT_SQL = `
            CASE WHEN w."status" = 'paid' THEN w.amount ELSE 0 END AS gross,
            CASE WHEN w."status" IN ('paid', 'pending') THEN COALESCE(w."quantity", 1) ELSE 0 END AS tickets_sold
     FROM "WalkInSale" w
+    UNION ALL
+    SELECT mo.event_id::text AS "eventId",
+           CASE WHEN mo.status = 'paid' THEN mo.total_amount ELSE 0 END AS gross,
+           0 AS tickets_sold
+    FROM merch_orders mo
   ) s
   GROUP BY s."eventId"
 `;
@@ -1946,6 +1966,11 @@ export async function getWithdrawPage(req, res) {
            FROM "WalkInSale" w
            JOIN "Event" e ON e.id::text = w."eventId"::text
            WHERE w."status" = 'paid'
+           UNION ALL
+           SELECT mo.total_amount AS amount
+           FROM merch_orders mo
+           JOIN "Event" e ON e.id::text = mo.event_id::text
+           WHERE mo.status = 'paid'
          ) s`
       : `SELECT COALESCE(SUM(s.amount), 0) AS total
          FROM (
@@ -1959,6 +1984,12 @@ export async function getWithdrawPage(req, res) {
            FROM "WalkInSale" w
            JOIN "Event" e ON e.id::text = w."eventId"::text
            WHERE w."status" = 'paid'
+             AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))
+           UNION ALL
+           SELECT mo.total_amount AS amount
+           FROM merch_orders mo
+           JOIN "Event" e ON e.id::text = mo.event_id::text
+           WHERE mo.status = 'paid'
              AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))
          ) s`;
     const revParams = superAdmin ? [] : [userIdText];

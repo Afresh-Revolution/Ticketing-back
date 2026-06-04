@@ -7,6 +7,7 @@ import {
   isCloudinaryConfigured,
   uploadImageBufferToCloudinary,
 } from '../../shared/services/cloudinary.service.js';
+import * as merchModel from '../merch/merch.model.js';
 
 /** Stable numeric id for external systems (e.g. JOSCITY) from our UUID. */
 function toStableNumericId(id) {
@@ -97,6 +98,7 @@ export async function getById(req, res, next) {
     const event = await eventModel.findById(req.params.id);
     if (!event) return res.status(404).json({ error: 'Event not found' });
     event.tickets = Array.isArray(event.tickets) ? event.tickets : [];
+    event.merch = await merchModel.fetchMerchByEventId(req.params.id);
     res.json(event);
   } catch (e) {
     next(e);
@@ -107,7 +109,8 @@ export async function create(req, res, next) {
   try {
     const { 
       title, description, date, venue, category, startTime, price, imageUrl, isTrending, location,
-      ticketTypes // Added ticketTypes
+      ticketTypes,
+      merch,
     } = req.body;
     
     // Validate required
@@ -132,7 +135,16 @@ export async function create(req, res, next) {
       createdBy: req.user && req.user.id !== 0 && req.user.id !== '0' ? req.user.id : null
     });
 
-    res.status(201).json(event);
+    if (Array.isArray(merch) && merch.length > 0) {
+      try {
+        await merchModel.replaceMerchForEvent(event.id, merch);
+      } catch (merchErr) {
+        console.error('[event] merch save on create:', merchErr.message);
+      }
+    }
+
+    const full = await eventModel.findById(event.id);
+    res.status(201).json(full || event);
   } catch (e) {
     next(e);
   }
@@ -157,6 +169,7 @@ export async function update(req, res, next) {
       category,
       price,
       ticketTypes,
+      merch,
     } = req.body;
     const event = await eventModel.update(req.params.id, {
       ...(title != null && { title }),
@@ -171,7 +184,17 @@ export async function update(req, res, next) {
       ...(price != null && { price }),
       ...(ticketTypes != null && { ticketTypes }),
     });
-    res.json(event);
+
+    if (merch != null && Array.isArray(merch)) {
+      try {
+        await merchModel.replaceMerchForEvent(req.params.id, merch);
+      } catch (merchErr) {
+        console.error('[event] merch save on update:', merchErr.message);
+      }
+    }
+
+    const full = await eventModel.findById(req.params.id);
+    res.json(full || event);
   } catch (e) {
     next(e);
   }
