@@ -5,6 +5,7 @@
  */
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import { sendMerchPurchaseReceipt } from '../shared/services/email.service.js';
 import {
   fetchMerchByEventId,
   fetchMerchById,
@@ -504,8 +505,12 @@ function formatMerchOrderRow(row) {
   };
 }
 
-async function sendMerchReceiptEmails({ pool, sendEmail, orderId, getAdminEmailsForEvent }) {
-  const orderRes = await pool.query('SELECT * FROM merch_orders WHERE id = $1', [orderId]);
+async function sendMerchReceiptEmails({ pool, orderId }) {
+  const orderRes = await pool.query(
+    `SELECT mo.*, e.title AS event_title FROM merch_orders mo
+     LEFT JOIN events e ON e.id = mo.event_id WHERE mo.id = $1`,
+    [orderId]
+  );
   if (orderRes.rows.length === 0) return;
   const order = orderRes.rows[0];
   const itemsRes = await pool.query(
@@ -517,23 +522,11 @@ async function sendMerchReceiptEmails({ pool, sendEmail, orderId, getAdminEmails
     [orderId]
   );
 
-  const lines = itemsRes.rows
-    .map(
-      (r) =>
-        `• ${r.description} — qty ${r.quantity} — ₦${Number(r.line_total).toLocaleString()}\n  Image: ${r.image_url || 'n/a'}`
-    )
-    .join('\n');
-
-  await sendEmail({
+  await sendMerchPurchaseReceipt({
     to: order.email,
-    subject: 'Your merch purchase receipt — GateWav',
-    text: `Thank you ${order.full_name}!\n\nOrder total: ₦${Number(order.total_amount).toLocaleString()}\n\n${lines}\n\n— GateWav`,
-    html: itemsRes.rows
-      .map(
-        (r) =>
-          `<p><strong>${r.description}</strong> × ${r.quantity}<br/><img src="${r.image_url}" alt="" width="200" style="max-width:100%"/></p>`
-      )
-      .join(''),
+    order,
+    items: itemsRes.rows,
+    eventTitle: order.event_title,
   });
 }
 

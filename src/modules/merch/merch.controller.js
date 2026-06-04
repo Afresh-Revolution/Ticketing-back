@@ -1,6 +1,9 @@
 import * as merchModel from './merch.model.js';
 import { eventModel } from '../event/event.model.js';
-import { sendEmail } from '../../shared/services/email.service.js';
+import {
+  sendEmail,
+  sendMerchPurchaseReceipt,
+} from '../../shared/services/email.service.js';
 import {
   initializeTransaction,
   isPaystackConfigured,
@@ -42,26 +45,13 @@ async function sendMerchReceiptEmail(orderId) {
   const order = await merchModel.findMerchOrderById(orderId);
   if (!order || order.status !== 'paid') return;
   const items = await merchModel.getMerchOrderItems(orderId);
-  const lines = items
-    .map(
-      (r) =>
-        `• ${r.merch_description} × ${r.quantity} — ₦${Number(r.line_total).toLocaleString()}`
-    )
-    .join('\n');
-  const html = items
-    .map(
-      (r) =>
-        `<p><strong>${r.merch_description}</strong> × ${r.quantity}<br/>` +
-        (r.image_url ? `<img src="${r.image_url}" alt="" width="200" style="max-width:100%"/>` : '') +
-        `</p>`
-    )
-    .join('');
+  const event = await eventModel.findById(order.event_id);
 
-  await sendEmail({
+  await sendMerchPurchaseReceipt({
     to: order.email,
-    subject: 'Your merch purchase receipt — GateWav',
-    text: `Thank you ${order.full_name}!\n\nTotal: ₦${Number(order.total_amount).toLocaleString()}\n\n${lines}`,
-    html,
+    order,
+    items,
+    eventTitle: event?.title,
   }).catch((err) => console.error('[merch] receipt email:', err.message));
 }
 
