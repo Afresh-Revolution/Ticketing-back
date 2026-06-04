@@ -157,8 +157,25 @@ function paymentMethodLabel(method) {
   return method ? String(method) : '—';
 }
 
+function merchReceiptContactHtml(organizerEmail) {
+  const email = String(organizerEmail || '').trim();
+  if (!email) {
+    return 'Keep this email for your records. If you have questions about your order, contact the event organizer or reply with your order reference.';
+  }
+  const safe = escapeHtml(email);
+  return `Keep this email for your records. If you have questions about your order, contact the event organizer at <a href="mailto:${safe}" style="color:#791A94;">${safe}</a>, or reply with your order reference.`;
+}
+
+function merchReceiptContactText(organizerEmail) {
+  const email = String(organizerEmail || '').trim();
+  if (!email) {
+    return 'Keep this email for your records. If you have questions about your order, contact the event organizer or reply with your order reference.';
+  }
+  return `Keep this email for your records. If you have questions about your order, contact the event organizer at ${email}, or reply with your order reference.`;
+}
+
 /** HTML receipt for a paid merch order. */
-export function buildMerchReceiptHtml({ order, items = [], eventTitle }) {
+export function buildMerchReceiptHtml({ order, items = [], eventTitle, organizerEmail }) {
   const ref = order.paystack_reference || order.paystackReference || shortOrderRef(order.id);
   const refLabel = order.paystack_reference || order.paystackReference ? 'Payment reference' : 'Order reference';
   const normalizedItems = items.map(normalizeMerchReceiptItem);
@@ -254,7 +271,7 @@ export function buildMerchReceiptHtml({ order, items = [], eventTitle }) {
           </tfoot>
         </table>
         <p style="margin:24px 0 0;color:#6b7280;font-size:12px;line-height:1.5;">
-          Keep this email for your records. If you have questions about your order, contact the event organizer or reply with your order reference.
+          ${merchReceiptContactHtml(organizerEmail)}
         </p>
         <p style="margin:8px 0 0;color:#9ca3af;font-size:11px;">— GateWav Ticketing</p>
       </div>
@@ -262,7 +279,7 @@ export function buildMerchReceiptHtml({ order, items = [], eventTitle }) {
   `;
 }
 
-export function buildMerchReceiptText({ order, items = [], eventTitle }) {
+export function buildMerchReceiptText({ order, items = [], eventTitle, organizerEmail }) {
   const ref = order.paystack_reference || order.paystackReference || shortOrderRef(order.id);
   const refLabel = order.paystack_reference || order.paystackReference ? 'Payment reference' : 'Order reference';
   const lines = items.map(normalizeMerchReceiptItem).map((item) => {
@@ -291,6 +308,8 @@ export function buildMerchReceiptText({ order, items = [], eventTitle }) {
     '',
     `Total paid: ${naira(order.total_amount ?? order.totalAmount)}`,
     '',
+    merchReceiptContactText(organizerEmail),
+    '',
     '— GateWav Ticketing',
   ]
     .filter(Boolean)
@@ -298,13 +317,14 @@ export function buildMerchReceiptText({ order, items = [], eventTitle }) {
 }
 
 /** Send styled merch purchase receipt to the buyer. */
-export async function sendMerchPurchaseReceipt({ to, order, items, eventTitle }) {
+export async function sendMerchPurchaseReceipt({ to, order, items, eventTitle, organizerEmail }) {
   const subject = 'Your merch purchase receipt — GateWav';
+  const payload = { order, items, eventTitle, organizerEmail };
   return sendEmail({
     to,
     subject,
-    html: buildMerchReceiptHtml({ order, items, eventTitle }),
-    text: buildMerchReceiptText({ order, items, eventTitle }),
+    html: buildMerchReceiptHtml(payload),
+    text: buildMerchReceiptText(payload),
   });
 }
 

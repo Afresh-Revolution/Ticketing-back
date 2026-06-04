@@ -6,6 +6,7 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { sendMerchPurchaseReceipt } from '../shared/services/email.service.js';
+import { eventModel } from '../modules/event/event.model.js';
 import {
   fetchMerchByEventId,
   fetchMerchById,
@@ -522,11 +523,14 @@ async function sendMerchReceiptEmails({ pool, orderId }) {
     [orderId]
   );
 
+  const organizerEmail = await eventModel.getOwnerEmail(order.event_id);
+
   await sendMerchPurchaseReceipt({
     to: order.email,
     order,
     items: itemsRes.rows,
     eventTitle: order.event_title,
+    organizerEmail,
   });
 }
 

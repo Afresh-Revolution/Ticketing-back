@@ -46,12 +46,14 @@ async function sendMerchReceiptEmail(orderId) {
   if (!order || order.status !== 'paid') return;
   const items = await merchModel.getMerchOrderItems(orderId);
   const event = await eventModel.findById(order.event_id);
+  const organizerEmail = await eventModel.getOwnerEmail(order.event_id);
 
   await sendMerchPurchaseReceipt({
     to: order.email,
     order,
     items,
     eventTitle: event?.title,
+    organizerEmail,
   }).catch((err) => console.error('[merch] receipt email:', err.message));
 }
 
