@@ -28,16 +28,22 @@ export async function getMyOrders(req, res) {
             title: o.event.title,
             description: o.event.description,
             date: o.event.date,
+            endDate: o.event.endDate ?? null,
+            endTime: o.event.endTime ?? null,
             venue: o.event.venue ?? o.event.location ?? '',
+            location: o.event.location ?? null,
             imageUrl: o.event.imageUrl,
             category: o.event.category,
             startTime: o.event.startTime,
+            eventType: o.event.eventType ?? 'in-person',
+            isLive: Boolean(o.event.isLive),
           }
         : null,
       items: (o.items || []).map((i) => ({
         ticketName: i.ticketName ?? i.name ?? 'Ticket',
         quantity: Number(i.quantity) || 0,
         price: Number(i.price) || 0,
+        deliveryMode: i.deliveryMode ?? 'in_person',
       })),
     }));
     return res.json(list);
