@@ -1,5 +1,48 @@
 import { config } from '../config/env.js';
 
+const RTMP_INGEST_RE = /^rtmps?:\/\//i;
+
+/** Reject ingest/broadcast URLs (e.g. OBS → YouTube RTMP) — viewers need HTTPS watch/embed links. */
+export function validateStreamWatchUrl(rawUrl, provider = 'youtube') {
+  const url = String(rawUrl || '').trim();
+  if (!url) return { ok: false, error: 'Stream URL is required' };
+
+  if (RTMP_INGEST_RE.test(url)) {
+    return {
+      ok: false,
+      error:
+        'RTMP URLs are for OBS/streaming software only. Use your YouTube watch or live page URL (https://www.youtube.com/watch?v=… or /live/…).',
+    };
+  }
+
+  const p = String(provider || 'youtube').toLowerCase();
+  const embedUrl = toEmbedUrl(url, p);
+
+  if (!embedUrl || !/^https?:\/\//i.test(embedUrl)) {
+    return {
+      ok: false,
+      error: 'Use a public HTTPS watch, live, or embed URL — not an RTMP ingest URL from YouTube Studio.',
+    };
+  }
+
+  if (p === 'youtube' && !/youtube\.com\/embed\//i.test(embedUrl)) {
+    return {
+      ok: false,
+      error:
+        'Could not parse a YouTube video ID. Open your live stream on YouTube and copy the watch or /live/ URL.',
+    };
+  }
+
+  if (p === 'twitch' && !/player\.twitch\.tv/i.test(embedUrl)) {
+    return {
+      ok: false,
+      error: 'Use a Twitch channel or video URL (https://twitch.tv/…).',
+    };
+  }
+
+  return { ok: true, embedUrl };
+}
+
 /** Convert watch/share URLs into embeddable iframe URLs. */
 export function toEmbedUrl(rawUrl, provider = 'youtube') {
   const url = String(rawUrl || '').trim();

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { query, createId } from '../../shared/config/db.js';
 import { sendEmail, buildLiveStreamEmail } from '../../shared/services/email.service.js';
 import { config } from '../../shared/config/env.js';
-import { toEmbedUrl } from '../../shared/utils/streamUrl.js';
+import { toEmbedUrl, validateStreamWatchUrl } from '../../shared/utils/streamUrl.js';
 
 const PAID_STATUSES = ['paid', 'completed', 'success', 'changed', 'true'];
 
@@ -58,11 +58,16 @@ export const streamModel = {
   async updateStreamConfig(eventId, userId, { streamUrl, streamProvider }) {
     const event = await this.getStreamEvent(eventId, userId);
     if (!event) return null;
+    const trimmedUrl = streamUrl?.trim() || '';
+    if (trimmedUrl) {
+      const check = validateStreamWatchUrl(trimmedUrl, streamProvider || 'youtube');
+      if (!check.ok) return { error: check.error };
+    }
     await query(
       `UPDATE "Event"
        SET "streamUrl" = $1, "streamProvider" = $2, "updatedAt" = NOW()
        WHERE id::text = $3`,
-      [streamUrl?.trim() || null, streamProvider || 'youtube', String(eventId)]
+      [trimmedUrl || null, streamProvider || 'youtube', String(eventId)]
     );
     return this.getStreamEvent(eventId, userId);
   },
@@ -98,9 +103,12 @@ export const streamModel = {
   async goLive(eventId, userId) {
     const event = await this.getStreamEvent(eventId, userId);
     if (!event) return { error: 'Event not found or not streamable' };
-    if (!String(event.streamUrl || '').trim()) {
+    const watchUrl = String(event.streamUrl || '').trim();
+    if (!watchUrl) {
       return { error: 'Add a stream URL before going live' };
     }
+    const urlCheck = validateStreamWatchUrl(watchUrl, event.streamProvider || 'youtube');
+    if (!urlCheck.ok) return { error: urlCheck.error };
 
     await query(
       `UPDATE "Event" SET "isLive" = TRUE, "liveStartedAt" = NOW(), "updatedAt" = NOW() WHERE id::text = $1`,

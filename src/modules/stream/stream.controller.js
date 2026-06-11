@@ -26,6 +26,7 @@ export async function updateStreamConfig(req, res, next) {
       streamUrl,
       streamProvider,
     });
+    if (event?.error) return res.status(400).json({ error: event.error });
     if (!event) return res.status(404).json({ error: 'Event not found' });
     res.json(event);
   } catch (e) {
