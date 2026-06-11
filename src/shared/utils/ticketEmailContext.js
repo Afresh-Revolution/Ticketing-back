@@ -80,12 +80,14 @@ export function buildTicketEmailPayload({
   ticketItems = [],
 }) {
   const event = eventRow || {};
+  const eventType = String(event.eventType ?? order.event_type ?? 'in-person').toLowerCase();
+  const fallbackDeliveryMode = eventType === 'online' ? 'online' : 'in_person';
   const items =
     ticketItems.length > 0
       ? ticketItems
       : (order.ticketTypes || []).map((name) => ({
           name: String(name),
-          deliveryMode: 'in_person',
+          deliveryMode: fallbackDeliveryMode,
           quantity: 1,
         }));
 

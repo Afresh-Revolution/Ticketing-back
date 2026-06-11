@@ -68,8 +68,10 @@ export const userPageModel = {
     const { rows } = await query(
       `SELECT o.id AS "orderId", o."eventId", o."fullName", o.email, o."totalAmount", o.status, o."ticketCode", o."createdAt" AS "orderCreatedAt",
               e.title AS "event_title", e.description AS "event_description", e.date AS "event_date",
-              COALESCE(e.venue, e.location) AS "event_venue", e."imageUrl" AS "event_imageUrl", e.category AS "event_category",
-              e."startTime" AS "event_startTime"
+              e."endDate" AS "event_endDate", e."endTime" AS "event_endTime",
+              COALESCE(e.venue, e.location) AS "event_venue", e.location AS "event_location",
+              e."imageUrl" AS "event_imageUrl", e.category AS "event_category",
+              e."startTime" AS "event_startTime", e."eventType" AS "event_type", e."isLive" AS "event_is_live"
        FROM "Order" o
        JOIN "Event" e ON e.id = o."eventId"
        WHERE o.status = 'paid'
@@ -83,7 +85,8 @@ export const userPageModel = {
     const orders = [];
     for (const r of rows) {
       const { rows: items } = await query(
-        `SELECT oi.quantity, oi.price, tt.name AS "ticketName"
+        `SELECT oi.quantity, oi.price, tt.name AS "ticketName",
+                COALESCE(tt."deliveryMode", 'in_person') AS "deliveryMode"
          FROM "OrderItem" oi
          JOIN "TicketType" tt ON oi."ticketTypeId" = tt.id
          WHERE oi."orderId" = $1`,
@@ -102,10 +105,15 @@ export const userPageModel = {
           title: r.event_title,
           description: r.event_description,
           date: r.event_date,
+          endDate: r.event_endDate,
+          endTime: r.event_endTime,
           venue: r.event_venue,
+          location: r.event_location,
           imageUrl: r.event_imageUrl,
           category: r.event_category,
           startTime: r.event_startTime,
+          eventType: r.event_type,
+          isLive: Boolean(r.event_is_live),
         },
         items,
       });
