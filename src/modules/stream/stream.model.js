@@ -12,7 +12,7 @@ function isSuperAdmin(userId) {
 }
 
 function frontendWatchUrl(eventId, token) {
-  const base = (config.publicFrontendUrl || process.env.PUBLIC_FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+  const base = (config.frontendBaseUrl || process.env.PUBLIC_FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
   return `${base}/#/event/${eventId}/watch?token=${encodeURIComponent(token)}`;
 }
 
@@ -30,7 +30,10 @@ export const streamModel = {
     }
     sql += ' ORDER BY date ASC NULLS LAST, title ASC';
     const { rows } = await query(sql, params);
-    return rows;
+    return rows.map((row) => ({
+      ...row,
+      id: String(row.id),
+    }));
   },
 
   async getStreamEvent(eventId, userId) {

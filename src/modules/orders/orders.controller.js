@@ -2,6 +2,11 @@ import crypto from 'crypto';
 import { query, createId } from '../../shared/config/db.js';
 import { config } from '../../shared/config/env.js';
 import { sendEmail, sendTicketEmail } from '../../shared/services/email.service.js';
+import {
+  buildTicketEmailPayload,
+  loadEventForTicketEmail,
+  loadOrderTicketItems,
+} from '../../shared/utils/ticketEmailContext.js';
 import { normalizeBuyerEmail } from '../../shared/utils/email.js';
 import { eventModel } from '../event/event.model.js';
 
@@ -153,39 +158,22 @@ async function ensureOrderTicketCode(orderId, currentTicketCode) {
   throw new Error('Failed to generate a unique ticket code');
 }
 
-async function getOrderTicketTypes(orderId) {
-  const result = await query(
-    `SELECT COALESCE(tt.name, 'General') AS name
-     FROM "OrderItem" oi
-     LEFT JOIN "TicketType" tt ON tt.id::text = oi."ticketTypeId"::text
-     WHERE oi."orderId"::text = $1`,
-    [String(orderId)]
-  ).catch(() => ({ rows: [] }));
-  return (result.rows || []).map((row) => String(row.name || '').trim()).filter(Boolean);
-}
-
-async function getEventMeta(eventId) {
-  const result = await query(
-    `SELECT title, date FROM "Event" WHERE id::text = $1 LIMIT 1`,
-    [String(eventId)]
-  ).catch(() => ({ rows: [] }));
-  return result.rows?.[0] || null;
-}
-
 async function sendOrderTicket(order) {
   if (!order?.email) return;
   const ticketCode = await ensureOrderTicketCode(order.id, order.ticketCode);
-  const eventMeta = await getEventMeta(order.eventId);
-  const ticketTypes = await getOrderTicketTypes(order.id);
+  const [eventRow, ticketItems] = await Promise.all([
+    loadEventForTicketEmail(order.eventId),
+    loadOrderTicketItems(order.id),
+  ]);
   try {
-    await sendTicketEmail({
-      to: order.email,
-      fullName: order.fullName,
-      ticketCode,
-      eventTitle: eventMeta?.title,
-      eventDate: eventMeta?.date,
-      ticketTypes,
-    });
+    await sendTicketEmail(
+      buildTicketEmailPayload({
+        order: { ...order, ticketTypes: ticketItems.map((i) => i.name) },
+        ticketCode,
+        eventRow,
+        ticketItems,
+      })
+    );
   } catch (emailErr) {
     console.error('[orders] Ticket email failed:', emailErr?.message || emailErr);
   }

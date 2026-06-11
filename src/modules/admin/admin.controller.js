@@ -15,6 +15,12 @@ import {
   sendManualWithdrawalPayoutEmail,
 } from '../../shared/services/email.service.js';
 import {
+  buildTicketEmailPayload,
+  loadEventForTicketEmail,
+  loadOrderTicketItems,
+  loadWalkInTicketItem,
+} from '../../shared/utils/ticketEmailContext.js';
+import {
   isPaystackConfigured,
   createTransferRecipient,
   initiateTransfer,
@@ -852,15 +858,39 @@ async function getWalkInSaleByIdForAdmin(saleId, req) {
   return result.rows?.[0] || null;
 }
 
-async function getOrderTicketTypes(orderId) {
-  const result = await query(
-    `SELECT COALESCE(tt.name, 'General') AS name
-     FROM "OrderItem" oi
-     LEFT JOIN "TicketType" tt ON tt.id::text = oi."ticketTypeId"::text
-     WHERE oi."orderId"::text = $1`,
-    [orderId]
-  ).catch(() => ({ rows: [] }));
-  return (result.rows || []).map((row) => String(row.name || '').trim()).filter(Boolean);
+async function dispatchTicketEmail({
+  email,
+  fullName,
+  ticketCode,
+  eventId,
+  orderId = null,
+  ticketTypeName = null,
+  ticketItems = null,
+}) {
+  const eventRow = eventId ? await loadEventForTicketEmail(eventId) : null;
+  let items = ticketItems;
+  if (!items?.length && orderId) {
+    items = await loadOrderTicketItems(orderId);
+  }
+  if (!items?.length && eventId && ticketTypeName) {
+    items = [await loadWalkInTicketItem(eventId, ticketTypeName)];
+  }
+  if (!items?.length && ticketTypeName) {
+    items = [{ name: ticketTypeName, deliveryMode: 'in_person', quantity: 1 }];
+  }
+  await sendTicketEmail(
+    buildTicketEmailPayload({
+      order: {
+        email,
+        fullName,
+        eventId,
+        ticketTypes: (items || []).map((i) => i.name),
+      },
+      ticketCode,
+      eventRow,
+      ticketItems: items || [],
+    })
+  );
 }
 
 async function ensureOrderItemsForManualPaid(orderId, eventId, body = {}) {
@@ -929,14 +959,12 @@ async function ensureTicketCode(orderId, existingTicketCode) {
 async function sendSaleTicketEmail(orderRow) {
   if (!orderRow?.email) throw new Error('Buyer email is missing for this sale');
   const ticketCode = await ensureTicketCode(orderRow.id, orderRow.ticketCode);
-  const ticketTypes = await getOrderTicketTypes(orderRow.id);
-  await sendTicketEmail({
-    to: orderRow.email,
+  await dispatchTicketEmail({
+    email: orderRow.email,
     fullName: orderRow.fullName,
     ticketCode,
-    eventTitle: orderRow.event_title,
-    eventDate: orderRow.event_date,
-    ticketTypes,
+    eventId: orderRow.eventId,
+    orderId: orderRow.id,
   });
   return ticketCode;
 }
@@ -969,13 +997,12 @@ export async function updateSaleStatus(req, res) {
       let emailError = null;
       if (status === 'paid' && previousStatus !== 'paid' && freshWalkInSale.email) {
         try {
-          await sendTicketEmail({
-            to: freshWalkInSale.email,
+          await dispatchTicketEmail({
+            email: freshWalkInSale.email,
             fullName: freshWalkInSale.fullName,
             ticketCode: generateTicketCode(),
-            eventTitle: freshWalkInSale.event_title,
-            eventDate: freshWalkInSale.event_date,
-            ticketTypes: [freshWalkInSale.ticketType || 'General'],
+            eventId: freshWalkInSale.eventId,
+            ticketTypeName: freshWalkInSale.ticketType || 'General',
           });
           emailSent = true;
         } catch (emailErr) {
@@ -2895,13 +2922,12 @@ export async function createWalkInSale(req, res) {
 
     if (validStatus === 'paid' && row.email) {
       try {
-        await sendTicketEmail({
-          to: row.email,
+        await dispatchTicketEmail({
+          email: row.email,
           fullName: row.fullName,
           ticketCode: generateTicketCode(),
-          eventTitle: event.title,
-          eventDate: event.date,
-          ticketTypes: [row.ticketType || 'General'],
+          eventId: event.id,
+          ticketTypeName: row.ticketType || 'General',
         });
       } catch (emailErr) {
         console.error('createWalkInSale email warning', emailErr);
@@ -2987,11 +3013,11 @@ export async function updateWalkInSaleStatus(req, res) {
 
     // Verify ownership via event
     const ownershipSql = superAdmin
-      ? `SELECT w.id, w.status, w.email, w."fullName", w."ticketType", e.title AS event_title, e.date AS event_date
+      ? `SELECT w.id, w."eventId", w.status, w.email, w."fullName", w."ticketType", e.title AS event_title, e.date AS event_date
          FROM "WalkInSale" w
          LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
          WHERE w.id = $1`
-      : `SELECT w.id, w.status, w.email, w."fullName", w."ticketType", e.title AS event_title, e.date AS event_date
+      : `SELECT w.id, w."eventId", w.status, w.email, w."fullName", w."ticketType", e.title AS event_title, e.date AS event_date
          FROM "WalkInSale" w
          LEFT JOIN "Event" e ON e.id::text = w."eventId"::text
          WHERE w.id = $1 AND (e."createdBy"::text = $2 OR (e."createdBy" IS NULL AND $2 = '0'))`;
@@ -3009,13 +3035,12 @@ export async function updateWalkInSaleStatus(req, res) {
 
     if (validStatus === 'paid' && previousStatus !== 'paid' && ownerCheck.rows[0].email) {
       try {
-        await sendTicketEmail({
-          to: ownerCheck.rows[0].email,
+        await dispatchTicketEmail({
+          email: ownerCheck.rows[0].email,
           fullName: ownerCheck.rows[0].fullName,
           ticketCode: generateTicketCode(),
-          eventTitle: ownerCheck.rows[0].event_title,
-          eventDate: ownerCheck.rows[0].event_date,
-          ticketTypes: [ownerCheck.rows[0].ticketType || 'General'],
+          eventId: ownerCheck.rows[0].eventId,
+          ticketTypeName: ownerCheck.rows[0].ticketType || 'General',
         });
       } catch (emailErr) {
         console.error('updateWalkInSaleStatus email warning', emailErr);

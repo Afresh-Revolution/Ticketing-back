@@ -1,6 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import * as eventsController from './events.controller.js';
+import * as streamController from '../stream/stream.controller.js';
 import { requireAuth } from '../../middleware/auth.js';
 
 const router = express.Router();
@@ -14,6 +15,8 @@ const upload = multer({
 });
 
 router.get('/', eventsController.listEvents);
+router.get('/:id/live-status', streamController.getLiveStatus);
+router.get('/:id/stream', streamController.getStreamAccess);
 router.get('/:id', eventsController.getEvent);
 router.post('/upload-image', requireAuth, upload.single('image'), eventsController.uploadImage);
 router.post('/', requireAuth, eventsController.createEvent);

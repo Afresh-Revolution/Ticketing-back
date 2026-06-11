@@ -70,43 +70,353 @@ export function sendOtpEmail(to, code, type = 'verification') {
   return sendEmail({ to, subject, html });
 }
 
-/** Send digital ticket email with QR code (after payment success). */
-export async function sendTicketEmail({ to, fullName, ticketCode, eventTitle, eventDate, ticketTypes = [] }) {
-  let qrDataUrl = '';
-  try {
-    qrDataUrl = await QRCode.toDataURL(ticketCode, { margin: 2, width: 200 });
-  } catch (qrErr) {
-    console.warn('[email] QR generation failed:', qrErr.message);
+const BRAND = '#791A94';
+const EVENT_TZ = 'Africa/Lagos';
+
+function normalizeEventFormat(value) {
+  const v = String(value || 'in-person').toLowerCase().trim();
+  if (v === 'online' || v === 'hybrid') return v;
+  return 'in-person';
+}
+
+function normalizeDeliveryMode(ticket, eventType) {
+  const explicit = String(ticket?.deliveryMode || '').toLowerCase().trim();
+  if (explicit === 'online' || explicit === 'in_person') {
+    return explicit === 'online' ? 'online' : 'in_person';
   }
-  const dateStr = eventDate ? new Date(eventDate).toLocaleDateString('en-NG', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }) : '';
-  const subject = 'Your ticket – ' + (eventTitle || 'Event');
-  const safeTicketTypes = Array.isArray(ticketTypes)
-    ? ticketTypes.map((t) => String(t || '').trim()).filter(Boolean)
-    : [];
-  const uniqueTicketTypes = [...new Set(safeTicketTypes)];
-  const ticketTypeBadges = uniqueTicketTypes
+  return normalizeEventFormat(eventType) === 'online' ? 'online' : 'in_person';
+}
+
+function eventPageUrl(eventId) {
+  if (!eventId) return config.frontendBaseUrl;
+  return `${config.frontendBaseUrl}/#/event/${encodeURIComponent(String(eventId))}`;
+}
+
+function datePartFromValue(value) {
+  if (!value) return '';
+  const raw = String(value);
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseEventStart(eventDate, startTime) {
+  const datePart = datePartFromValue(eventDate);
+  if (!datePart) return null;
+  const time = String(startTime || '00:00').trim() || '00:00';
+  const normalizedTime = /^\d{1,2}:\d{2}$/.test(time) ? `${time}:00` : time;
+  const parsed = new Date(`${datePart}T${normalizedTime}`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatEventDayLine(eventDate, startTime, endTime, endDate) {
+  const start = parseEventStart(eventDate, startTime);
+  if (!start) return { dayName: '', dateLine: '', timeLine: '' };
+
+  const dayName = start.toLocaleDateString('en-NG', {
+    weekday: 'long',
+    timeZone: EVENT_TZ,
+  });
+  const dateLine = start.toLocaleDateString('en-NG', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: EVENT_TZ,
+  });
+  const startLabel = start.toLocaleTimeString('en-NG', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: EVENT_TZ,
+  });
+
+  let timeLine = startLabel;
+  if (endTime) {
+    const endPart = datePartFromValue(endDate || eventDate);
+    const endParsed = parseEventStart(endPart, endTime);
+    if (endParsed) {
+      const endLabel = endParsed.toLocaleTimeString('en-NG', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: EVENT_TZ,
+      });
+      timeLine = `${startLabel} – ${endLabel}`;
+    }
+  }
+
+  return { dayName, dateLine, timeLine };
+}
+
+function formatCountdownLabel(targetDate) {
+  if (!targetDate) return '';
+  const ms = targetDate.getTime() - Date.now();
+  if (ms <= 0) return 'Starting soon';
+  const days = Math.floor(ms / 86400000);
+  const hours = Math.floor((ms % 86400000) / 3600000);
+  const minutes = Math.floor((ms % 3600000) / 60000);
+  const parts = [];
+  if (days > 0) parts.push(`${days} day${days === 1 ? '' : 's'}`);
+  if (hours > 0) parts.push(`${hours} hour${hours === 1 ? '' : 's'}`);
+  if (days === 0 && minutes > 0) parts.push(`${minutes} minute${minutes === 1 ? '' : 's'}`);
+  return parts.length ? `Starts in ${parts.join(', ')}` : 'Starts very soon';
+}
+
+function ticketTypeBadgesHtml(ticketItems = []) {
+  const labels = [];
+  for (const item of ticketItems) {
+    const qty = Math.max(1, Number(item.quantity) || 1);
+    const name = escapeHtml(item.name || 'Ticket');
+    const mode =
+      normalizeDeliveryMode(item, 'in-person') === 'online' ? ' · Online' : '';
+    labels.push(`${qty > 1 ? `${qty}× ` : ''}${name}${mode}`);
+  }
+  const unique = [...new Set(labels)];
+  return unique
     .map(
-      (type) =>
-        `<span style="display:inline-block;background:#791A94;color:#fff;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;margin:0 6px 6px 0;">${type}</span>`
+      (label) =>
+        `<span style="display:inline-block;background:${BRAND};color:#fff;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.02em;margin:0 6px 6px 0;">${label}</span>`
     )
     .join('');
-  const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; background: #f8f9fa; border-radius: 12px;">
-      <h2 style="color: #791A94; margin-top: 0;">Gatewave Ticket</h2>
-      <p>Hi ${fullName || 'there'},</p>
-      <p>Your payment was successful. Here is your digital ticket. NOTE: If multiple tickets were purchased, please share to individual attendees.</p>
-      <div style="background: #fff; padding: 20px; border-radius: 12px; text-align: center; margin: 20px 0; border: 1px solid #e0e0e0;">
-        <p style="margin: 0 0 8px 0; font-weight: bold; color: #1a1a2e;">${eventTitle || 'Event'}</p>
-        <p style="margin: 0 0 16px 0; color: #666; font-size: 14px;">${dateStr}</p>
-        ${ticketTypeBadges ? `<div style="margin: 0 0 14px 0;">${ticketTypeBadges}</div>` : ''}
-        <p style="margin: 0 0 8px 0; font-size: 12px; color: #999;">Ticket code</p>
-        <p style="margin: 0 0 12px 0; font-size: 18px; font-weight: bold; letter-spacing: 2px;">${ticketCode}</p>
-        ${qrDataUrl ? `<img src="${qrDataUrl}" alt="QR code" width="200" height="200" style="display: block; margin: 0 auto;" />` : ''}
+}
+
+function wrapTicketEmailLayout({ preheader, headerTitle, headerSubtitle, bodyHtml }) {
+  return `
+    <div style="font-family:Arial,Helvetica,sans-serif;background:#f3f4f6;padding:24px 12px;margin:0;">
+      <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${escapeHtml(preheader || '')}</div>
+      <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:1px solid #e5e7eb;">
+        <div style="background:${BRAND};color:#fff;padding:22px 24px;">
+          <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;opacity:.88;">GateWav</div>
+          <h1 style="margin:10px 0 0;font-size:22px;line-height:1.25;font-weight:700;">${headerTitle}</h1>
+          ${headerSubtitle ? `<p style="margin:8px 0 0;font-size:14px;opacity:.92;line-height:1.45;">${headerSubtitle}</p>` : ''}
+        </div>
+        <div style="padding:24px;color:#111827;font-size:15px;line-height:1.55;">
+          ${bodyHtml}
+        </div>
+        <div style="padding:0 24px 20px;color:#9ca3af;font-size:11px;">— GateWav Ticketing</div>
       </div>
-      <p style="color: #666; font-size: 12px;">Show this QR code at the venue for entry.</p>
     </div>
   `;
-  return sendEmail({ to, subject, html });
+}
+
+function buildScheduleCardHtml({
+  eventDate,
+  eventEndDate,
+  eventStartTime,
+  eventEndTime,
+  eventLocation,
+  eventVenue,
+  eventId,
+  showCountdown = true,
+}) {
+  const start = parseEventStart(eventDate, eventStartTime);
+  const { dayName, dateLine, timeLine } = formatEventDayLine(
+    eventDate,
+    eventStartTime,
+    eventEndTime,
+    eventEndDate
+  );
+  const countdown = showCountdown ? formatCountdownLabel(start) : '';
+  const locationLine = [eventVenue, eventLocation].filter(Boolean).join(' · ') || '';
+
+  return `
+    <div style="background:linear-gradient(135deg,#f5f3ff 0%,#faf5ff 100%);border:1px solid #e9d5ff;border-radius:12px;padding:18px 20px;margin:20px 0;text-align:center;">
+      ${dayName ? `<div style="font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:${BRAND};margin-bottom:6px;">${escapeHtml(dayName)}</div>` : ''}
+      ${dateLine ? `<div style="font-size:20px;font-weight:700;color:#1f2937;line-height:1.3;">${escapeHtml(dateLine)}</div>` : ''}
+      ${timeLine ? `<div style="font-size:17px;font-weight:600;color:#4b5563;margin-top:8px;">${escapeHtml(timeLine)} <span style="font-size:12px;color:#6b7280;">WAT</span></div>` : ''}
+      ${
+        countdown
+          ? `<div style="display:inline-block;margin-top:14px;background:${BRAND};color:#fff;font-size:13px;font-weight:700;padding:8px 16px;border-radius:999px;">${escapeHtml(countdown)}</div>`
+          : ''
+      }
+      ${
+        locationLine
+          ? `<div style="margin-top:14px;font-size:13px;color:#6b7280;">📍 ${escapeHtml(locationLine)}</div>`
+          : ''
+      }
+      ${
+        eventId
+          ? `<p style="margin:14px 0 0;font-size:12px;"><a href="${escapeHtml(eventPageUrl(eventId))}" style="color:${BRAND};font-weight:600;text-decoration:none;">View event page for live countdown →</a></p>`
+          : ''
+      }
+    </div>
+  `;
+}
+
+function buildOnlineAccessNoticeHtml() {
+  return `
+    <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:16px 18px;margin:20px 0;">
+      <div style="font-size:13px;font-weight:700;color:#9a3412;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Online access</div>
+      <p style="margin:0;color:#7c2d12;font-size:14px;line-height:1.55;">
+        When this event <strong>goes live</strong>, we will email you a <strong>private watch link</strong> tied to your purchase.
+        You do not need to do anything else right now — save this email for your records.
+      </p>
+    </div>
+  `;
+}
+
+function buildInPersonTicketCardHtml({ ticketCode, qrDataUrl, eventTitle }) {
+  return `
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:20px;text-align:center;margin:20px 0;">
+      <p style="margin:0 0 6px;font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;">Venue entry</p>
+      <p style="margin:0 0 14px;font-weight:700;color:#111827;">${escapeHtml(eventTitle || 'Event')}</p>
+      <p style="margin:0 0 6px;font-size:12px;color:#9ca3af;">Ticket code</p>
+      <p style="margin:0 0 14px;font-size:18px;font-weight:700;letter-spacing:2px;color:#111827;">${escapeHtml(ticketCode)}</p>
+      ${qrDataUrl ? `<img src="${qrDataUrl}" alt="QR code" width="180" height="180" style="display:block;margin:0 auto;border-radius:8px;" />` : ''}
+      <p style="margin:14px 0 0;font-size:12px;color:#6b7280;">Show this QR code at the venue for entry.</p>
+    </div>
+  `;
+}
+
+function buildTicketEmailContent(ctx) {
+  const eventType = normalizeEventFormat(ctx.eventType);
+  const ticketItems = (ctx.ticketItems || []).map((item) => ({
+    name: item.name || 'Ticket',
+    deliveryMode: normalizeDeliveryMode(item, eventType),
+    quantity: Math.max(1, Number(item.quantity) || 1),
+  }));
+  if (ticketItems.length === 0 && Array.isArray(ctx.ticketTypes)) {
+    for (const name of ctx.ticketTypes) {
+      ticketItems.push({
+        name: String(name || 'Ticket'),
+        deliveryMode: normalizeDeliveryMode({}, eventType),
+        quantity: 1,
+      });
+    }
+  }
+
+  const hasOnlineTicket = ticketItems.some((t) => t.deliveryMode === 'online');
+  const hasInPersonTicket = ticketItems.some((t) => t.deliveryMode === 'in_person');
+  const isOnlineOnlyPurchase = hasOnlineTicket && !hasInPersonTicket;
+  const isHybridEvent = eventType === 'hybrid';
+  const showSchedule = isHybridEvent || isOnlineOnlyPurchase || eventType === 'online';
+  const greeting = escapeHtml(ctx.fullName || 'there');
+  const title = escapeHtml(ctx.eventTitle || 'Event');
+  const badges = ticketTypeBadgesHtml(ticketItems);
+  const scheduleHtml = showSchedule
+    ? buildScheduleCardHtml({
+        eventDate: ctx.eventDate,
+        eventEndDate: ctx.eventEndDate,
+        eventStartTime: ctx.eventStartTime,
+        eventEndTime: ctx.eventEndTime,
+        eventLocation: ctx.eventLocation,
+        eventVenue: ctx.eventVenue,
+        eventId: ctx.eventId,
+        showCountdown: true,
+      })
+    : '';
+
+  if (isOnlineOnlyPurchase || (eventType === 'online' && !hasInPersonTicket)) {
+    const bodyHtml = `
+      <p style="margin:0 0 16px;">Hi <strong>${greeting}</strong>,</p>
+      <p style="margin:0 0 16px;">Your payment was successful. You are confirmed for the <strong>online stream</strong> of <strong>${title}</strong>.</p>
+      ${scheduleHtml}
+      ${badges ? `<div style="margin:0 0 8px;">${badges}</div>` : ''}
+      ${buildOnlineAccessNoticeHtml()}
+      <p style="margin:16px 0 0;font-size:13px;color:#6b7280;">Confirmation code: <strong style="color:#111827;letter-spacing:1px;">${escapeHtml(ctx.ticketCode)}</strong></p>
+      <p style="margin:12px 0 0;font-size:12px;color:#9ca3af;">If you bought multiple online tickets, forward the watch link to each attendee when you receive it.</p>
+    `;
+    return {
+      subject: `You're in — ${ctx.eventTitle || 'Live stream'}`,
+      html: wrapTicketEmailLayout({
+        preheader: 'Your online access is confirmed. We will send your watch link when the event goes live.',
+        headerTitle: 'Online access confirmed',
+        headerSubtitle: ctx.eventTitle || 'Live event',
+        bodyHtml,
+      }),
+    };
+  }
+
+  if (isHybridEvent || (hasOnlineTicket && hasInPersonTicket)) {
+    const bodyHtml = `
+      <p style="margin:0 0 16px;">Hi <strong>${greeting}</strong>,</p>
+      <p style="margin:0 0 16px;">Your payment was successful for <strong>${title}</strong>.</p>
+      ${scheduleHtml}
+      ${badges ? `<div style="margin:0 0 8px;">${badges}</div>` : ''}
+      ${hasOnlineTicket ? buildOnlineAccessNoticeHtml() : ''}
+      ${hasInPersonTicket ? (ctx.inPersonCardHtml || '') : ''}
+      ${
+        hasInPersonTicket && hasOnlineTicket
+          ? '<p style="margin:16px 0 0;font-size:13px;color:#6b7280;">This order includes both venue and online tickets — use the QR above for in-person entry; your stream link will arrive separately when the event goes live.</p>'
+          : hasInPersonTicket
+            ? '<p style="margin:16px 0 0;font-size:13px;color:#6b7280;">Show the QR code above at the venue for entry.</p>'
+            : ''
+      }
+    `;
+    return {
+      subject: `Your ticket — ${ctx.eventTitle || 'Event'}`,
+      html: wrapTicketEmailLayout({
+        preheader: 'Event details, countdown, and your ticket information.',
+        headerTitle: 'Hybrid event ticket',
+        headerSubtitle: 'In-person and/or online access',
+        bodyHtml,
+      }),
+    };
+  }
+
+  const dateStr = ctx.eventDate
+    ? new Date(ctx.eventDate).toLocaleDateString('en-NG', {
+        weekday: 'short',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      })
+    : '';
+  const bodyHtml = `
+    <p style="margin:0 0 16px;">Hi <strong>${greeting}</strong>,</p>
+    <p style="margin:0 0 16px;">Your payment was successful. Here is your digital ticket. If multiple tickets were purchased, please share with individual attendees.</p>
+    ${ctx.inPersonCardHtml || ''}
+    ${dateStr ? `<p style="margin:0 0 12px;color:#6b7280;font-size:14px;text-align:center;">${escapeHtml(dateStr)}</p>` : ''}
+    ${badges ? `<div style="text-align:center;margin:0 0 8px;">${badges}</div>` : ''}
+    <p style="margin:12px 0 0;font-size:12px;color:#6b7280;text-align:center;">Show this QR code at the venue for entry.</p>
+  `;
+  return {
+    subject: `Your ticket — ${ctx.eventTitle || 'Event'}`,
+    html: wrapTicketEmailLayout({
+      preheader: 'Your digital ticket and QR code for venue entry.',
+      headerTitle: 'Your ticket',
+      headerSubtitle: ctx.eventTitle || 'Event',
+      bodyHtml,
+    }),
+  };
+}
+
+/** Send digital ticket email (after payment success). Routes template by event/ticket type. */
+export async function sendTicketEmail(ctx) {
+  let qrDataUrl = '';
+  const eventType = normalizeEventFormat(ctx.eventType);
+  const ticketItems = ctx.ticketItems || [];
+  const hasInPerson =
+    ticketItems.some((t) => normalizeDeliveryMode(t, eventType) === 'in_person') ||
+    (!ticketItems.length && eventType !== 'online');
+
+  if (hasInPerson && ctx.ticketCode) {
+    try {
+      qrDataUrl = await QRCode.toDataURL(ctx.ticketCode, { margin: 2, width: 200 });
+    } catch (qrErr) {
+      console.warn('[email] QR generation failed:', qrErr.message);
+    }
+  }
+
+  const enriched = {
+    ...ctx,
+    inPersonCardHtml: hasInPerson
+      ? buildInPersonTicketCardHtml({
+          ticketCode: ctx.ticketCode,
+          qrDataUrl,
+          eventTitle: ctx.eventTitle,
+        })
+      : '',
+  };
+
+  const { subject, html } = buildTicketEmailContent(enriched);
+  const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return sendEmail({ to: ctx.to, subject, html, text });
 }
 
 function naira(amount) {
@@ -434,21 +744,25 @@ export function sendWithdrawalRejectedEmail({ to, adminName, eventTitle }) {
 }
 
 export function buildLiveStreamEmail({ eventTitle, watchUrl, buyerName }) {
-  const greeting = buyerName ? `Hi ${buyerName},` : 'Hi there,';
-  const subject = `${eventTitle} is live now — join the stream`;
-  const html = `
-    <div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;color:#111">
-      <p>${greeting}</p>
-      <p><strong>${eventTitle}</strong> is live. Your ticket includes online access — use the button below to join.</p>
-      <p style="margin:28px 0">
-        <a href="${watchUrl}" style="background:#7c3aed;color:#fff;padding:12px 22px;border-radius:999px;text-decoration:none;font-weight:600">
-          Join live stream
-        </a>
-      </p>
-      <p style="font-size:13px;color:#555">This link is tied to your purchase. Do not share it publicly.</p>
-      <p style="font-size:12px;color:#888">If the button does not work, copy this URL:<br>${watchUrl}</p>
+  const greeting = escapeHtml(buyerName || 'there');
+  const title = escapeHtml(eventTitle || 'Event');
+  const safeUrl = escapeHtml(watchUrl);
+  const subject = `${eventTitle || 'Event'} is live — join now`;
+  const bodyHtml = `
+    <p style="margin:0 0 16px;">Hi <strong>${greeting}</strong>,</p>
+    <p style="margin:0 0 16px;"><strong>${title}</strong> is <strong style="color:${BRAND};">live now</strong>. Your ticket includes online access — tap below to join.</p>
+    <div style="text-align:center;margin:28px 0;">
+      <a href="${safeUrl}" style="display:inline-block;background:${BRAND};color:#fff;padding:14px 28px;border-radius:999px;text-decoration:none;font-weight:700;font-size:15px;">Join live stream</a>
     </div>
+    <p style="margin:0;font-size:13px;color:#6b7280;">This link is tied to your purchase. Please do not share it publicly.</p>
+    <p style="margin:12px 0 0;font-size:12px;color:#9ca3af;word-break:break-all;">If the button does not work, copy this URL:<br>${safeUrl}</p>
   `;
-  const text = `${greeting}\n\n${eventTitle} is live. Join here: ${watchUrl}`;
+  const html = wrapTicketEmailLayout({
+    preheader: 'The event is live. Join the stream with your private link.',
+    headerTitle: 'We are live!',
+    headerSubtitle: eventTitle || 'Online event',
+    bodyHtml,
+  });
+  const text = `Hi ${buyerName || 'there'},\n\n${eventTitle} is live. Join here: ${watchUrl}`;
   return { subject, html, text };
 }

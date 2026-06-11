@@ -1,5 +1,16 @@
 import { query, createId } from '../../shared/config/db.js';
-import { fetchMerchByEventId } from '../merch/merch.model.js';
+
+async function fetchMerchByEventId(eventId) {
+  try {
+    const mod = await import('../merch/merch.model.js');
+    if (typeof mod.fetchMerchByEventId === 'function') {
+      return mod.fetchMerchByEventId(eventId);
+    }
+  } catch {
+    /* merch module optional */
+  }
+  return [];
+}
 
 const MAX_EVENT_IMAGES = 3;
 
@@ -48,6 +59,7 @@ function rowToEvent(row) {
     isTrending: row.isTrending,
     location: row.location,
     eventType: row.eventType || 'in-person',
+    streamUrl: row.streamUrl ?? null,
     streamProvider: row.streamProvider || 'youtube',
     isLive: Boolean(row.isLive),
     liveStartedAt: row.liveStartedAt ?? null,
@@ -220,19 +232,17 @@ export const eventModel = {
     return event;
   },
   async create(data) {
-    const id = createId();
     const now = new Date().toISOString();
     const imageUrls = normalizeEventImageUrls(data.imageUrls, data.imageUrl);
     const imageUrl = imageUrls[0] ?? null;
-
-    // 1. Create Event
     const eventType = data.eventType || 'in-person';
+    const price = Number(data.price) || 0;
 
-    await query(
-      `INSERT INTO "Event" (id, title, description, date, "endDate", venue, "imageUrl", "imageUrls", category, "startTime", "endTime", price, currency, "isTrending", location, "eventType", "streamUrl", "streamProvider", "createdBy", "isPublished", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
+    const insertResult = await query(
+      `INSERT INTO "Event" (title, description, date, "endDate", venue, "imageUrl", "imageUrls", category, "startTime", "endTime", price, currency, "isTrending", location, "eventType", "streamUrl", "streamProvider", "createdBy", "isPublished", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), NOW())
+       RETURNING id`,
       [
-        id,
         data.title,
         data.description ?? null,
         data.date,
@@ -243,8 +253,8 @@ export const eventModel = {
         data.category ?? null,
         data.startTime ?? null,
         data.endTime ?? null,
-        data.price ?? null,
-        data.currency ?? null,
+        price,
+        data.currency ?? 'NGN',
         data.isTrending ?? false,
         data.location ?? null,
         eventType,
@@ -252,17 +262,15 @@ export const eventModel = {
         data.streamProvider || 'youtube',
         data.createdBy ?? null,
         data.isPublished !== false,
-        now,
-        now,
       ]
     );
+    const id = insertResult.rows[0]?.id;
+    if (id == null) throw new Error('Failed to create event');
 
-    // 2. Create Ticket Types (if any)
     if (data.ticketTypes && Array.isArray(data.ticketTypes)) {
       for (const ticket of data.ticketTypes) {
-        const ticketId = createId();
         const type = resolveTicketType(ticket);
-        const price = type === 'paid' ? (Number(ticket.price) || 0) : 0;
+        const ticketPrice = type === 'paid' ? (Number(ticket.price) || 0) : 0;
         const contactEmail = type === 'reservation' ? (ticket.contactEmail?.trim() || null) : null;
         const contactPhone = type === 'reservation' ? (ticket.contactPhone?.trim() || null) : null;
         const deliveryMode = resolveDeliveryMode(ticket, eventType);
@@ -270,18 +278,18 @@ export const eventModel = {
           `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "deliveryMode", "contactEmail", "contactPhone", "createdAt", "updatedAt")
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
           [
-            ticketId,
+            createId(),
             id,
             ticket.name,
             ticket.description ?? null,
-            price,
-            ticket.quantity ?? 0,
+            ticketPrice,
+            Number(ticket.quantity) || 0,
             type,
             deliveryMode,
             contactEmail,
             contactPhone,
             now,
-            now
+            now,
           ]
         );
       }

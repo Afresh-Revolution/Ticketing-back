@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import * as adminController from './admin.controller.js';
 import { adminMerchRouter } from '../merch/merch.routes.js';
+import streamRoutes from '../stream/stream.routes.js';
 import { requireAuth, requireSuperAdmin } from '../../middleware/auth.js';
 
 const router = Router();
@@ -9,6 +10,8 @@ const landingVideoUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 101 * 1024 * 1024 },
 });
+
+router.use('/stream', streamRoutes);
 
 router.get('/me', requireAuth, adminController.getMe);
 router.get('/dashboard', requireAuth, adminController.getDashboard);

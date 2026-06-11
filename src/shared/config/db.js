@@ -242,6 +242,62 @@ export async function ensureWithdrawalDbSchema() {
   }
 }
 
+/** Event streaming + multi-image columns for legacy Supabase schemas. Idempotent. */
+export async function ensureEventStreamingSchema() {
+  if (!pool) return;
+  try {
+    const eventAlters = [
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "imageUrls" JSONB DEFAULT '[]'::jsonb`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "endDate" DATE`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "endTime" VARCHAR(50)`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "venue" VARCHAR(512)`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "category" VARCHAR(255)`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "eventType" VARCHAR(50) DEFAULT 'in-person'`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "streamUrl" VARCHAR(1024)`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "streamProvider" VARCHAR(50) DEFAULT 'youtube'`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "isLive" BOOLEAN DEFAULT FALSE`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "liveStartedAt" TIMESTAMPTZ`,
+    ];
+    for (const sql of eventAlters) {
+      await query(sql).catch(() => ({}));
+    }
+    await query(
+      `ALTER TABLE "Event" ALTER COLUMN "createdAt" SET DEFAULT NOW()`
+    ).catch(() => ({}));
+    await query(
+      `ALTER TABLE "Event" ALTER COLUMN "updatedAt" SET DEFAULT NOW()`
+    ).catch(() => ({}));
+    await query(
+      `ALTER TABLE "TicketType" ADD COLUMN IF NOT EXISTS "deliveryMode" VARCHAR(50) DEFAULT 'in_person'`
+    ).catch(() => ({}));
+    await query(
+      `ALTER TABLE "TicketType" ADD COLUMN IF NOT EXISTS "contactEmail" VARCHAR(255)`
+    ).catch(() => ({}));
+    await query(
+      `ALTER TABLE "TicketType" ADD COLUMN IF NOT EXISTS "contactPhone" VARCHAR(50)`
+    ).catch(() => ({}));
+    await query(`
+      CREATE TABLE IF NOT EXISTS "StreamAccess" (
+        "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        "orderId" TEXT NOT NULL REFERENCES "Order"("id") ON DELETE CASCADE,
+        "eventId" TEXT NOT NULL REFERENCES "Event"("id") ON DELETE CASCADE,
+        "email" VARCHAR(255) NOT NULL,
+        "token" VARCHAR(128) NOT NULL UNIQUE,
+        "createdAt" TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(() => ({}));
+    await query(
+      `CREATE INDEX IF NOT EXISTS "StreamAccess_eventId_idx" ON "StreamAccess" ("eventId")`
+    ).catch(() => ({}));
+    await query(
+      `CREATE INDEX IF NOT EXISTS "StreamAccess_orderId_idx" ON "StreamAccess" ("orderId")`
+    ).catch(() => ({}));
+    await ensureTableIdDefault('Event');
+  } catch (err) {
+    console.warn('[db] ensureEventStreamingSchema:', err.message);
+  }
+}
+
 export async function ensureTopUserSchema() {
   if (!pool) return;
   try {
