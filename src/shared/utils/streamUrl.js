@@ -1,3 +1,5 @@
+import { config } from '../config/env.js';
+
 /** Convert watch/share URLs into embeddable iframe URLs. */
 export function toEmbedUrl(rawUrl, provider = 'youtube') {
   const url = String(rawUrl || '').trim();
@@ -33,9 +35,8 @@ export function toEmbedUrl(rawUrl, provider = 'youtube') {
 
 function getParentHost() {
   try {
-    const base = process.env.PUBLIC_FRONTEND_URL || 'localhost';
-    return new URL(base.startsWith('http') ? base : `https://${base}`).hostname;
+    return new URL(config.frontendBaseUrl).hostname;
   } catch {
-    return 'localhost';
+    return 'gatewav.com';
   }
 }

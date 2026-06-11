@@ -12,8 +12,7 @@ function isSuperAdmin(userId) {
 }
 
 function frontendWatchUrl(eventId, token) {
-  const base = (config.frontendBaseUrl || process.env.PUBLIC_FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
-  return `${base}/#/event/${eventId}/watch?token=${encodeURIComponent(token)}`;
+  return `${config.frontendBaseUrl}/#/event/${encodeURIComponent(String(eventId))}/watch?token=${encodeURIComponent(token)}`;
 }
 
 export const streamModel = {

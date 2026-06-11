@@ -1,7 +1,12 @@
 import 'dotenv/config';
 
 const corsOrigin = process.env.CORS_ORIGIN || '';
-const frontendBaseUrl = (process.env.FRONTEND_BASE_URL || 'http://localhost:5173').replace(/\/$/, '');
+const nodeEnv = process.env.NODE_ENV || 'development';
+const frontendBaseUrl = (
+  process.env.FRONTEND_BASE_URL ||
+  process.env.PUBLIC_FRONTEND_URL ||
+  (nodeEnv === 'production' ? 'https://gatewav.com' : 'http://localhost:5173')
+).replace(/\/$/, '');
 const defaultCorsOrigins = [
   frontendBaseUrl,
   'http://localhost:5173',
@@ -18,7 +23,7 @@ const manualPaymentNotifyEmail = String(process.env.MANUAL_PAYMENT_NOTIFY_EMAIL 
 
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
-  nodeEnv: process.env.NODE_ENV || 'development',
+  nodeEnv,
   databaseUrl: process.env.DATABASE_URL,
   jwtSecret: process.env.JWT_SECRET || 'dev-jwt-secret-change-in-production',
   resendApiKey,
