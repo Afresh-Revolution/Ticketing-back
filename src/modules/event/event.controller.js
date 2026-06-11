@@ -108,7 +108,7 @@ export async function getById(req, res, next) {
 export async function create(req, res, next) {
   try {
     const { 
-      title, description, date, venue, category, startTime, price, imageUrl, isTrending, location,
+      title, description, date, endDate, venue, category, startTime, endTime, price, imageUrl, isTrending, location,
       ticketTypes,
       merch,
     } = req.body;
@@ -122,10 +122,12 @@ export async function create(req, res, next) {
       title,
       description,
       date,
+      endDate: endDate ?? null,
       venue,
       imageUrl,
       category, 
       startTime,
+      endTime: endTime ?? null,
       price,
       currency: 'NGN',
       isTrending: isTrending || false,
@@ -165,6 +167,8 @@ export async function update(req, res, next) {
       location,
       isTrending,
       startTime,
+      endDate,
+      endTime,
       imageUrl,
       category,
       price,
@@ -175,10 +179,12 @@ export async function update(req, res, next) {
       ...(title != null && { title }),
       ...(description != null && { description }),
       ...(date != null && { date: new Date(date) }),
+      ...(endDate !== undefined && { endDate: endDate || null }),
       ...(venue != null && { venue }),
       ...(location != null && { location }),
       ...(isTrending != null && { isTrending }),
       ...(startTime != null && { startTime }),
+      ...(endTime !== undefined && { endTime: endTime || null }),
       ...(imageUrl != null && { imageUrl }),
       ...(category != null && { category }),
       ...(price != null && { price }),

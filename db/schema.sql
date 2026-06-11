@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS "Event" (
   "price" INTEGER DEFAULT 0,
   "imageUrl" VARCHAR(512),
   "startTime" VARCHAR(50),
+  "endDate" DATE,
+  "endTime" VARCHAR(50),
   "description" TEXT,
   "organizer" VARCHAR(255),
   "createdBy" INTEGER REFERENCES "User"("id"),
@@ -121,6 +123,8 @@ CREATE TABLE IF NOT EXISTS "TicketType" (
   "price" INTEGER NOT NULL DEFAULT 0,
   "quantity" INTEGER NOT NULL DEFAULT 0,
   "type" VARCHAR(50) DEFAULT 'paid',
+  "contactEmail" VARCHAR(255),
+  "contactPhone" VARCHAR(50),
   "createdAt" TIMESTAMPTZ DEFAULT NOW(),
   "updatedAt" TIMESTAMPTZ DEFAULT NOW()
 );

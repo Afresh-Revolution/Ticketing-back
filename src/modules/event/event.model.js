@@ -8,10 +8,12 @@ function rowToEvent(row) {
     title: row.title,
     description: row.description,
     date: row.date,
+    endDate: row.endDate ?? null,
     venue: row.venue,
     imageUrl: row.imageUrl,
     category: row.category,
     startTime: row.startTime,
+    endTime: row.endTime ?? null,
     price: row.price,
     currency: row.currency,
     isTrending: row.isTrending,
@@ -19,6 +21,26 @@ function rowToEvent(row) {
     createdBy: row.createdBy,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function resolveTicketType(ticket) {
+  const explicit = String(ticket?.type || '').toLowerCase().trim();
+  if (explicit === 'reservation' || explicit === 'free' || explicit === 'paid') return explicit;
+  const price = Number(ticket?.price) || 0;
+  return price === 0 ? 'free' : 'paid';
+}
+
+function mapTicketRow(t) {
+  return {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    price: t.price,
+    quantity: t.quantity,
+    type: resolveTicketType(t),
+    contactEmail: t.contactEmail ?? null,
+    contactPhone: t.contactPhone ?? null,
   };
 }
 
@@ -93,13 +115,7 @@ export const eventModel = {
       const byEventId = {};
       for (const t of ticketRows) {
         if (!byEventId[t.eventId]) byEventId[t.eventId] = [];
-        byEventId[t.eventId].push({
-          id: t.id,
-          name: t.name,
-          description: t.description,
-          price: t.price,
-          quantity: t.quantity,
-        });
+        byEventId[t.eventId].push(mapTicketRow(t));
       }
       events.forEach((e) => { e.tickets = byEventId[e.id] || []; });
     }
@@ -146,12 +162,8 @@ export const eventModel = {
       return acc;
     }, {});
     event.tickets = ticketTypeRows.map(t => ({
-      id: t.id,
-      name: t.name,
-      description: t.description,
-      price: t.price,
-      quantity: t.quantity,
-      type: t.type || (t.price === 0 ? 'free' : 'paid'),
+      ...mapTicketRow(t),
+      type: resolveTicketType(t),
       sold: (soldByTicketId[t.id] || 0) + (walkInSoldByName[normalizeTicketTypeKey(t.name)] || 0),
     }));
 
@@ -171,17 +183,19 @@ export const eventModel = {
     
     // 1. Create Event
     await query(
-      `INSERT INTO "Event" (id, title, description, date, venue, "imageUrl", category, "startTime", price, currency, "isTrending", location, "createdBy", "isPublished", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      `INSERT INTO "Event" (id, title, description, date, "endDate", venue, "imageUrl", category, "startTime", "endTime", price, currency, "isTrending", location, "createdBy", "isPublished", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
       [
         id,
         data.title,
         data.description ?? null,
         data.date,
+        data.endDate ?? null,
         data.venue ?? null,
         data.imageUrl ?? null,
         data.category ?? null,
         data.startTime ?? null,
+        data.endTime ?? null,
         data.price ?? null,
         data.currency ?? null,
         data.isTrending ?? false,
@@ -197,11 +211,13 @@ export const eventModel = {
     if (data.ticketTypes && Array.isArray(data.ticketTypes)) {
       for (const ticket of data.ticketTypes) {
         const ticketId = createId();
-        const price = ticket.price ?? 0;
-        const type = ticket.type || (price === 0 ? 'free' : 'paid');
+        const type = resolveTicketType(ticket);
+        const price = type === 'paid' ? (Number(ticket.price) || 0) : 0;
+        const contactEmail = type === 'reservation' ? (ticket.contactEmail?.trim() || null) : null;
+        const contactPhone = type === 'reservation' ? (ticket.contactPhone?.trim() || null) : null;
         await query(
-          `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "createdAt", "updatedAt")
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "contactEmail", "contactPhone", "createdAt", "updatedAt")
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
           [
             ticketId,
             id,
@@ -210,6 +226,8 @@ export const eventModel = {
             price,
             ticket.quantity ?? 0,
             type,
+            contactEmail,
+            contactPhone,
             now,
             now
           ]
@@ -232,6 +250,8 @@ export const eventModel = {
       imageUrl: 'imageUrl',
       category: 'category',
       startTime: 'startTime',
+      endDate: 'endDate',
+      endTime: 'endTime',
       price: 'price',
       currency: 'currency',
       isTrending: 'isTrending',
@@ -265,11 +285,13 @@ export const eventModel = {
         const hasExistingId = parsedId.length > 0 && existingIds.has(parsedId);
         if (hasExistingId) incomingIds.add(parsedId);
 
-        const price = Number(ticket?.price) || 0;
+        const type = resolveTicketType(ticket);
+        const price = type === 'paid' ? (Number(ticket?.price) || 0) : 0;
         const quantity = Number(ticket?.quantity) || 0;
-        const type = ticket?.type === 'free' ? 'free' : (price === 0 ? 'free' : 'paid');
         const name = ticket?.name || 'Ticket';
         const description = ticket?.description ?? null;
+        const contactEmail = type === 'reservation' ? (String(ticket?.contactEmail || '').trim() || null) : null;
+        const contactPhone = type === 'reservation' ? (String(ticket?.contactPhone || '').trim() || null) : null;
 
         if (hasExistingId) {
           await query(
@@ -279,15 +301,17 @@ export const eventModel = {
                  "price" = $3,
                  "quantity" = $4,
                  "type" = $5,
+                 "contactEmail" = $6,
+                 "contactPhone" = $7,
                  "updatedAt" = NOW()
-             WHERE "id"::text = $6 AND "eventId"::text = $7`,
-            [name, description, price, quantity, type, parsedId, String(id)]
+             WHERE "id"::text = $8 AND "eventId"::text = $9`,
+            [name, description, price, quantity, type, contactEmail, contactPhone, parsedId, String(id)]
           );
         } else {
           await query(
-            `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "createdAt", "updatedAt")
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
-            [createId(), id, name, description, price, quantity, type]
+            `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "contactEmail", "contactPhone", "createdAt", "updatedAt")
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())`,
+            [createId(), id, name, description, price, quantity, type, contactEmail, contactPhone]
           );
         }
       }
