@@ -1,16 +1,9 @@
 import { query } from '../../shared/config/db.js';
-import { randomUUID } from 'crypto';
 import {
   isCloudinaryConfigured,
   uploadImageBufferToCloudinary,
 } from '../../shared/services/cloudinary.service.js';
-
-function normalizeTicketTypeKey(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '');
-}
+import { eventModel } from '../event/event.model.js';
 
 /** GET /api/events - list events (?trending=true&take=3) */
 export async function listEvents(req, res) {
@@ -44,94 +37,15 @@ export async function listEvents(req, res) {
 /** GET /api/events/:id */
 export async function getEvent(req, res) {
   try {
-    const result = await query(
-      'SELECT * FROM "Event" WHERE "id" = $1',
-      [req.params.id]
-    ).catch(() => ({ rows: [] }));
-    if (!result.rows || result.rows.length === 0) {
+    const event = await eventModel.findById(req.params.id);
+    if (!event) {
       return res.status(404).json({ error: 'Event not found' });
     }
-    const row = result.rows[0];
-    const eventId = String(row.id);
-
-    // Include ticket pools so frontend can render selectable ticket types.
-    const ticketTypeRows = await query(
-      'SELECT * FROM "TicketType" WHERE "eventId"::text = $1',
-      [eventId]
-    ).then((r) => r.rows || []).catch((e) => {
-      // Keep event details available even if TicketType table is not configured yet.
-      if (e?.code === '42P01') return [];
-      throw e;
-    });
-
-    const ticketTypeIds = ticketTypeRows.map((t) => String(t.id)).filter(Boolean);
-    let soldByTicketTypeId = {};
-    if (ticketTypeIds.length > 0) {
-      const soldRows = await query(
-        `SELECT oi."ticketTypeId", COALESCE(SUM(oi.quantity), 0)::int AS sold
-         FROM "OrderItem" oi
-         INNER JOIN "Order" o
-           ON o.id::text = oi."orderId"::text
-          AND LOWER(TRIM(COALESCE(o.status, ''))) IN ('paid', 'completed', 'success', 'changed', 'true')
-         WHERE oi."ticketTypeId"::text = ANY($1)
-         GROUP BY oi."ticketTypeId"`,
-        [ticketTypeIds]
-      ).then((r) => r.rows || []).catch((e) => {
-        if (e?.code === '42P01') return [];
-        throw e;
-      });
-
-      soldByTicketTypeId = soldRows.reduce((acc, soldRow) => {
-        acc[String(soldRow.ticketTypeId)] = Number(soldRow.sold) || 0;
-        return acc;
-      }, {});
-    }
-    const walkInSoldRows = await query(
-      `SELECT LOWER(REGEXP_REPLACE(TRIM(COALESCE("ticketType", 'General')), '[^a-z0-9]+', '', 'g')) AS ticket_name_key,
-              COALESCE(SUM(quantity), 0)::int AS sold
-       FROM "WalkInSale"
-       WHERE "eventId"::text = $1
-         AND LOWER(TRIM(COALESCE("status", ''))) IN ('paid', 'completed', 'success', 'changed', 'true')
-       GROUP BY LOWER(REGEXP_REPLACE(TRIM(COALESCE("ticketType", 'General')), '[^a-z0-9]+', '', 'g'))` ,
-      [eventId]
-    ).then((r) => r.rows || []).catch((e) => {
-      if (e?.code === '42P01') return [];
-      throw e;
-    });
-    const walkInSoldByName = walkInSoldRows.reduce((acc, soldRow) => {
-      const key = normalizeTicketTypeKey(soldRow.ticket_name_key);
-      if (!key) return acc;
-      acc[key] = Number(soldRow.sold) || 0;
-      return acc;
-    }, {});
-
-    const tickets = ticketTypeRows.map((t) => {
-      const id = String(t.id);
-      const price = Number(t.price) || 0;
-      return {
-        id,
-        name: t.name || 'Ticket',
-        description: t.description || '',
-        price,
-        quantity: Number(t.quantity) || 0,
-        type: t.type === 'free' ? 'free' : (price === 0 ? 'free' : 'paid'),
-        sold: (soldByTicketTypeId[id] || 0) + (walkInSoldByName[normalizeTicketTypeKey(t.name)] || 0),
-      };
-    });
-
     return res.json({
-      id: eventId,
-      title: row.title,
-      date: row.date,
-      location: row.location,
-      price: row.price,
-      imageUrl: row.imageUrl,
-      startTime: row.startTime,
-      description: row.description,
-      category: row.category,
-      organizer: row.organizer,
-      tickets,
-      ticketTypes: tickets,
+      ...event,
+      id: String(event.id),
+      tickets: event.tickets || [],
+      ticketTypes: event.tickets || [],
     });
   } catch (err) {
     console.error('getEvent', err);
@@ -201,30 +115,36 @@ export async function createEvent(req, res) {
       });
     }
 
-    const result = await query(
-      `INSERT INTO "Event" ("title", "date", "location", "price", "imageUrl", "startTime", "description", "createdBy", "isPublished", "isTrending")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       RETURNING "id", "title", "date", "createdBy"`,
-      [
-        body.title,
-        body.date,
-        body.location,
-        body.price ?? 0,
-        body.imageUrl,
-        body.startTime,
-        body.description,
-        finalCreatedBy,
-        body.isPublished ?? true,
-        body.isTrending ?? false,
-      ]
-    ).catch((e) => {
-      if (e.code === '42P01') return null;
-      throw e;
+    const created = await eventModel.create({
+      title: body.title,
+      description: body.description,
+      date: body.date,
+      endDate: body.endDate ?? null,
+      venue: body.venue,
+      imageUrl: body.imageUrl,
+      imageUrls: body.imageUrls,
+      category: body.category,
+      startTime: body.startTime,
+      endTime: body.endTime ?? null,
+      price: Number(body.price) || 0,
+      currency: body.currency || 'NGN',
+      isTrending: body.isTrending ?? false,
+      location: body.location,
+      eventType: body.eventType || 'in-person',
+      streamUrl: body.streamUrl,
+      streamProvider: body.streamProvider,
+      ticketTypes: body.ticketTypes,
+      createdBy: finalCreatedBy,
+      isPublished: body.isPublished !== false,
     });
-    if (!result || result.rows.length === 0) {
-      return res.status(501).json({ error: 'Events table not configured' });
-    }
-    return res.status(201).json(result.rows[0]);
+
+    const full = await eventModel.findById(created.id);
+    const payload = full || created;
+    return res.status(201).json({
+      ...payload,
+      id: String(payload.id),
+      ticketTypes: payload.tickets || [],
+    });
   } catch (err) {
     console.error('createEvent', err);
     return res.status(500).json({ error: err.message || 'Failed to create event' });
@@ -253,73 +173,32 @@ export async function updateEvent(req, res) {
       return res.status(403).json({ error: 'Super admin can only edit their own events, not another admin\'s' });
     }
 
-    const result = await query(
-      `UPDATE "Event" SET "title" = COALESCE($1, "title"), "date" = COALESCE($2, "date"), "location" = COALESCE($3, "location"),
-       "price" = COALESCE($4, "price"), "imageUrl" = COALESCE($5, "imageUrl"), "startTime" = COALESCE($6, "startTime"),
-       "description" = COALESCE($7, "description"), "venue" = COALESCE($8, "venue"), "category" = COALESCE($9, "category"),
-       "updatedAt" = NOW()
-       WHERE "id" = $10 RETURNING "id"`,
-      [body.title, body.date, body.location, body.price, body.imageUrl, body.startTime, body.description, body.venue, body.category, eventId]
-    ).catch(() => ({ rows: [] }));
-    if (!result.rows || result.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
+    const updated = await eventModel.update(eventId, {
+      title: body.title,
+      description: body.description,
+      date: body.date,
+      endDate: body.endDate,
+      endTime: body.endTime,
+      venue: body.venue,
+      imageUrl: body.imageUrl,
+      imageUrls: body.imageUrls,
+      category: body.category,
+      startTime: body.startTime,
+      price: body.price != null ? Number(body.price) : undefined,
+      location: body.location,
+      eventType: body.eventType,
+      streamUrl: body.streamUrl,
+      streamProvider: body.streamProvider,
+      isTrending: body.isTrending,
+      ticketTypes: body.ticketTypes,
+    });
+    if (!updated) return res.status(404).json({ error: 'Event not found' });
 
-    if (Array.isArray(body.ticketTypes)) {
-      const currentRows = await query(
-        'SELECT "id" FROM "TicketType" WHERE "eventId"::text = $1',
-        [String(eventId)]
-      ).catch(() => ({ rows: [] }));
-      const existingIds = new Set((currentRows.rows || []).map((r) => String(r.id)));
-      const incomingIds = new Set();
-
-      for (const ticket of body.ticketTypes) {
-        const parsedId = typeof ticket?.id === 'string' ? ticket.id.trim() : '';
-        const hasExistingId = parsedId.length > 0 && existingIds.has(parsedId);
-        if (hasExistingId) incomingIds.add(parsedId);
-
-        const price = Number(ticket?.price) || 0;
-        const quantity = Number(ticket?.quantity) || 0;
-        const type = ticket?.type === 'free' ? 'free' : (price === 0 ? 'free' : 'paid');
-        const name = ticket?.name || 'Ticket';
-        const description = ticket?.description || null;
-
-        if (hasExistingId) {
-          await query(
-            `UPDATE "TicketType"
-             SET "name" = $1,
-                 "description" = $2,
-                 "price" = $3,
-                 "quantity" = $4,
-                 "type" = $5,
-                 "updatedAt" = NOW()
-             WHERE "id"::text = $6 AND "eventId"::text = $7`,
-            [name, description, price, quantity, type, parsedId, String(eventId)]
-          );
-        } else {
-          await query(
-            `INSERT INTO "TicketType" ("id", "eventId", "name", "description", "price", "quantity", "type", "createdAt", "updatedAt")
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
-            [randomUUID(), String(eventId), name, description, price, quantity, type]
-          );
-        }
-      }
-
-      for (const existingId of existingIds) {
-        if (incomingIds.has(existingId)) continue;
-        await query(
-          `DELETE FROM "TicketType" tt
-           WHERE tt."id"::text = $1
-             AND tt."eventId"::text = $2
-             AND NOT EXISTS (
-               SELECT 1
-               FROM "OrderItem" oi
-               WHERE oi."ticketTypeId"::text = tt."id"::text
-             )`,
-          [existingId, String(eventId)]
-        );
-      }
-    }
-
-    return res.json({ message: 'Updated' });
+    return res.json({
+      ...updated,
+      id: String(updated.id),
+      ticketTypes: updated.tickets || [],
+    });
     
   } catch (err) {
     console.error('updateEvent', err);
