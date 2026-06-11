@@ -1,4 +1,4 @@
-import { eventModel } from './event.model.js';
+import { eventModel, normalizeEventImageUrls } from './event.model.js';
 import { config } from '../../shared/config/env.js';
 import { query } from '../../shared/config/db.js';
 import {
@@ -108,10 +108,16 @@ export async function getById(req, res, next) {
 export async function create(req, res, next) {
   try {
     const { 
-      title, description, date, endDate, venue, category, startTime, endTime, price, imageUrl, isTrending, location,
+      title, description, date, endDate, venue, category, startTime, endTime, price, imageUrl, imageUrls, isTrending, location,
+      eventType, streamUrl, streamProvider,
       ticketTypes,
       merch,
     } = req.body;
+
+    const normalizedImageUrls = normalizeEventImageUrls(imageUrls, imageUrl);
+    if (Array.isArray(imageUrls) && imageUrls.length > 3) {
+      return res.status(400).json({ error: 'At most 3 images are allowed per event' });
+    }
     
     // Validate required
     if (!title || !date) {
@@ -124,7 +130,8 @@ export async function create(req, res, next) {
       date,
       endDate: endDate ?? null,
       venue,
-      imageUrl,
+      imageUrl: normalizedImageUrls[0] ?? imageUrl,
+      imageUrls: normalizedImageUrls,
       category, 
       startTime,
       endTime: endTime ?? null,
@@ -132,6 +139,9 @@ export async function create(req, res, next) {
       currency: 'NGN',
       isTrending: isTrending || false,
       location,
+      eventType: eventType || 'in-person',
+      streamUrl,
+      streamProvider,
       ticketTypes, // Pass ticketTypes to model
       // Synthetic superadmin (id 0) is not in User table; use null to satisfy FK
       createdBy: req.user && req.user.id !== 0 && req.user.id !== '0' ? req.user.id : null
@@ -170,11 +180,24 @@ export async function update(req, res, next) {
       endDate,
       endTime,
       imageUrl,
+      imageUrls,
       category,
       price,
+      eventType,
+      streamUrl,
+      streamProvider,
       ticketTypes,
       merch,
     } = req.body;
+
+    if (Array.isArray(imageUrls) && imageUrls.length > 3) {
+      return res.status(400).json({ error: 'At most 3 images are allowed per event' });
+    }
+    const normalizedImageUrls =
+      imageUrls !== undefined || imageUrl !== undefined
+        ? normalizeEventImageUrls(imageUrls, imageUrl)
+        : undefined;
+
     const event = await eventModel.update(req.params.id, {
       ...(title != null && { title }),
       ...(description != null && { description }),
@@ -185,9 +208,15 @@ export async function update(req, res, next) {
       ...(isTrending != null && { isTrending }),
       ...(startTime != null && { startTime }),
       ...(endTime !== undefined && { endTime: endTime || null }),
-      ...(imageUrl != null && { imageUrl }),
+      ...(normalizedImageUrls !== undefined && {
+        imageUrls: normalizedImageUrls,
+        imageUrl: normalizedImageUrls[0] ?? null,
+      }),
       ...(category != null && { category }),
       ...(price != null && { price }),
+      ...(eventType != null && { eventType }),
+      ...(streamUrl !== undefined && { streamUrl }),
+      ...(streamProvider != null && { streamProvider }),
       ...(ticketTypes != null && { ticketTypes }),
     });
 

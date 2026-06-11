@@ -1,8 +1,36 @@
 import { query, createId } from '../../shared/config/db.js';
 import { fetchMerchByEventId } from '../merch/merch.model.js';
 
+const MAX_EVENT_IMAGES = 3;
+
+function parseImageUrls(row) {
+  if (!row) return [];
+  if (row.imageUrls != null) {
+    const raw = typeof row.imageUrls === 'string' ? JSON.parse(row.imageUrls) : row.imageUrls;
+    if (Array.isArray(raw)) {
+      return raw
+        .map((url) => String(url || '').trim())
+        .filter(Boolean)
+        .slice(0, MAX_EVENT_IMAGES);
+    }
+  }
+  const single = String(row.imageUrl || '').trim();
+  return single ? [single] : [];
+}
+
+export function normalizeEventImageUrls(imageUrls, imageUrl) {
+  let urls = [];
+  if (Array.isArray(imageUrls)) {
+    urls = imageUrls.map((url) => String(url || '').trim()).filter(Boolean);
+  } else if (imageUrl != null && String(imageUrl).trim()) {
+    urls = [String(imageUrl).trim()];
+  }
+  return urls.slice(0, MAX_EVENT_IMAGES);
+}
+
 function rowToEvent(row) {
   if (!row) return null;
+  const imageUrls = parseImageUrls(row);
   return {
     id: row.id,
     title: row.title,
@@ -10,7 +38,8 @@ function rowToEvent(row) {
     date: row.date,
     endDate: row.endDate ?? null,
     venue: row.venue,
-    imageUrl: row.imageUrl,
+    imageUrl: imageUrls[0] ?? row.imageUrl ?? null,
+    imageUrls,
     category: row.category,
     startTime: row.startTime,
     endTime: row.endTime ?? null,
@@ -18,6 +47,10 @@ function rowToEvent(row) {
     currency: row.currency,
     isTrending: row.isTrending,
     location: row.location,
+    eventType: row.eventType || 'in-person',
+    streamProvider: row.streamProvider || 'youtube',
+    isLive: Boolean(row.isLive),
+    liveStartedAt: row.liveStartedAt ?? null,
     createdBy: row.createdBy,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -31,6 +64,14 @@ function resolveTicketType(ticket) {
   return price === 0 ? 'free' : 'paid';
 }
 
+function resolveDeliveryMode(ticket, eventType) {
+  const explicit = String(ticket?.deliveryMode || '').toLowerCase().trim();
+  if (explicit === 'online' || explicit === 'in_person') return explicit;
+  const et = String(eventType || 'in-person').toLowerCase();
+  if (et === 'online') return 'online';
+  return 'in_person';
+}
+
 function mapTicketRow(t) {
   return {
     id: t.id,
@@ -39,6 +80,7 @@ function mapTicketRow(t) {
     price: t.price,
     quantity: t.quantity,
     type: resolveTicketType(t),
+    deliveryMode: t.deliveryMode || 'in_person',
     contactEmail: t.contactEmail ?? null,
     contactPhone: t.contactPhone ?? null,
   };
@@ -180,11 +222,15 @@ export const eventModel = {
   async create(data) {
     const id = createId();
     const now = new Date().toISOString();
-    
+    const imageUrls = normalizeEventImageUrls(data.imageUrls, data.imageUrl);
+    const imageUrl = imageUrls[0] ?? null;
+
     // 1. Create Event
+    const eventType = data.eventType || 'in-person';
+
     await query(
-      `INSERT INTO "Event" (id, title, description, date, "endDate", venue, "imageUrl", category, "startTime", "endTime", price, currency, "isTrending", location, "createdBy", "isPublished", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+      `INSERT INTO "Event" (id, title, description, date, "endDate", venue, "imageUrl", "imageUrls", category, "startTime", "endTime", price, currency, "isTrending", location, "eventType", "streamUrl", "streamProvider", "createdBy", "isPublished", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
       [
         id,
         data.title,
@@ -192,7 +238,8 @@ export const eventModel = {
         data.date,
         data.endDate ?? null,
         data.venue ?? null,
-        data.imageUrl ?? null,
+        imageUrl,
+        JSON.stringify(imageUrls),
         data.category ?? null,
         data.startTime ?? null,
         data.endTime ?? null,
@@ -200,6 +247,9 @@ export const eventModel = {
         data.currency ?? null,
         data.isTrending ?? false,
         data.location ?? null,
+        eventType,
+        data.streamUrl?.trim() || null,
+        data.streamProvider || 'youtube',
         data.createdBy ?? null,
         data.isPublished !== false,
         now,
@@ -215,9 +265,10 @@ export const eventModel = {
         const price = type === 'paid' ? (Number(ticket.price) || 0) : 0;
         const contactEmail = type === 'reservation' ? (ticket.contactEmail?.trim() || null) : null;
         const contactPhone = type === 'reservation' ? (ticket.contactPhone?.trim() || null) : null;
+        const deliveryMode = resolveDeliveryMode(ticket, eventType);
         await query(
-          `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "contactEmail", "contactPhone", "createdAt", "updatedAt")
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "deliveryMode", "contactEmail", "contactPhone", "createdAt", "updatedAt")
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
           [
             ticketId,
             id,
@@ -226,6 +277,7 @@ export const eventModel = {
             price,
             ticket.quantity ?? 0,
             type,
+            deliveryMode,
             contactEmail,
             contactPhone,
             now,
@@ -242,12 +294,19 @@ export const eventModel = {
     const fields = [];
     const values = [];
     let i = 1;
+    if (data.imageUrls !== undefined || data.imageUrl !== undefined) {
+      const imageUrls = normalizeEventImageUrls(data.imageUrls, data.imageUrl);
+      data.imageUrls = imageUrls;
+      data.imageUrl = imageUrls[0] ?? null;
+    }
+
     const map = {
       title: 'title',
       description: 'description',
       date: 'date',
       venue: 'venue',
       imageUrl: 'imageUrl',
+      imageUrls: 'imageUrls',
       category: 'category',
       startTime: 'startTime',
       endDate: 'endDate',
@@ -256,12 +315,15 @@ export const eventModel = {
       currency: 'currency',
       isTrending: 'isTrending',
       location: 'location',
+      eventType: 'eventType',
+      streamUrl: 'streamUrl',
+      streamProvider: 'streamProvider',
       isPublished: 'isPublished',
     };
     for (const [key, col] of Object.entries(map)) {
       if (data[key] !== undefined) {
-        fields.push(`"${col}" = $${i}`);
-        values.push(data[key]);
+        fields.push(`"${col}" = $${i}${key === 'imageUrls' ? '::jsonb' : ''}`);
+        values.push(key === 'imageUrls' ? JSON.stringify(data[key]) : data[key]);
         i++;
       }
     }
@@ -273,6 +335,9 @@ export const eventModel = {
       );
     }
     if (data.ticketTypes && Array.isArray(data.ticketTypes)) {
+      const eventTypeRow = await query('SELECT "eventType" FROM "Event" WHERE id::text = $1', [String(id)]);
+      const eventType = data.eventType || eventTypeRow.rows[0]?.eventType || 'in-person';
+
       const currentRows = await query(
         'SELECT "id" FROM "TicketType" WHERE "eventId"::text = $1',
         [String(id)]
@@ -292,6 +357,7 @@ export const eventModel = {
         const description = ticket?.description ?? null;
         const contactEmail = type === 'reservation' ? (String(ticket?.contactEmail || '').trim() || null) : null;
         const contactPhone = type === 'reservation' ? (String(ticket?.contactPhone || '').trim() || null) : null;
+        const deliveryMode = resolveDeliveryMode(ticket, eventType);
 
         if (hasExistingId) {
           await query(
@@ -301,17 +367,18 @@ export const eventModel = {
                  "price" = $3,
                  "quantity" = $4,
                  "type" = $5,
-                 "contactEmail" = $6,
-                 "contactPhone" = $7,
+                 "deliveryMode" = $6,
+                 "contactEmail" = $7,
+                 "contactPhone" = $8,
                  "updatedAt" = NOW()
-             WHERE "id"::text = $8 AND "eventId"::text = $9`,
-            [name, description, price, quantity, type, contactEmail, contactPhone, parsedId, String(id)]
+             WHERE "id"::text = $9 AND "eventId"::text = $10`,
+            [name, description, price, quantity, type, deliveryMode, contactEmail, contactPhone, parsedId, String(id)]
           );
         } else {
           await query(
-            `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "contactEmail", "contactPhone", "createdAt", "updatedAt")
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())`,
-            [createId(), id, name, description, price, quantity, type, contactEmail, contactPhone]
+            `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "deliveryMode", "contactEmail", "contactPhone", "createdAt", "updatedAt")
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())`,
+            [createId(), id, name, description, price, quantity, type, deliveryMode, contactEmail, contactPhone]
           );
         }
       }
@@ -342,6 +409,7 @@ export const eventModel = {
     // Order: ScanLog -> OrderItem -> Order, Withdrawal, TicketType -> Event
     await query('DELETE FROM "ScanLog" WHERE "orderId" IN (SELECT id FROM "Order" WHERE "eventId" = $1)', [id]);
     await query('DELETE FROM "OrderItem" WHERE "orderId" IN (SELECT id FROM "Order" WHERE "eventId" = $1)', [id]);
+    await query('DELETE FROM "StreamAccess" WHERE "eventId" = $1', [id]);
     await query('DELETE FROM "Order" WHERE "eventId" = $1', [id]);
     await query('DELETE FROM "Withdrawal" WHERE "eventId" = $1', [id]);
     await query('DELETE FROM "TicketType" WHERE "eventId" = $1', [id]);

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import * as eventController from './event.controller.js';
+import * as streamController from '../stream/stream.controller.js';
 import * as merchController from '../merch/merch.controller.js';
 import { authMiddleware } from '../../shared/middleware/authMiddleware.js';
 
@@ -18,6 +19,8 @@ router.get('/', eventController.list);
 router.get('/feed/joscity', eventController.listForJoscity);
 router.get('/:id/merch', merchController.listByEvent);
 router.post('/:id/merch', authMiddleware, merchController.replaceForEvent);
+router.get('/:id/live-status', streamController.getLiveStatus);
+router.get('/:id/stream', streamController.getStreamAccess);
 router.get('/:id', eventController.getById);
 router.post('/upload-image', authMiddleware, upload.single('image'), eventController.uploadImage);
 router.post('/', authMiddleware, eventController.create);

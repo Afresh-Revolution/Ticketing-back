@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS "Event" (
   "location" VARCHAR(255),
   "price" INTEGER DEFAULT 0,
   "imageUrl" VARCHAR(512),
+  "imageUrls" JSONB DEFAULT '[]'::jsonb,
   "startTime" VARCHAR(50),
   "endDate" DATE,
   "endTime" VARCHAR(50),
@@ -52,6 +53,11 @@ CREATE TABLE IF NOT EXISTS "Event" (
   "createdBy" INTEGER REFERENCES "User"("id"),
   "isPublished" BOOLEAN DEFAULT TRUE,
   "isTrending" BOOLEAN DEFAULT FALSE,
+  "eventType" VARCHAR(50) DEFAULT 'in-person',
+  "streamUrl" VARCHAR(1024),
+  "streamProvider" VARCHAR(50) DEFAULT 'youtube',
+  "isLive" BOOLEAN DEFAULT FALSE,
+  "liveStartedAt" TIMESTAMPTZ,
   "createdAt" TIMESTAMPTZ DEFAULT NOW(),
   "updatedAt" TIMESTAMPTZ DEFAULT NOW()
 );
@@ -123,6 +129,7 @@ CREATE TABLE IF NOT EXISTS "TicketType" (
   "price" INTEGER NOT NULL DEFAULT 0,
   "quantity" INTEGER NOT NULL DEFAULT 0,
   "type" VARCHAR(50) DEFAULT 'paid',
+  "deliveryMode" VARCHAR(50) DEFAULT 'in_person',
   "contactEmail" VARCHAR(255),
   "contactPhone" VARCHAR(50),
   "createdAt" TIMESTAMPTZ DEFAULT NOW(),
@@ -130,6 +137,20 @@ CREATE TABLE IF NOT EXISTS "TicketType" (
 );
 
 CREATE INDEX IF NOT EXISTS "TicketType_eventId_idx" ON "TicketType" ("eventId");
+
+-- Paid attendee stream access tokens (emailed on go-live)
+CREATE TABLE IF NOT EXISTS "StreamAccess" (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "orderId" TEXT NOT NULL REFERENCES "Order"("id") ON DELETE CASCADE,
+  "eventId" TEXT NOT NULL REFERENCES "Event"("id") ON DELETE CASCADE,
+  "email" VARCHAR(255) NOT NULL,
+  "token" VARCHAR(128) NOT NULL UNIQUE,
+  "createdAt" TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS "StreamAccess_eventId_idx" ON "StreamAccess" ("eventId");
+CREATE INDEX IF NOT EXISTS "StreamAccess_orderId_idx" ON "StreamAccess" ("orderId");
+CREATE INDEX IF NOT EXISTS "StreamAccess_token_idx" ON "StreamAccess" ("token");
 
 -- Order items (line items per order, one per ticket type)
 CREATE TABLE IF NOT EXISTS "OrderItem" (
