@@ -1,6 +1,9 @@
 import { Resend } from "resend";
 import QRCode from "qrcode";
 import { config } from "../config/env.js";
+import { Resend } from "resend";
+import QRCode from "qrcode";
+import { config } from "../config/env.js";
 
 const EMAIL_TIMEOUT_MS = 15000;
 
@@ -343,8 +346,9 @@ function buildTicketEmailContent(ctx) {
       <p style="margin:0 0 16px;">Hi <strong>${greeting}</strong>,</p>
       <p style="margin:0 0 16px;">Your payment was successful. You are confirmed for the <strong>online stream</strong> of <strong>${title}</strong>.</p>
       ${scheduleHtml}
+      ${badges ? `<div style="margin:0 0 8px;">${badges}</div>` : ''}
       ${buildOnlineAccessNoticeHtml()}
-      <p style="margin:16px 0 0;font-size:13px;color:#6b7280;">No QR code or ticket code is needed for online access </p>
+      <p style="margin:16px 0 0;font-size:13px;color:#6b7280;">Confirmation code: <strong style="color:#111827;letter-spacing:1px;">${escapeHtml(ctx.ticketCode)}</strong></p>
       <p style="margin:12px 0 0;font-size:12px;color:#9ca3af;">If you bought multiple online tickets, forward the watch link to each attendee when you receive it.</p>
     `;
     return {
