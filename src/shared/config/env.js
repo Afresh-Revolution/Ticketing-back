@@ -13,6 +13,7 @@ const defaultCorsOrigins = [
   'http://127.0.0.1:5173',
   'https://gatewav.com',
   'https://www.gatewav.com',
+  'http://localhost:63823'
 ];
 const resendApiKey = process.env.RESEND_API_KEY || '';
 const resendFrom = process.env.RESEND_FROM || 'Gatewav <onboarding@gatewav.com>';

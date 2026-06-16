@@ -10,6 +10,7 @@ import express from "express";
 import { config } from "./shared/config/env.js";
 import {
   ensureUserSequence,
+  ensureUserPasswordCompat,
   ensureTopUserSchema,
   ensureWithdrawalDbSchema,
   ensureEventStreamingSchema,
@@ -72,6 +73,7 @@ app.use((err, req, res, next) => {
 
 const port = config.port;
 ensureUserSequence()
+  .then(() => ensureUserPasswordCompat())
   .then(() => ensureTopUserSchema())
   .then(() => ensureWithdrawalDbSchema())
   .then(() => ensureEventStreamingSchema())

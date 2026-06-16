@@ -4,6 +4,7 @@ import {
   connectDb,
   disconnectDb,
   ensureUserSequence,
+  ensureUserPasswordCompat,
   ensureTopUserSchema,
   ensureWithdrawalDbSchema,
 } from './shared/config/db.js';
@@ -16,6 +17,7 @@ const server = app.listen(config.port, async () => {
     console.log('[server] Database connected successfully');
     // Ensure the \"User\" id sequence/default exists so INSERTs that rely on it don't fail
     await ensureUserSequence();
+    await ensureUserPasswordCompat();
     await ensureTopUserSchema();
     await ensureWithdrawalDbSchema();
   } else {

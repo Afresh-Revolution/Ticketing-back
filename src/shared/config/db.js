@@ -298,6 +298,34 @@ export async function ensureEventStreamingSchema() {
   }
 }
 
+/**
+ * Copy legacy "password" hashes into "passwordHash" for accounts created before the column rename.
+ * Idempotent; safe on every startup.
+ */
+export async function ensureUserPasswordCompat() {
+  if (!pool) return;
+  try {
+    const col = await query(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'User' AND column_name = 'password'`
+    );
+    if (col.rows.length === 0) return;
+
+    const updated = await query(
+      `UPDATE "User"
+       SET "passwordHash" = "password", "updatedAt" = NOW()
+       WHERE ("passwordHash" IS NULL OR TRIM("passwordHash") = '')
+         AND "password" IS NOT NULL
+         AND TRIM("password") <> ''`
+    );
+    if (updated.rowCount > 0) {
+      console.log(`[db] Migrated ${updated.rowCount} legacy user password(s) to passwordHash`);
+    }
+  } catch (err) {
+    console.warn('[db] ensureUserPasswordCompat:', err.message);
+  }
+}
+
 export async function ensureTopUserSchema() {
   if (!pool) return;
   try {

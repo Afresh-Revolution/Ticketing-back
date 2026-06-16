@@ -36,6 +36,44 @@ async function verifyCode(email, code, type) {
   return true;
 }
 
+/** Resolve bcrypt hash from passwordHash (current) or legacy password column. */
+async function findUserByEmailForAuth(email) {
+  const em = (email || '').trim().toLowerCase();
+  if (!em) return null;
+
+  const withLegacy = await query(
+    `SELECT "id", "email", "name", "passwordHash", "password", "role", "emailVerified", "suspended"
+     FROM "User"
+     WHERE LOWER(TRIM("email")) = $1
+     LIMIT 1`,
+    [em]
+  ).catch(async (err) => {
+    if (!String(err.message || '').includes('column "password" does not exist')) throw err;
+    const result = await query(
+      `SELECT "id", "email", "name", "passwordHash", "role", "emailVerified", "suspended"
+       FROM "User"
+       WHERE LOWER(TRIM("email")) = $1
+       LIMIT 1`,
+      [em]
+    );
+    return result;
+  });
+
+  const user = withLegacy.rows[0];
+  if (!user) return null;
+
+  const storedHash = user.passwordHash || user.password || null;
+  return storedHash ? { ...user, storedHash } : null;
+}
+
+async function migrateLegacyPasswordHash(userId, hash) {
+  if (!hash) return;
+  await query(
+    'UPDATE "User" SET "passwordHash" = $1, "updatedAt" = NOW() WHERE "id" = $2 AND ("passwordHash" IS NULL OR TRIM("passwordHash") = \'\')',
+    [hash, userId]
+  );
+}
+
 export async function signIn(req, res) {
   try {
     const { email, password, otp } = req.body || {};
@@ -44,21 +82,21 @@ export async function signIn(req, res) {
       return res.status(400).json({ error: 'Email and password required' });
     }
 
-    const userResult = await query(
-      'SELECT "id", "email", "name", "passwordHash", "role", "emailVerified", "suspended" FROM "User" WHERE "email" = $1',
-      [em]
-    );
-    const user = userResult.rows[0];
-    if (!user || !user.passwordHash) {
+    const user = await findUserByEmailForAuth(em);
+    if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     if (user.suspended) {
       return res.status(403).json({ error: 'Account suspended. Contact support.' });
     }
 
-    const valid = await bcrypt.compare(password, user.passwordHash);
+    const valid = await bcrypt.compare(password, user.storedHash);
     if (!valid) {
       return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    if (!user.passwordHash && user.storedHash) {
+      await migrateLegacyPasswordHash(user.id, user.storedHash);
     }
 
     if (!user.emailVerified) {
@@ -73,8 +111,9 @@ export async function signIn(req, res) {
       return res.status(400).json({ error: 'Account already verified' });
     }
 
+    const role = user.role || 'user';
     const token = jwt.sign(
-      { userId: user.id, email: user.email, role: user.role || 'admin' },
+      { userId: user.id, email: user.email, role },
       config.jwtSecret,
       { expiresIn: '7d' }
     );
@@ -83,7 +122,7 @@ export async function signIn(req, res) {
         id: user.id,
         email: user.email,
         name: user.name,
-        role: user.role || 'admin',
+        role,
       },
       token,
     });
