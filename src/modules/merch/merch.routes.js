@@ -19,5 +19,6 @@ adminMerchRouter.patch('/merch-orders/:id/status', requireAuth, merchController.
 adminMerchRouter.delete('/merch-orders/:id', requireAuth, merchController.adminDeleteOrder);
 adminMerchRouter.get('/merch-save-requests', requireAuth, merchController.adminListSaveRequests);
 adminMerchRouter.patch('/merch-save-requests/:id/status', requireAuth, merchController.adminUpdateSaveRequestStatus);
+adminMerchRouter.delete('/merch-save-requests/:id', requireAuth, merchController.adminDeleteSaveRequest);
 
 export default router;

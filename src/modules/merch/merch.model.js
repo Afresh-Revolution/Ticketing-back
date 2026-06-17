@@ -371,6 +371,29 @@ export async function updateSaveRequestStatus(id, status, reviewedBy) {
   return rows[0] || null;
 }
 
+export async function saveRequestAccessibleByAdmin(requestId, userId, role) {
+  if (!(await merchTablesReady())) return false;
+  const isSuper = role === 'superadmin' || userId === 0 || userId === '0';
+  if (isSuper) {
+    const { rows } = await query('SELECT 1 FROM merch_save_requests WHERE id = $1', [requestId]);
+    return rows.length > 0;
+  }
+  if (userId == null) return false;
+  const { rows } = await query(
+    `SELECT 1 FROM merch_save_requests msr
+     JOIN "Event" e ON e.id::text = msr.event_id::text
+     WHERE msr.id = $1 AND e."createdBy"::text = $2`,
+    [requestId, String(userId)]
+  );
+  return rows.length > 0;
+}
+
+export async function deleteSaveRequest(requestId) {
+  if (!(await merchTablesReady())) return false;
+  const { rowCount } = await query('DELETE FROM merch_save_requests WHERE id = $1', [requestId]);
+  return rowCount > 0;
+}
+
 export async function deleteMerchOrder(orderId) {
   if (!(await merchTablesReady())) return false;
   const pool = getPool();

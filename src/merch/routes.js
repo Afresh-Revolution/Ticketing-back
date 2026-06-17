@@ -486,6 +486,36 @@ export function createMerchRouter(deps) {
     }
   });
 
+  router.delete('/api/admin/merch-save-requests/:id', authAdmin, async (req, res) => {
+    try {
+      const adminId = req.admin?.id;
+      const isSuper = req.admin?.role === 'superadmin' || adminId === 0;
+      let result;
+      if (isSuper) {
+        result = await pool.query(
+          'DELETE FROM merch_save_requests WHERE id = $1 RETURNING id',
+          [req.params.id]
+        );
+      } else if (adminId) {
+        result = await pool.query(
+          `DELETE FROM merch_save_requests msr
+           USING events e
+           WHERE msr.id = $1
+             AND e.id = msr.event_id
+             AND e.created_by = $2
+           RETURNING msr.id`,
+          [req.params.id, adminId]
+        );
+      } else {
+        return res.status(404).json({ error: 'Request not found' });
+      }
+      if (result.rows.length === 0) return res.status(404).json({ error: 'Request not found' });
+      res.json({ message: 'Merch save request deleted', id: req.params.id });
+    } catch (err) {
+      res.status(500).json({ error: err.message || 'Delete failed' });
+    }
+  });
+
   return router;
 }
 

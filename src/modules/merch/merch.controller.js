@@ -380,3 +380,22 @@ export async function adminUpdateSaveRequestStatus(req, res, next) {
     next(e);
   }
 }
+
+export async function adminDeleteSaveRequest(req, res, next) {
+  try {
+    const requestId = req.params.id;
+    const allowed = await merchModel.saveRequestAccessibleByAdmin(
+      requestId,
+      req.user.id,
+      req.user.role
+    );
+    if (!allowed) return res.status(404).json({ error: 'Request not found' });
+
+    const deleted = await merchModel.deleteSaveRequest(requestId);
+    if (!deleted) return res.status(404).json({ error: 'Request not found' });
+
+    res.json({ message: 'Merch save request deleted', id: requestId });
+  } catch (e) {
+    next(e);
+  }
+}
