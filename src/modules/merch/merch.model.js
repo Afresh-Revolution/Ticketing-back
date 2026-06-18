@@ -18,6 +18,25 @@ export async function merchTablesReady() {
   return merchTablesExist;
 }
 
+let saveRequestDescriptionColumnChecked = false;
+let saveRequestDescriptionColumnExists = false;
+
+async function saveRequestHasDescriptionColumn() {
+  if (saveRequestDescriptionColumnChecked) return saveRequestDescriptionColumnExists;
+  try {
+    const { rows } = await query(
+      `SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'merch_save_requests'
+         AND column_name = 'merch_description' LIMIT 1`
+    );
+    saveRequestDescriptionColumnExists = rows.length > 0;
+  } catch {
+    saveRequestDescriptionColumnExists = false;
+  }
+  saveRequestDescriptionColumnChecked = true;
+  return saveRequestDescriptionColumnExists;
+}
+
 function formatMerchRow(row, colors, images) {
   return {
     id: row.id,
@@ -353,6 +372,23 @@ export async function getMerchOrderItems(orderId) {
 }
 
 export async function createSaveRequest(data) {
+  const hasDescriptionColumn = await saveRequestHasDescriptionColumn();
+  if (hasDescriptionColumn) {
+    const { rows } = await query(
+      `INSERT INTO merch_save_requests (event_id, merch_id, full_name, email, message, merch_description)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [
+        data.eventId,
+        data.merchId,
+        data.fullName,
+        data.email,
+        data.message || null,
+        data.merchDescription || null,
+      ]
+    );
+    return rows[0];
+  }
+
   const { rows } = await query(
     `INSERT INTO merch_save_requests (event_id, merch_id, full_name, email, message)
      VALUES ($1,$2,$3,$4,$5) RETURNING *`,
@@ -451,8 +487,14 @@ export async function listMerchOrdersForAdmin(userId, role) {
 export async function listSaveRequestsForAdmin(userId, role) {
   if (!(await merchTablesReady())) return [];
   const isSuper = role === 'superadmin' || userId === 0 || userId === '0';
+  const hasDescriptionColumn = await saveRequestHasDescriptionColumn();
+  const merchDescriptionSelect = hasDescriptionColumn
+    ? `COALESCE(em.description, msr.merch_description, '') AS merch_description`
+    : `em.description AS merch_description`;
   let sql = `
-    SELECT msr.*, e.title AS event_title, em.description AS merch_description
+    SELECT msr.*,
+      e.title AS event_title,
+      ${merchDescriptionSelect}
     FROM merch_save_requests msr
     LEFT JOIN "Event" e ON e.id::text = msr.event_id::text
     LEFT JOIN event_merch em ON em.id = msr.merch_id

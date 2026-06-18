@@ -241,6 +241,7 @@ export async function createSaveRequest(req, res, next) {
       fullName: fullName.trim(),
       email: normalizeBuyerEmail(email),
       message,
+      merchDescription: merch.description || '',
     });
 
     const admins = await getAdminEmailsForEvent(eventId);
