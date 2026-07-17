@@ -106,6 +106,103 @@ async function resolveOrderItemTicketTypeId(eventId, item = {}) {
   return result.rows?.[0]?.id ? String(result.rows[0].id) : null;
 }
 
+async function calculateOrderItems(eventId, items) {
+  const requestedByTicketId = new Map();
+  for (const item of items) {
+    const quantity = Number(item?.quantity);
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      throw Object.assign(new Error('Each ticket quantity must be a positive whole number'), { statusCode: 400 });
+    }
+    const ticketTypeId = await resolveOrderItemTicketTypeId(eventId, item);
+    if (!ticketTypeId) {
+      throw Object.assign(new Error('One or more ticket types are invalid for this event'), { statusCode: 400 });
+    }
+    requestedByTicketId.set(
+      ticketTypeId,
+      (requestedByTicketId.get(ticketTypeId) || 0) + quantity
+    );
+  }
+
+  const ticketTypeIds = [...requestedByTicketId.keys()];
+  const { rows: ticketRows } = await query(
+    `SELECT tt."id", tt."name", tt."price", tt."quantity",
+            COALESCE(sold."sold", 0)::int AS "sold"
+     FROM "TicketType" tt
+     LEFT JOIN (
+       SELECT oi."ticketTypeId", COALESCE(SUM(oi."quantity"), 0)::int AS "sold"
+       FROM "OrderItem" oi
+       INNER JOIN "Order" o ON o."id" = oi."orderId"
+       WHERE LOWER(TRIM(COALESCE(o."status", ''))) IN
+         ('paid', 'completed', 'success', 'changed', 'true')
+       GROUP BY oi."ticketTypeId"
+     ) sold ON sold."ticketTypeId" = tt."id"
+     WHERE tt."eventId"::text = $1
+       AND tt."id"::text = ANY($2::text[])`,
+    [String(eventId), ticketTypeIds]
+  );
+  if (ticketRows.length !== ticketTypeIds.length) {
+    throw Object.assign(new Error('One or more ticket types are invalid for this event'), { statusCode: 400 });
+  }
+
+  const { rows: tierRows } = await query(
+    `SELECT "ticketTypeId", "minimumQuantity", "discountPercent"
+     FROM "TicketDiscountTier"
+     WHERE "ticketTypeId" = ANY($1::text[])
+     ORDER BY "minimumQuantity" ASC`,
+    [ticketTypeIds]
+  ).catch((error) => {
+    if (error?.code === '42P01') return { rows: [] };
+    throw error;
+  });
+  const tiersByTicketId = tierRows.reduce((result, tier) => {
+    const key = String(tier.ticketTypeId);
+    if (!result[key]) result[key] = [];
+    result[key].push(tier);
+    return result;
+  }, {});
+
+  let originalAmount = 0;
+  let quantityDiscountAmount = 0;
+  const pricedItems = ticketRows.map((ticket) => {
+    const ticketTypeId = String(ticket.id);
+    const quantity = requestedByTicketId.get(ticketTypeId);
+    const available = Math.max(0, Number(ticket.quantity) - Number(ticket.sold));
+    if (quantity > available) {
+      throw Object.assign(
+        new Error(`Only ${available} ${ticket.name || 'ticket'} ticket(s) remain`),
+        { statusCode: 409 }
+      );
+    }
+    const unitPrice = Math.max(0, Number(ticket.price) || 0);
+    const lineOriginalAmount = unitPrice * quantity;
+    const applicableTier = (tiersByTicketId[ticketTypeId] || [])
+      .filter((tier) => quantity >= Number(tier.minimumQuantity))
+      .at(-1);
+    const discountPercent = applicableTier
+      ? Math.max(0, Math.min(100, Number(applicableTier.discountPercent) || 0))
+      : 0;
+    const lineDiscountAmount = Math.round((lineOriginalAmount * discountPercent) / 100);
+    originalAmount += lineOriginalAmount;
+    quantityDiscountAmount += lineDiscountAmount;
+    return {
+      ticketTypeId,
+      quantity,
+      unitPrice,
+      discountPercent,
+      lineOriginalAmount,
+      lineDiscountAmount,
+      lineFinalAmount: lineOriginalAmount - lineDiscountAmount,
+    };
+  });
+
+  return {
+    items: pricedItems,
+    originalAmount,
+    quantityDiscountAmount,
+    amountAfterQuantityDiscount: originalAmount - quantityDiscountAmount,
+  };
+}
+
 function resolvePaystackChannels() {
   const raw = process.env.PAYSTACK_CHANNELS;
   const allowed = new Set(['card', 'bank', 'ussd', 'qr', 'mobile_money', 'bank_transfer', 'eft']);
@@ -200,29 +297,31 @@ async function verifyWithPaystack(reference) {
 export async function createOrder(req, res) {
   try {
     const { eventId, items, fullName, email, phone, address } = req.body || {};
-    const { couponCode, originalAmount } = resolveOrderCouponInput(req.body || {});
+    const { couponCode } = resolveOrderCouponInput(req.body || {});
     const userId = req.user?.id ?? req.userId ?? null;
     const buyerEmail = normalizeBuyerEmail(email);
-    if (!eventId || !items || !Array.isArray(items) || items.length === 0 || originalAmount == null) {
-      return res.status(400).json({ error: 'eventId, items and totalAmount required' });
-    }
-    const baseAmount = Number(originalAmount);
-    if (Number.isNaN(baseAmount) || baseAmount < 0) {
-      return res.status(400).json({ error: 'totalAmount must be a non-negative number' });
+    if (!eventId || !items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'eventId and items required' });
     }
 
+    const itemPricing = await calculateOrderItems(eventId, items);
     const coupon = couponCode ? await getValidCoupon(eventId, couponCode) : null;
     if (couponCode && !coupon) {
       return res.status(400).json({ error: 'Invalid or expired coupon code' });
     }
-    const pricing = applyCouponDiscount(baseAmount, coupon);
+    const couponPricing = applyCouponDiscount(
+      itemPricing.amountAfterQuantityDiscount,
+      coupon
+    );
+    const totalDiscountAmount =
+      itemPricing.quantityDiscountAmount + couponPricing.discountAmount;
 
     const orderId = createId();
     const ref = `order_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const result = await query(
-      `INSERT INTO "Order" ("id", "eventId", "userId", "fullName", "email", "phone", "address", "totalAmount", "status", "reference", "couponId", "couponCode", "originalAmount", "discountAmount")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, $11, $12, $13)
-       RETURNING "id", "reference", "status", "totalAmount", "couponCode", "originalAmount", "discountAmount"`,
+      `INSERT INTO "Order" ("id", "eventId", "userId", "fullName", "email", "phone", "address", "totalAmount", "status", "reference", "couponId", "couponCode", "originalAmount", "discountAmount", "quantityDiscountAmount")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, $11, $12, $13, $14)
+       RETURNING "id", "reference", "status", "totalAmount", "couponCode", "originalAmount", "discountAmount", "quantityDiscountAmount"`,
       [
         orderId,
         eventId,
@@ -231,12 +330,13 @@ export async function createOrder(req, res) {
         buyerEmail || null,
         (phone || '').trim() || null,
         (address || '').trim() || null,
-        pricing.finalAmount,
+        couponPricing.finalAmount,
         ref,
         coupon?.id ?? null,
         coupon?.code ?? null,
-        pricing.originalAmount,
-        pricing.discountAmount,
+        itemPricing.originalAmount,
+        totalDiscountAmount,
+        itemPricing.quantityDiscountAmount,
       ]
     ).catch((e) => {
       if (e.code === '42P01') return null;
@@ -248,16 +348,11 @@ export async function createOrder(req, res) {
     const row = result.rows[0];
 
     // Persist per-ticket breakdown so sold counters can increment by ticket type when order becomes paid.
-    for (const item of items) {
-      const quantity = Math.max(1, Number.parseInt(item?.quantity, 10) || 1);
-      const unitPrice = Math.max(0, Number(item?.price) || 0);
-      const ticketTypeId = await resolveOrderItemTicketTypeId(eventId, item);
-      if (!ticketTypeId) continue;
-
+    for (const item of itemPricing.items) {
       await query(
         `INSERT INTO "OrderItem" ("id", "orderId", "ticketTypeId", "quantity", "price")
          VALUES ($1, $2, $3, $4, $5)`,
-        [createId(), row.id, ticketTypeId, quantity, unitPrice]
+        [createId(), row.id, item.ticketTypeId, item.quantity, item.unitPrice]
       ).catch((e) => {
         if (e?.code === '42P01') return null;
         throw e;
@@ -272,10 +367,19 @@ export async function createOrder(req, res) {
       couponCode: row.couponCode ?? null,
       originalAmount: row.originalAmount ?? row.totalAmount,
       discountAmount: row.discountAmount ?? 0,
+      quantityDiscountAmount: row.quantityDiscountAmount ?? 0,
+      pricing: {
+        originalAmount: itemPricing.originalAmount,
+        quantityDiscountAmount: itemPricing.quantityDiscountAmount,
+        couponDiscountAmount: couponPricing.discountAmount,
+        discountAmount: totalDiscountAmount,
+        finalAmount: Number(row.totalAmount),
+        items: itemPricing.items,
+      },
     });
   } catch (err) {
     console.error('createOrder', err);
-    return res.status(500).json({ error: err.message || 'Failed to create order' });
+    return res.status(Number(err?.statusCode) || 500).json({ error: err.message || 'Failed to create order' });
   }
 }
 

@@ -138,6 +138,43 @@ CREATE TABLE IF NOT EXISTS "TicketType" (
 
 CREATE INDEX IF NOT EXISTS "TicketType_eventId_idx" ON "TicketType" ("eventId");
 
+-- Automatic quantity discounts per ticket type. Highest eligible tier applies.
+-- Additive only: does not mutate existing Event / TicketType / Order row values.
+CREATE TABLE IF NOT EXISTS "TicketDiscountTier" (
+  "id" TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  "ticketTypeId" TEXT NOT NULL,
+  "minimumQuantity" INTEGER NOT NULL CHECK ("minimumQuantity" >= 2),
+  "discountPercent" NUMERIC(5, 2) NOT NULL
+    CHECK ("discountPercent" > 0 AND "discountPercent" <= 100),
+  "createdAt" TIMESTAMPTZ DEFAULT NOW(),
+  "updatedAt" TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE ("ticketTypeId", "minimumQuantity")
+);
+
+CREATE INDEX IF NOT EXISTS "TicketDiscountTier_ticketTypeId_idx"
+  ON "TicketDiscountTier" ("ticketTypeId", "minimumQuantity");
+
+CREATE OR REPLACE FUNCTION delete_ticket_discount_tiers()
+RETURNS TRIGGER AS $$
+BEGIN
+  DELETE FROM "TicketDiscountTier"
+  WHERE "ticketTypeId" = OLD."id"::text;
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+BEGIN
+  IF to_regclass('public."TicketType"') IS NULL THEN
+    RETURN;
+  END IF;
+  DROP TRIGGER IF EXISTS "TicketType_delete_discount_tiers" ON "TicketType";
+  CREATE TRIGGER "TicketType_delete_discount_tiers"
+    BEFORE DELETE ON "TicketType"
+    FOR EACH ROW
+    EXECUTE PROCEDURE delete_ticket_discount_tiers();
+END $$;
+
 -- Paid attendee stream access tokens (emailed on go-live)
 CREATE TABLE IF NOT EXISTS "StreamAccess" (
   "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -238,6 +275,8 @@ ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "lastPasswordChangeAt" TIMESTAMPTZ;
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "suspended" BOOLEAN DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS "User_suspended_idx" ON "User" ("suspended") WHERE "suspended" = TRUE;
 ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "ticketCode" VARCHAR(255);
+-- New column only; existing order amounts/status/items are left unchanged.
+ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "quantityDiscountAmount" INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "venue" VARCHAR(512);
 ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "category" VARCHAR(255);
 ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "currency" VARCHAR(10);

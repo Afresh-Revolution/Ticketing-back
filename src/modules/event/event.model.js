@@ -84,6 +84,74 @@ function resolveDeliveryMode(ticket, eventType) {
   return 'in_person';
 }
 
+function normalizeDiscountTiers(tiers) {
+  if (tiers == null) return [];
+  if (!Array.isArray(tiers)) throw new Error('discountTiers must be an array');
+
+  const normalized = tiers
+    .map((tier) => ({
+      minimumQuantity: Number(tier?.minimumQuantity),
+      discountPercent: Number(tier?.discountPercent),
+    }))
+    .sort((a, b) => a.minimumQuantity - b.minimumQuantity);
+
+  const quantities = new Set();
+  let previousPercent = 0;
+  for (const tier of normalized) {
+    if (!Number.isInteger(tier.minimumQuantity) || tier.minimumQuantity < 2) {
+      throw new Error('Discount minimum quantity must be a whole number of at least 2');
+    }
+    if (!Number.isFinite(tier.discountPercent) || tier.discountPercent <= 0 || tier.discountPercent > 100) {
+      throw new Error('Discount percentage must be greater than 0 and no more than 100');
+    }
+    if (quantities.has(tier.minimumQuantity)) {
+      throw new Error(`Duplicate discount minimum quantity: ${tier.minimumQuantity}`);
+    }
+    if (tier.discountPercent <= previousPercent) {
+      throw new Error('Discount percentages must increase with quantity');
+    }
+    quantities.add(tier.minimumQuantity);
+    previousPercent = tier.discountPercent;
+  }
+  return normalized;
+}
+
+async function loadDiscountTiers(ticketTypeIds) {
+  if (!ticketTypeIds.length) return {};
+  const { rows } = await query(
+    `SELECT "ticketTypeId", "minimumQuantity", "discountPercent"
+     FROM "TicketDiscountTier"
+     WHERE "ticketTypeId" = ANY($1::text[])
+     ORDER BY "minimumQuantity" ASC`,
+    [ticketTypeIds]
+  ).catch((error) => {
+    if (error?.code === '42P01') return { rows: [] };
+    throw error;
+  });
+  return rows.reduce((byTicketType, row) => {
+    const key = String(row.ticketTypeId);
+    if (!byTicketType[key]) byTicketType[key] = [];
+    byTicketType[key].push({
+      minimumQuantity: Number(row.minimumQuantity),
+      discountPercent: Number(row.discountPercent),
+    });
+    return byTicketType;
+  }, {});
+}
+
+async function replaceDiscountTiers(ticketTypeId, tiers) {
+  const normalized = normalizeDiscountTiers(tiers);
+  await query('DELETE FROM "TicketDiscountTier" WHERE "ticketTypeId" = $1', [ticketTypeId]);
+  for (const tier of normalized) {
+    await query(
+      `INSERT INTO "TicketDiscountTier"
+         ("id", "ticketTypeId", "minimumQuantity", "discountPercent", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, NOW(), NOW())`,
+      [createId(), ticketTypeId, tier.minimumQuantity, tier.discountPercent]
+    );
+  }
+}
+
 function mapTicketRow(t) {
   return {
     id: t.id,
@@ -95,6 +163,7 @@ function mapTicketRow(t) {
     deliveryMode: t.deliveryMode || 'in_person',
     contactEmail: t.contactEmail ?? null,
     contactPhone: t.contactPhone ?? null,
+    discountTiers: Array.isArray(t.discountTiers) ? t.discountTiers : [],
   };
 }
 
@@ -166,10 +235,14 @@ export const eventModel = {
         'SELECT * FROM "TicketType" WHERE "eventId" = ANY($1)',
         [eventIds]
       );
+      const discountsByTicketId = await loadDiscountTiers(ticketRows.map((ticket) => ticket.id));
       const byEventId = {};
       for (const t of ticketRows) {
         if (!byEventId[t.eventId]) byEventId[t.eventId] = [];
-        byEventId[t.eventId].push(mapTicketRow(t));
+        byEventId[t.eventId].push(mapTicketRow({
+          ...t,
+          discountTiers: discountsByTicketId[String(t.id)] || [],
+        }));
       }
       events.forEach((e) => { e.tickets = byEventId[e.id] || []; });
     }
@@ -183,6 +256,7 @@ export const eventModel = {
     // Fetch Ticket Types (pools) with sold count from paid orders
     const { rows: ticketTypeRows } = await query('SELECT * FROM "TicketType" WHERE "eventId" = $1', [id]);
     const ticketIds = ticketTypeRows.map(t => t.id);
+    const discountsByTicketId = await loadDiscountTiers(ticketIds);
     let soldByTicketId = {};
     if (ticketIds.length > 0) {
       const { rows: soldRows } = await query(
@@ -216,7 +290,10 @@ export const eventModel = {
       return acc;
     }, {});
     event.tickets = ticketTypeRows.map(t => ({
-      ...mapTicketRow(t),
+      ...mapTicketRow({
+        ...t,
+        discountTiers: discountsByTicketId[String(t.id)] || [],
+      }),
       type: resolveTicketType(t),
       sold: (soldByTicketId[t.id] || 0) + (walkInSoldByName[normalizeTicketTypeKey(t.name)] || 0),
     }));
@@ -274,11 +351,12 @@ export const eventModel = {
         const contactEmail = type === 'reservation' ? (ticket.contactEmail?.trim() || null) : null;
         const contactPhone = type === 'reservation' ? (ticket.contactPhone?.trim() || null) : null;
         const deliveryMode = resolveDeliveryMode(ticket, eventType);
+        const ticketTypeId = createId();
         await query(
           `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "deliveryMode", "contactEmail", "contactPhone", "createdAt", "updatedAt")
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
           [
-            createId(),
+            ticketTypeId,
             id,
             ticket.name,
             ticket.description ?? null,
@@ -291,6 +369,10 @@ export const eventModel = {
             now,
             now,
           ]
+        );
+        await replaceDiscountTiers(
+          ticketTypeId,
+          type === 'paid' ? ticket.discountTiers : []
         );
       }
     }
@@ -382,11 +464,20 @@ export const eventModel = {
              WHERE "id"::text = $9 AND "eventId"::text = $10`,
             [name, description, price, quantity, type, deliveryMode, contactEmail, contactPhone, parsedId, String(id)]
           );
+          await replaceDiscountTiers(
+            parsedId,
+            type === 'paid' ? ticket.discountTiers : []
+          );
         } else {
+          const ticketTypeId = createId();
           await query(
             `INSERT INTO "TicketType" (id, "eventId", name, description, price, quantity, type, "deliveryMode", "contactEmail", "contactPhone", "createdAt", "updatedAt")
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())`,
-            [createId(), id, name, description, price, quantity, type, deliveryMode, contactEmail, contactPhone]
+            [ticketTypeId, id, name, description, price, quantity, type, deliveryMode, contactEmail, contactPhone]
+          );
+          await replaceDiscountTiers(
+            ticketTypeId,
+            type === 'paid' ? ticket.discountTiers : []
           );
         }
       }
@@ -404,6 +495,15 @@ export const eventModel = {
              )`,
           [existingId, String(id)]
         );
+        await query(
+          `DELETE FROM "TicketDiscountTier" d
+           WHERE d."ticketTypeId" = $1
+             AND NOT EXISTS (
+               SELECT 1 FROM "TicketType" tt
+               WHERE tt."id"::text = d."ticketTypeId"
+             )`,
+          [existingId]
+        );
       }
     }
     return eventModel.findById(id);
@@ -420,6 +520,13 @@ export const eventModel = {
     await query('DELETE FROM "StreamAccess" WHERE "eventId" = $1', [id]);
     await query('DELETE FROM "Order" WHERE "eventId" = $1', [id]);
     await query('DELETE FROM "Withdrawal" WHERE "eventId" = $1', [id]);
+    await query(
+      `DELETE FROM "TicketDiscountTier"
+       WHERE "ticketTypeId" IN (
+         SELECT "id"::text FROM "TicketType" WHERE "eventId" = $1
+       )`,
+      [id]
+    );
     await query('DELETE FROM "TicketType" WHERE "eventId" = $1', [id]);
     await query('DELETE FROM "Event" WHERE id = $1', [id]);
     return deleted;

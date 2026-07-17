@@ -31,6 +31,7 @@ import { uploadVideoBufferToCloudinary, deleteVideoFromCloudinary, isCloudinaryC
 import { listLandingVideos, createLandingVideo, updateLandingVideo, deleteLandingVideo } from '../landing/videos/videos.model.js';
 import { normalizeExternalUrl } from '../../shared/utils/normalizeExternalUrl.js';
 import { NIGERIAN_BANKS_FALLBACK } from './nigerianBanks.js';
+import { eventModel } from '../event/event.model.js';
 
 function mapLandingVideoRow(row) {
   if (!row) return null;
@@ -514,60 +515,13 @@ export async function patchAdminEvent(req, res) {
     ).catch(() => ({ rows: [] }));
 
     if (!result.rows?.length) return res.status(404).json({ error: 'Event not found' });
+    // Keep ticket + discount-tier writes on the shared event model so admin fallback
+    // updates stay consistent with POST/PATCH /api/events.
     if (Array.isArray(body.ticketTypes)) {
-      const currentRows = await query(
-        'SELECT "id" FROM "TicketType" WHERE "eventId"::text = $1',
-        [eventId]
-      ).catch(() => ({ rows: [] }));
-      const existingIds = new Set((currentRows.rows || []).map((r) => String(r.id)));
-      const incomingIds = new Set();
-
-      for (const ticket of body.ticketTypes) {
-        const parsedId = typeof ticket?.id === 'string' ? ticket.id.trim() : '';
-        const hasExistingId = parsedId.length > 0 && existingIds.has(parsedId);
-        if (hasExistingId) incomingIds.add(parsedId);
-
-        const price = Number(ticket?.price) || 0;
-        const quantity = Number(ticket?.quantity) || 0;
-        const type = ticket?.type === 'free' ? 'free' : (price === 0 ? 'free' : 'paid');
-        const name = ticket?.name || 'Ticket';
-        const description = ticket?.description || null;
-
-        if (hasExistingId) {
-          await query(
-            `UPDATE "TicketType"
-             SET "name" = $1,
-                 "description" = $2,
-                 "price" = $3,
-                 "quantity" = $4,
-                 "type" = $5,
-                 "updatedAt" = NOW()
-             WHERE "id"::text = $6 AND "eventId"::text = $7`,
-            [name, description, price, quantity, type, parsedId, eventId]
-          );
-        } else {
-          await query(
-            `INSERT INTO "TicketType" ("id", "eventId", "name", "description", "price", "quantity", "type", "createdAt", "updatedAt")
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
-            [crypto.randomUUID(), eventId, name, description, price, quantity, type]
-          );
-        }
-      }
-
-      for (const existingId of existingIds) {
-        if (incomingIds.has(existingId)) continue;
-        await query(
-          `DELETE FROM "TicketType" tt
-           WHERE tt."id"::text = $1
-             AND tt."eventId"::text = $2
-             AND NOT EXISTS (
-               SELECT 1
-               FROM "OrderItem" oi
-               WHERE oi."ticketTypeId"::text = tt."id"::text
-             )`,
-          [existingId, eventId]
-        );
-      }
+      await eventModel.update(eventId, {
+        ticketTypes: body.ticketTypes,
+        eventType: body.eventType,
+      });
     }
     return res.json({ message: 'Updated' });
   } catch (err) {

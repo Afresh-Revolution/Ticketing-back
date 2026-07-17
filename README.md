@@ -7,7 +7,7 @@ PostgreSQL schema and Express routes for event merch (online purchase, at-event 
 1. Run migration against your PostgreSQL database:
 
 ```bash
-psql "$DATABASE_URL" -f migrations/002_event_merch.sql
+psql "$DATABASE_URL" -f db/migrations/002_event_merch.sql
 ```
 
 2. Mount the router in your main Express app:

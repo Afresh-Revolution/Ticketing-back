@@ -3,7 +3,7 @@
 ## 1. Database
 
 ```bash
-psql "$DATABASE_URL" -f migrations/002_event_merch.sql
+psql "$DATABASE_URL" -f db/migrations/002_event_merch.sql
 ```
 
 ## 2. Mount routes
