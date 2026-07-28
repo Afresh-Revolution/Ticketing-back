@@ -5,6 +5,7 @@ import { requireAuth } from '../../middleware/auth.js';
 
 const router = Router();
 
+router.get('/manual-payment-details', merchController.getManualPaymentDetailsHandler);
 router.post('/', optionalAuth, merchController.createOrder);
 router.post('/initialize-payment', optionalAuth, merchController.initializePayment);
 router.post('/verify', merchController.verifyPayment);

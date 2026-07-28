@@ -10,8 +10,12 @@ import {
   verifyTransaction,
 } from '../../shared/services/paystack.service.js';
 import { normalizeBuyerEmail } from '../../shared/utils/email.js';
+import { getManualPaymentDetails } from '../../shared/config/env.js';
 
-export async function listByEvent(req, res, next) {
+/** GET /api/merch-orders/manual-payment-details – bank transfer info from env. */
+export function getManualPaymentDetailsHandler(_req, res) {
+  return res.json(getManualPaymentDetails());
+}
   try {
     const merch = await merchModel.fetchMerchByEventId(req.params.id);
     res.json({ merch });
@@ -144,6 +148,13 @@ export async function createOrder(req, res, next) {
     if (order.status === 'paid') {
       await sendMerchReceiptEmail(order.id);
       await notifyAdminsMerchOrder(order.id, 'Paid');
+    }
+
+    if (method !== 'paystack' && order.status === 'pending') {
+      return res.status(201).json({
+        ...order,
+        manualPayment: getManualPaymentDetails(),
+      });
     }
 
     res.status(201).json(order);

@@ -17,8 +17,13 @@ import {
   verifyTransaction,
 } from "../../shared/services/paystack.service.js";
 import { query } from "../../shared/config/db.js";
-import { config } from "../../shared/config/env.js";
+import { config, getManualPaymentDetails } from "../../shared/config/env.js";
 import { normalizeBuyerEmail } from "../../shared/utils/email.js";
+
+/** GET /api/orders/manual-payment-details – bank transfer info from env. */
+export function getManualPaymentDetailsHandler(_req, res) {
+  return res.json(getManualPaymentDetails());
+}
 
 function extractTicketTypes(items) {
   if (!Array.isArray(items)) return [];
@@ -226,6 +231,12 @@ export async function create(req, res, next) {
       return res.status(201).json(orderWithCode);
     }
 
+    if (!isFreeOrder && !isPaystackCheckout) {
+      return res.status(201).json({
+        ...order,
+        manualPayment: getManualPaymentDetails(),
+      });
+    }
     res.status(201).json(order);
   } catch (err) {
     next(err);

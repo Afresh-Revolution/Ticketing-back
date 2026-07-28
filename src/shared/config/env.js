@@ -21,6 +21,17 @@ const cloudinaryCloudName = process.env.CLOUDINARY_CLOUD_NAME || '';
 const cloudinaryApiKey = process.env.CLOUDINARY_API_KEY || '';
 const cloudinaryApiSecret = process.env.CLOUDINARY_API_SECRET || '';
 const manualPaymentNotifyEmail = String(process.env.MANUAL_PAYMENT_NOTIFY_EMAIL || '').trim();
+const manualPayment = {
+  accountName: String(process.env.MANUAL_PAYMENT_ACCOUNT_NAME || '').trim(),
+  accountNumber: String(process.env.MANUAL_PAYMENT_ACCOUNT_NUMBER || '').trim(),
+  bankName: String(process.env.MANUAL_PAYMENT_BANK_NAME || '').trim(),
+  contactUrl: String(process.env.MANUAL_PAYMENT_CONTACT_URL || '').trim(),
+};
+
+/** Public bank-transfer details for checkout UIs (from env). */
+export function getManualPaymentDetails() {
+  return { ...manualPayment };
+}
 
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
@@ -34,6 +45,7 @@ export const config = {
   cloudinaryApiKey,
   cloudinaryApiSecret,
   manualPaymentNotifyEmail,
+  manualPayment,
   frontendBaseUrl,
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || '',
   corsOrigins: corsOrigin

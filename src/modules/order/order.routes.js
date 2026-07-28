@@ -9,6 +9,8 @@ const router = Router();
 // List current user's paid tickets (fallback for GET /api/user/orders)
 router.get('/', requireAuth, getMyOrders);
 
+router.get('/manual-payment-details', orderController.getManualPaymentDetailsHandler);
+
 // Create order (optional auth to attach user if logged in)
 router.post('/', optionalAuth, orderController.create);
 router.post('/validate-coupon', optionalAuth, orderController.validateCoupon);
