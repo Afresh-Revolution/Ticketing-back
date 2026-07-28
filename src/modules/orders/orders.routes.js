@@ -6,6 +6,7 @@ import { optionalAuth, requireAuth } from '../../middleware/auth.js';
 const router = express.Router();
 
 router.get('/', requireAuth, getMyOrders);
+router.get('/manual-payment-details', ordersController.getManualPaymentDetailsHandler);
 router.post('/', optionalAuth, ordersController.createOrder);
 router.post('/validate-coupon', optionalAuth, ordersController.validateCoupon);
 router.post('/coupon-preview', optionalAuth, ordersController.validateCoupon);

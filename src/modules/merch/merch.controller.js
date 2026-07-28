@@ -16,6 +16,8 @@ import { getManualPaymentDetails } from '../../shared/config/env.js';
 export function getManualPaymentDetailsHandler(_req, res) {
   return res.json(getManualPaymentDetails());
 }
+
+export async function listByEvent(req, res, next) {
   try {
     const merch = await merchModel.fetchMerchByEventId(req.params.id);
     res.json({ merch });

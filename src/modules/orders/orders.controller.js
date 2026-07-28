@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { query, createId } from '../../shared/config/db.js';
-import { config } from '../../shared/config/env.js';
+import { config, getManualPaymentDetails } from '../../shared/config/env.js';
 import { sendEmail, sendTicketEmail } from '../../shared/services/email.service.js';
 import {
   buildTicketEmailPayload,
@@ -9,6 +9,11 @@ import {
 } from '../../shared/utils/ticketEmailContext.js';
 import { normalizeBuyerEmail } from '../../shared/utils/email.js';
 import { eventModel } from '../event/event.model.js';
+
+/** GET /api/orders/manual-payment-details – bank transfer info from backend env. */
+export function getManualPaymentDetailsHandler(_req, res) {
+  return res.json(getManualPaymentDetails());
+}
 
 function applyCouponDiscount(totalAmount, coupon) {
   const amount = Math.max(0, Number(totalAmount) || 0);
