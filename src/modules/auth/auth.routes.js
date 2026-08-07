@@ -19,6 +19,7 @@ router.get('/health', (req, res) => {
       'POST /api/auth/forgot-password',
       'POST /api/auth/reset-password',
       'POST /api/auth/resend-verification',
+      'POST /api/auth/delete-account',
     ],
   });
 });
@@ -29,5 +30,15 @@ router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password', authController.resetPassword);
 router.post('/resend-verification', authController.resendVerification);
 router.post('/create-admin', requireAuth, requireSuperAdmin, authController.createAdmin);
+
+/** Alias for clients that prefer POST over DELETE with a body */
+router.post('/delete-account', requireAuth, async (req, res, next) => {
+  try {
+    const { deleteAccount } = await import('../user/user.controller.js');
+    return deleteAccount(req, res);
+  } catch (err) {
+    return next(err);
+  }
+});
 
 export default router;

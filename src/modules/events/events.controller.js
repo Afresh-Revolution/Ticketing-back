@@ -5,16 +5,41 @@ import {
 } from '../../shared/services/cloudinary.service.js';
 import { eventModel } from '../event/event.model.js';
 
-/** GET /api/events - list events (?trending=true&take=3) */
+/** GET /api/events - list events (?trending=true&take=3)
+ *  When trending=true, results are ranked by paid tickets sold (most bought first).
+ */
 export async function listEvents(req, res) {
   try {
     const trending = req.query.trending === 'true';
     const take = Math.min(parseInt(req.query.take, 10) || 50, 100);
+    const orderBy = trending
+      ? `"ticketsSold" DESC, "date" ASC`
+      : `"date" ASC`;
     const result = await query(
-      `SELECT "id", "title", "date", "location", "price", "imageUrl", "startTime", "category"
-       FROM "Event"
-       WHERE "isPublished" = TRUE ${trending ? 'AND "isTrending" = TRUE' : ''}
-       ORDER BY "date" ASC
+      `SELECT
+         e."id",
+         e."title",
+         e."date",
+         e."endDate",
+         e."location",
+         e."venue",
+         e."price",
+         e."imageUrl",
+         e."startTime",
+         e."category",
+         e."isTrending",
+         e."eventType",
+         e."isLive",
+         COALESCE((
+           SELECT SUM(oi.quantity)::int
+           FROM "Order" o
+           LEFT JOIN "OrderItem" oi ON oi."orderId"::text = o.id::text
+           WHERE o."eventId"::text = e.id::text
+             AND LOWER(COALESCE(o.status, '')) IN ('paid', 'completed', 'success')
+         ), 0) AS "ticketsSold"
+       FROM "Event" e
+       WHERE e."isPublished" = TRUE ${trending ? 'AND e."isTrending" = TRUE' : ''}
+       ORDER BY ${orderBy}
        LIMIT $1`,
       [take]
     ).catch(() => ({ rows: [] }));
@@ -22,11 +47,17 @@ export async function listEvents(req, res) {
       id: String(row.id),
       title: row.title,
       date: row.date,
+      endDate: row.endDate ?? null,
       category: row.category,
       location: row.location,
+      venue: row.venue ?? null,
       price: row.price,
       imageUrl: row.imageUrl,
       startTime: row.startTime,
+      isTrending: Boolean(row.isTrending),
+      eventType: row.eventType ?? 'in-person',
+      isLive: Boolean(row.isLive),
+      ticketsSold: Number(row.ticketsSold) || 0,
     }));
     return res.json(list);
   } catch {
