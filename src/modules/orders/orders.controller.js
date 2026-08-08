@@ -586,7 +586,7 @@ export async function notifyManualPayment(req, res) {
 
     const buyerEmail = String(email || order.email || '').trim() || 'N/A';
 
-    const eventMeta = await getEventMeta(order.eventId);
+    const eventMeta = await loadEventForTicketEmail(order.eventId);
     const notifyTo =
       (await eventModel.getOwnerEmail(order.eventId)) ||
       config.manualPaymentNotifyEmail ||
