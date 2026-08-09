@@ -236,6 +236,63 @@ async function getOrderById(orderId) {
   return result.rows?.[0] || null;
 }
 
+async function getOrderByReference(reference) {
+  if (!reference) return null;
+  const result = await query(
+    `SELECT id, "eventId", "fullName", email, "totalAmount", status, reference, "ticketCode"
+     FROM "Order"
+     WHERE reference::text = $1
+     LIMIT 1`,
+    [String(reference)]
+  ).catch((e) => {
+    if (e?.code === '42P01') return { rows: [] };
+    throw e;
+  });
+  return result.rows?.[0] || null;
+}
+
+/**
+ * Mark order paid, bump coupon usage, issue ticket code + email.
+ * Idempotent if already paid (ensures ticket code; does not re-email).
+ */
+async function fulfillPaidOrder(order, reference) {
+  if (!order?.id) return null;
+  const ref = String(reference || order.reference || '').trim();
+  const alreadyPaid = String(order.status || '').toLowerCase() === 'paid';
+
+  if (!alreadyPaid) {
+    await query(
+      'UPDATE "Order" SET "status" = \'paid\', "reference" = $1, "updatedAt" = NOW() WHERE "id" = $2',
+      [ref || order.reference || null, order.id]
+    ).catch((e) => {
+      if (e.code === '42P01') return { rowCount: 0 };
+      throw e;
+    });
+
+    await query(
+      `UPDATE "Coupon"
+       SET "usedCount" = "usedCount" + 1, "updatedAt" = NOW()
+       WHERE id IN (
+         SELECT "couponId" FROM "Order" WHERE id = $1 AND "couponId" IS NOT NULL
+       )`,
+      [order.id]
+    ).catch((e) => {
+      if (e?.code === '42P01') return null;
+      throw e;
+    });
+
+    await sendOrderTicket({
+      ...order,
+      status: 'paid',
+      reference: ref || order.reference || null,
+    });
+  } else if (!order.ticketCode) {
+    await ensureOrderTicketCode(order.id, order.ticketCode);
+  }
+
+  return getOrderById(order.id);
+}
+
 /** Reject ticket purchases after the event's last day (endDate, else date). */
 async function assertEventOnSale(eventId) {
   const result = await query(
@@ -547,7 +604,10 @@ export async function initializePayment(req, res) {
         currency: 'NGN',
         channels,
         callback_url: callbackUrl || undefined,
-        metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
+        metadata: {
+          ...(metadata && typeof metadata === 'object' ? metadata : {}),
+          orderId: orderId ? String(orderId) : undefined,
+        },
       }),
     });
 
@@ -580,16 +640,19 @@ export async function verifyOrder(req, res) {
     }
     const order = await getOrderById(orderId);
     if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    reference = String(reference || order.reference || '').trim();
+
     if (String(order.status || '').toLowerCase() === 'paid') {
+      await fulfillPaidOrder(order, reference || order.reference);
       return res.json({
         message: 'Verified',
         orderId,
         status: 'paid',
-        reference: order.reference || reference || null,
+        reference: reference || order.reference || null,
       });
     }
 
-    reference = String(reference || order.reference || '').trim();
     if (!reference) {
       return res.status(400).json({
         error: 'Payment reference not found for this order yet. Try again in a moment.',
@@ -615,31 +678,70 @@ export async function verifyOrder(req, res) {
       }
     }
 
-    await query(
-      'UPDATE "Order" SET "status" = \'paid\', "reference" = $1, "updatedAt" = NOW() WHERE "id" = $2',
-      [reference, orderId]
-    ).catch((e) => {
-      if (e.code === '42P01') return { rowCount: 0 };
-      throw e;
-    });
-
-    await query(
-      `UPDATE "Coupon"
-       SET "usedCount" = "usedCount" + 1, "updatedAt" = NOW()
-       WHERE id IN (
-         SELECT "couponId" FROM "Order" WHERE id = $1 AND "couponId" IS NOT NULL
-       )`,
-      [orderId]
-    ).catch((e) => {
-      if (e?.code === '42P01') return null;
-      throw e;
-    });
-    await sendOrderTicket({ ...order, reference });
+    await fulfillPaidOrder(order, reference);
     return res.json({ message: 'Verified', orderId, status: 'paid', reference });
   } catch (err) {
     console.error('verifyOrder', err);
     const statusCode = Number(err?.statusCode) || 500;
     return res.status(statusCode).json({ error: err.message || 'Verification failed' });
+  }
+}
+
+/**
+ * POST /api/orders/paystack-webhook
+ * Paystack charge.success → auto-mark paid + issue ticket (no admin approval).
+ * Expects raw JSON body when mounted with express.raw.
+ */
+export async function paystackWebhook(req, res) {
+  try {
+    const secret = config.paystackSecretKey;
+    const signature = String(req.headers['x-paystack-signature'] || '');
+    const rawBody = Buffer.isBuffer(req.body)
+      ? req.body
+      : Buffer.from(typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {}));
+
+    if (secret) {
+      const hash = crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
+      if (!signature || hash !== signature) {
+        return res.status(401).json({ error: 'Invalid Paystack signature' });
+      }
+    }
+
+    const payload = JSON.parse(rawBody.toString('utf8') || '{}');
+    const event = String(payload?.event || '');
+    const data = payload?.data || {};
+
+    if (event !== 'charge.success') {
+      return res.json({ received: true, ignored: true });
+    }
+
+    const reference = String(data.reference || '').trim();
+    const metadataOrderId = data.metadata?.orderId || data.metadata?.order_id;
+    let order = metadataOrderId ? await getOrderById(String(metadataOrderId)) : null;
+    if (!order && reference) order = await getOrderByReference(reference);
+    if (!order) {
+      console.warn('[paystackWebhook] No order for reference', reference);
+      return res.json({ received: true, orderFound: false });
+    }
+
+    if (String(data.status || '').toLowerCase() === 'success') {
+      const paidAmountKobo = Number(data.amount || 0);
+      const expectedAmountKobo = Math.round((Number(order.totalAmount) || 0) * 100);
+      if (paidAmountKobo && expectedAmountKobo && paidAmountKobo !== expectedAmountKobo) {
+        console.warn('[paystackWebhook] Amount mismatch', {
+          orderId: order.id,
+          paidAmountKobo,
+          expectedAmountKobo,
+        });
+        return res.status(400).json({ error: 'Amount mismatch' });
+      }
+      await fulfillPaidOrder(order, reference || order.reference);
+    }
+
+    return res.json({ received: true, orderId: order.id, status: 'paid' });
+  } catch (err) {
+    console.error('paystackWebhook', err);
+    return res.status(500).json({ error: err.message || 'Webhook failed' });
   }
 }
 

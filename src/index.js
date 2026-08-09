@@ -23,12 +23,21 @@ import * as authController from "./modules/auth/auth.controller.js";
 import authRoutes from "./modules/auth/auth.routes.js";
 import landingRoutes from "./modules/landing/landing.routes.js";
 import ordersRoutes from "./modules/orders/orders.routes.js";
+import { paystackWebhook } from "./modules/orders/orders.controller.js";
 import eventsRoutes from "./modules/events/events.routes.js";
 import userRoutes from "./modules/user/user.routes.js";
 import adminRoutes from "./modules/admin/admin.routes.js";
 
 const app = express();
 applySecurityMiddleware(app);
+
+// Paystack webhook needs the raw body for signature verification (before JSON parser).
+app.post(
+  "/api/orders/paystack-webhook",
+  express.raw({ type: "application/json" }),
+  paystackWebhook
+);
+
 app.use(express.json({ limit: "100kb" }));
 
 const authRateLimit = createRateLimit({
