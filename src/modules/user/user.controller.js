@@ -55,6 +55,82 @@ export async function getMyOrders(req, res) {
   }
 }
 
+/**
+ * DELETE /api/user/orders/:orderId
+ * Hard-deletes the order and its line items from the DB.
+ * Only the signed-in owner (by userId or matching purchase email) may delete.
+ */
+export async function deleteMyOrder(req, res) {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const orderId = String(req.params.orderId || '').trim();
+    if (!orderId) {
+      return res.status(400).json({ error: 'Order id is required' });
+    }
+
+    const profile = await userPageModel.getProfile(userId);
+    const userEmail = String(profile?.email ?? req.user?.email ?? '')
+      .trim()
+      .toLowerCase();
+    if (!userEmail) {
+      return res.status(400).json({ error: 'Account email not found' });
+    }
+
+    await userPageModel.linkGuestOrdersToUser(userId, userEmail);
+
+    const pool = getPool();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const owned = await client.query(
+        `SELECT id FROM "Order"
+         WHERE id::text = $1
+           AND (
+             "userId"::text = $2
+             OR LOWER(TRIM(COALESCE(email, ''))) = $3
+           )
+         LIMIT 1`,
+        [orderId, String(userId), userEmail]
+      );
+
+      if (!owned.rows?.[0]) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Ticket not found' });
+      }
+
+      await tryQuery(client, `DELETE FROM "OrderItem" WHERE "orderId"::text = $1`, [orderId]);
+      const deleted = await client.query(`DELETE FROM "Order" WHERE id::text = $1 RETURNING id`, [
+        orderId,
+      ]);
+
+      if (!deleted.rows?.[0]) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Ticket not found' });
+      }
+
+      await client.query('COMMIT');
+      return res.json({ message: 'Ticket deleted', id: orderId });
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* ignore */
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('[user.controller] deleteMyOrder:', err?.message || err);
+    return res.status(500).json({ error: err.message || 'Failed to delete ticket' });
+  }
+}
+
 /** Run SQL that may fail on missing tables/columns — ignore those errors. */
 async function tryQuery(client, text, params = []) {
   try {

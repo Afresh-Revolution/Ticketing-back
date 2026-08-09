@@ -12,6 +12,7 @@ const deleteAccountRateLimit = createRateLimit({
 });
 
 router.get('/orders', requireAuth, userController.getMyOrders);
+router.delete('/orders/:orderId', requireAuth, userController.deleteMyOrder);
 router.delete(
   '/account',
   deleteAccountRateLimit,
