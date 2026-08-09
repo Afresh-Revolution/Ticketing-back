@@ -350,11 +350,15 @@ export async function createOrder(req, res) {
     const totalDiscountAmount =
       itemPricing.quantityDiscountAmount + couponPricing.discountAmount;
 
+    const isFreeOrder = Number(couponPricing.finalAmount) < 1;
+    const orderStatus = isFreeOrder ? 'paid' : 'pending';
     const orderId = createId();
-    const ref = `order_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const ref = isFreeOrder
+      ? `free_${Date.now()}`
+      : `order_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const result = await query(
       `INSERT INTO "Order" ("id", "eventId", "userId", "fullName", "email", "phone", "address", "totalAmount", "status", "reference", "couponId", "couponCode", "originalAmount", "discountAmount", "quantityDiscountAmount")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, $11, $12, $13, $14)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        RETURNING "id", "reference", "status", "totalAmount", "couponCode", "originalAmount", "discountAmount", "quantityDiscountAmount"`,
       [
         orderId,
@@ -365,6 +369,7 @@ export async function createOrder(req, res) {
         (phone || '').trim() || null,
         (address || '').trim() || null,
         couponPricing.finalAmount,
+        orderStatus,
         ref,
         coupon?.id ?? null,
         coupon?.code ?? null,
@@ -390,6 +395,27 @@ export async function createOrder(req, res) {
       ).catch((e) => {
         if (e?.code === '42P01') return null;
         throw e;
+      });
+    }
+
+    if (isFreeOrder) {
+      if (coupon?.id) {
+        await query(
+          `UPDATE "Coupon"
+           SET "usedCount" = "usedCount" + 1, "updatedAt" = NOW()
+           WHERE id = $1`,
+          [coupon.id]
+        ).catch((e) => {
+          if (e?.code === '42P01') return null;
+          throw e;
+        });
+      }
+      await sendOrderTicket({
+        id: row.id,
+        eventId,
+        email: buyerEmail,
+        fullName: (fullName || '').trim() || null,
+        ticketCode: null,
       });
     }
 
