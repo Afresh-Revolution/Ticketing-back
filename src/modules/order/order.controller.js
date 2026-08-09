@@ -149,6 +149,23 @@ export async function create(req, res, next) {
         .json({ error: "totalAmount must be a non-negative number" });
     }
 
+    const eventRow = await eventModel.findById(eventId);
+    if (!eventRow) {
+      return res.status(404).json({ error: "Event not found" });
+    }
+    const saleEndRef = eventRow.endDate || eventRow.date;
+    if (saleEndRef) {
+      const end = new Date(saleEndRef);
+      if (!Number.isNaN(end.getTime())) {
+        end.setHours(23, 59, 59, 999);
+        if (end.getTime() < Date.now()) {
+          return res
+            .status(400)
+            .json({ error: "This event has ended. Ticket sales are closed." });
+        }
+      }
+    }
+
     const coupon = couponCode
       ? await getValidCoupon(eventId, couponCode)
       : null;

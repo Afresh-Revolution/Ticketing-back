@@ -236,6 +236,33 @@ async function getOrderById(orderId) {
   return result.rows?.[0] || null;
 }
 
+/** Reject ticket purchases after the event's last day (endDate, else date). */
+async function assertEventOnSale(eventId) {
+  const result = await query(
+    `SELECT id, date, "endDate" FROM "Event" WHERE id::text = $1 LIMIT 1`,
+    [String(eventId)]
+  ).catch((e) => {
+    if (e?.code === '42P01') return { rows: [] };
+    throw e;
+  });
+  const event = result.rows?.[0];
+  if (!event) {
+    const err = new Error('Event not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  const ref = event.endDate || event.date;
+  if (!ref) return;
+  const end = new Date(ref);
+  if (Number.isNaN(end.getTime())) return;
+  end.setHours(23, 59, 59, 999);
+  if (end.getTime() < Date.now()) {
+    const err = new Error('This event has ended. Ticket sales are closed.');
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
 async function ensureOrderTicketCode(orderId, currentTicketCode) {
   if (currentTicketCode) return currentTicketCode;
   let ticketCode = generateTicketCode();
@@ -308,6 +335,8 @@ export async function createOrder(req, res) {
     if (!eventId || !items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'eventId and items required' });
     }
+
+    await assertEventOnSale(eventId);
 
     const itemPricing = await calculateOrderItems(eventId, items);
     const coupon = couponCode ? await getValidCoupon(eventId, couponCode) : null;
