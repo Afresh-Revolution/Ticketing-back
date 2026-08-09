@@ -502,10 +502,11 @@ export async function initializePayment(req, res, next) {
 
 export async function verify(req, res, next) {
   try {
-    const { reference, orderId } = req.body;
+    const { orderId } = req.body || {};
+    let reference = req.body?.reference;
 
-    if (!reference || !orderId) {
-      return res.status(400).json({ error: "Missing reference or orderId" });
+    if (!orderId) {
+      return res.status(400).json({ error: "Missing orderId" });
     }
 
     const existingOrder = await orderModel.findById(orderId);
@@ -513,16 +514,19 @@ export async function verify(req, res, next) {
       return res.status(404).json({ error: "Order not found" });
 
     if (String(existingOrder.status || "").toLowerCase() === "paid") {
-      return res.json(existingOrder);
+      return res.json({
+        ...existingOrder,
+        status: "paid",
+        reference: existingOrder.reference || reference || null,
+      });
     }
 
-    if (
-      existingOrder.reference &&
-      String(existingOrder.reference) !== String(reference)
-    ) {
-      return res
-        .status(400)
-        .json({ error: "Reference does not match this order" });
+    reference = String(reference || existingOrder.reference || "").trim();
+    if (!reference) {
+      return res.status(400).json({
+        error:
+          "Payment reference not found for this order yet. Try again in a moment.",
+      });
     }
 
     const isMockReference =
@@ -565,7 +569,7 @@ export async function verify(req, res, next) {
 
     const { freshOrder } = await sendOrderTicketEmail(paidOrder);
 
-    res.json(freshOrder);
+    res.json({ ...freshOrder, status: "paid", reference });
   } catch (err) {
     next(err);
   }

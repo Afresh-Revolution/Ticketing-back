@@ -570,18 +570,30 @@ export async function initializePayment(req, res) {
   }
 }
 
-/** POST /api/orders/verify - body: reference, orderId */
+/** POST /api/orders/verify - body: orderId, optional reference (falls back to order.reference) */
 export async function verifyOrder(req, res) {
   try {
-    const { reference, orderId } = req.body || {};
-    if (!reference || !orderId) {
-      return res.status(400).json({ error: 'reference and orderId required' });
+    const { orderId } = req.body || {};
+    let reference = req.body?.reference;
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId is required' });
     }
     const order = await getOrderById(orderId);
     if (!order) return res.status(404).json({ error: 'Order not found' });
-    if (String(order.status || '').toLowerCase() === 'paid') return res.json({ message: 'Verified', orderId });
-    if (order.reference && String(order.reference) !== String(reference)) {
-      return res.status(400).json({ error: 'Reference does not match order' });
+    if (String(order.status || '').toLowerCase() === 'paid') {
+      return res.json({
+        message: 'Verified',
+        orderId,
+        status: 'paid',
+        reference: order.reference || reference || null,
+      });
+    }
+
+    reference = String(reference || order.reference || '').trim();
+    if (!reference) {
+      return res.status(400).json({
+        error: 'Payment reference not found for this order yet. Try again in a moment.',
+      });
     }
 
     const isMockReference = String(reference).startsWith('ord_') && process.env.PAYSTACK_MOCK_INIT === '1';
@@ -591,7 +603,10 @@ export async function verifyOrder(req, res) {
       }
       const paystackData = await verifyWithPaystack(reference);
       if (String(paystackData?.status || '').toLowerCase() !== 'success') {
-        return res.status(400).json({ error: 'Payment was not successful' });
+        return res.status(400).json({
+          error: 'Payment was not successful',
+          status: String(paystackData?.status || 'failed'),
+        });
       }
       const paidAmountKobo = Number(paystackData?.amount || 0);
       const expectedAmountKobo = Math.round((Number(order.totalAmount) || 0) * 100);
@@ -619,8 +634,8 @@ export async function verifyOrder(req, res) {
       if (e?.code === '42P01') return null;
       throw e;
     });
-    await sendOrderTicket(order);
-    return res.json({ message: 'Verified' });
+    await sendOrderTicket({ ...order, reference });
+    return res.json({ message: 'Verified', orderId, status: 'paid', reference });
   } catch (err) {
     console.error('verifyOrder', err);
     const statusCode = Number(err?.statusCode) || 500;
