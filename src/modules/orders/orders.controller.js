@@ -293,13 +293,22 @@ async function fulfillPaidOrder(order, reference) {
   return getOrderById(order.id);
 }
 
-/** Reject ticket purchases after the event's last day (endDate, else date). */
+/** Reject ticket purchases after the event's last day (endDate/recurrenceUntil, else date). */
 async function assertEventOnSale(eventId) {
   const result = await query(
-    `SELECT id, date, "endDate" FROM "Event" WHERE id::text = $1 LIMIT 1`,
+    `SELECT id, date, "endDate", "isRecurring", "recurrenceUntil"
+     FROM "Event" WHERE id::text = $1 LIMIT 1`,
     [String(eventId)]
   ).catch((e) => {
-    if (e?.code === '42P01') return { rows: [] };
+    if (e?.code === '42P01' || e?.code === '42703') {
+      return query(
+        `SELECT id, date, "endDate" FROM "Event" WHERE id::text = $1 LIMIT 1`,
+        [String(eventId)]
+      ).catch((err) => {
+        if (err?.code === '42P01') return { rows: [] };
+        throw err;
+      });
+    }
     throw e;
   });
   const event = result.rows?.[0];
@@ -308,7 +317,8 @@ async function assertEventOnSale(eventId) {
     err.statusCode = 404;
     throw err;
   }
-  const ref = event.endDate || event.date;
+  const ref =
+    (event.isRecurring && event.recurrenceUntil) || event.endDate || event.date;
   if (!ref) return;
   const end = new Date(ref);
   if (Number.isNaN(end.getTime())) return;

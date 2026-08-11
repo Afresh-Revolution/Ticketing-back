@@ -153,7 +153,10 @@ export async function create(req, res, next) {
     if (!eventRow) {
       return res.status(404).json({ error: "Event not found" });
     }
-    const saleEndRef = eventRow.endDate || eventRow.date;
+    const saleEndRef =
+      (eventRow.isRecurring && eventRow.recurrenceUntil) ||
+      eventRow.endDate ||
+      eventRow.date;
     if (saleEndRef) {
       const end = new Date(saleEndRef);
       if (!Number.isNaN(end.getTime())) {
