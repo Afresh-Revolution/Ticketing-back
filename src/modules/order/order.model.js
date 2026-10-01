@@ -111,6 +111,14 @@ export const orderModel = {
     return this.findById(id);
   },
 
+  async findByReference(reference) {
+    if (!reference) return null;
+    const { rows } = await query('SELECT * FROM "Order" WHERE reference::text = $1 LIMIT 1', [
+      String(reference),
+    ]);
+    return rowToOrder(rows[0]);
+  },
+
   async findByTicketCode(ticketCode) {
     const { rows } = await query('SELECT * FROM "Order" WHERE "ticketCode" = $1', [ticketCode]);
     return rowToOrder(rows[0]);

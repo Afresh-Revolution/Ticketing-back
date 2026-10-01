@@ -13,10 +13,19 @@ import orderRoutes from './modules/order/order.routes.js';
 import membershipRoutes from './modules/membership/membership.routes.js';
 import adminRoutes from './modules/admin/admin.routes.js';
 import merchOrderRoutes, { saveRequestRouter } from './modules/merch/merch.routes.js';
+import { paystackWebhook } from './modules/order/order.controller.js';
 
 const app = express();
 
 applySecurityMiddleware(app);
+
+// Paystack webhook needs the raw body for signature verification (before JSON parser).
+app.post(
+  '/api/orders/paystack-webhook',
+  express.raw({ type: 'application/json' }),
+  paystackWebhook
+);
+
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: true, limit: '100kb' }));
 

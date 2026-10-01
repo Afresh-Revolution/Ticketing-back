@@ -328,6 +328,81 @@ async function ensureOrderTicketCode(orderId, currentTicketCode) {
   throw new Error("Failed to generate ticket code");
 }
 
+async function linkBuyerAccount(order) {
+  const email = normalizeBuyerEmail(order?.email);
+  if (!email || order?.userId) return;
+  const found = await query(
+    `SELECT id FROM "User" WHERE LOWER(TRIM(email)) = $1 LIMIT 1`,
+    [email]
+  ).catch(() => ({ rows: [] }));
+  const userId = found.rows?.[0]?.id;
+  if (!userId) return;
+  await query(
+    `UPDATE "Order" SET "userId" = $1, "updatedAt" = NOW() WHERE id = $2 AND "userId" IS NULL`,
+    [userId, order.id]
+  ).catch(() => null);
+}
+
+async function fulfillFromPaystack(order, reference) {
+  const ref = String(reference || order.reference || "").trim();
+  const paidOrder = await orderModel.updateStatus(order.id, "paid", ref || order.reference);
+  if (!paidOrder) return null;
+  await query(
+    `UPDATE "Coupon"
+     SET "usedCount" = "usedCount" + 1, "updatedAt" = NOW()
+     WHERE id IN (
+       SELECT "couponId" FROM "Order" WHERE id = $1 AND "couponId" IS NOT NULL
+     )`,
+    [order.id]
+  ).catch((e) => {
+    if (e?.code === "42P01") return null;
+    throw e;
+  });
+  await linkBuyerAccount(paidOrder);
+  const { freshOrder } = await sendOrderTicketEmail(paidOrder);
+  return freshOrder || paidOrder;
+}
+
+export async function reconcileUnpaidPaystackOrders({ limit = 20 } = {}) {
+  const { rows } = await query(
+    `SELECT id, "eventId", "fullName", email, "totalAmount", status, reference, "ticketCode", "userId"
+     FROM "Order"
+     WHERE LOWER(TRIM(COALESCE(status, ''))) IN ('pending', 'awaiting_payment')
+       AND COALESCE("totalAmount", 0) >= 1
+       AND reference IS NOT NULL
+       AND TRIM(reference) <> ''
+       AND reference NOT LIKE 'manual-%'
+       AND "createdAt" >= NOW() - INTERVAL '14 days'
+     ORDER BY "createdAt" DESC
+     LIMIT $1`,
+    [limit]
+  ).catch(() => ({ rows: [] }));
+
+  const results = [];
+  for (const order of rows || []) {
+    const ref = String(order.reference || "").trim();
+    if (!ref) continue;
+    try {
+      const paystackTx = await verifyWithPaystack(ref);
+      if (!paystackTx || String(paystackTx.status || "").toLowerCase() !== "success") {
+        results.push({ id: order.id, ok: false, reason: String(paystackTx?.status || "unpaid") });
+        continue;
+      }
+      const paidAmountKobo = Number(paystackTx.amount || 0);
+      const expectedAmountKobo = Math.round((Number(order.totalAmount) || 0) * 100);
+      if (paidAmountKobo && expectedAmountKobo && paidAmountKobo !== expectedAmountKobo) {
+        results.push({ id: order.id, ok: false, reason: "amount_mismatch" });
+        continue;
+      }
+      await fulfillFromPaystack(order, ref);
+      results.push({ id: order.id, ok: true });
+    } catch (err) {
+      results.push({ id: order.id, ok: false, reason: err?.message || "verify_failed" });
+    }
+  }
+  return results;
+}
+
 async function sendOrderTicketEmail(order) {
   const ticketCode = await ensureOrderTicketCode(order.id, order.ticketCode);
   const freshOrder = await orderModel.findById(order.id);
@@ -508,17 +583,24 @@ export async function verify(req, res, next) {
     const { orderId } = req.body || {};
     let reference = req.body?.reference;
 
-    if (!orderId) {
-      return res.status(400).json({ error: "Missing orderId" });
+    let existingOrder = orderId ? await orderModel.findById(orderId) : null;
+    if (!existingOrder && reference) {
+      existingOrder = await orderModel.findByReference(String(reference).trim());
+    }
+    if (!existingOrder) {
+      return res.status(orderId || reference ? 404 : 400).json({
+        error: orderId || reference ? "Order not found" : "Missing orderId",
+      });
     }
 
-    const existingOrder = await orderModel.findById(orderId);
-    if (!existingOrder)
-      return res.status(404).json({ error: "Order not found" });
-
     if (String(existingOrder.status || "").toLowerCase() === "paid") {
+      await linkBuyerAccount(existingOrder);
+      if (!existingOrder.ticketCode) {
+        await sendOrderTicketEmail(existingOrder);
+      }
+      const fresh = await orderModel.findById(existingOrder.id);
       return res.json({
-        ...existingOrder,
+        ...(fresh || existingOrder),
         status: "paid",
         reference: existingOrder.reference || reference || null,
       });
@@ -555,25 +637,78 @@ export async function verify(req, res, next) {
       }
     }
 
-    const paidOrder = await orderModel.updateStatus(orderId, "paid", reference);
-    if (!paidOrder) return res.status(404).json({ error: "Order not found" });
-
-    await query(
-      `UPDATE "Coupon"
-       SET "usedCount" = "usedCount" + 1, "updatedAt" = NOW()
-       WHERE id IN (
-         SELECT "couponId" FROM "Order" WHERE id = $1 AND "couponId" IS NOT NULL
-       )`,
-      [orderId],
-    ).catch((e) => {
-      if (e?.code === "42P01") return null;
-      throw e;
-    });
-
-    const { freshOrder } = await sendOrderTicketEmail(paidOrder);
+    const freshOrder = await fulfillFromPaystack(existingOrder, reference);
+    if (!freshOrder) return res.status(404).json({ error: "Order not found" });
 
     res.json({ ...freshOrder, status: "paid", reference });
   } catch (err) {
     next(err);
+  }
+}
+
+export async function paystackWebhook(req, res) {
+  try {
+    const secret = config.paystackSecretKey;
+    const signature = String(req.headers["x-paystack-signature"] || "");
+    const rawBody = Buffer.isBuffer(req.body)
+      ? req.body
+      : Buffer.from(typeof req.body === "string" ? req.body : JSON.stringify(req.body || {}));
+
+    if (secret) {
+      const hash = crypto.createHmac("sha512", secret).update(rawBody).digest("hex");
+      if (!signature || hash !== signature) {
+        return res.status(401).json({ error: "Invalid Paystack signature" });
+      }
+    }
+
+    const payload = JSON.parse(rawBody.toString("utf8") || "{}");
+    const event = String(payload?.event || "");
+    const data = payload?.data || {};
+    if (event !== "charge.success") {
+      return res.json({ received: true, ignored: true });
+    }
+
+    const reference = String(data.reference || "").trim();
+    const customFields = Array.isArray(data.metadata?.custom_fields)
+      ? data.metadata.custom_fields
+      : [];
+    const metadataOrderId =
+      data.metadata?.orderId ||
+      data.metadata?.order_id ||
+      customFields.find((field) =>
+        ["orderid", "order_id"].includes(
+          String(field?.variable_name || field?.display_name || "").toLowerCase()
+        )
+      )?.value;
+
+    let order = metadataOrderId ? await orderModel.findById(String(metadataOrderId)) : null;
+    if (!order && reference) order = await orderModel.findByReference(reference);
+    if (!order) {
+      console.warn("[paystackWebhook] No order for reference", reference);
+      return res.json({ received: true, orderFound: false });
+    }
+
+    if (String(order.status || "").toLowerCase() === "paid") {
+      return res.json({ received: true, orderId: order.id, status: "paid" });
+    }
+
+    if (String(data.status || "").toLowerCase() === "success") {
+      const paidAmountKobo = Number(data.amount || 0);
+      const expectedAmountKobo = Math.round((Number(order.totalAmount) || 0) * 100);
+      if (paidAmountKobo && expectedAmountKobo && paidAmountKobo !== expectedAmountKobo) {
+        console.warn("[paystackWebhook] Amount mismatch", {
+          orderId: order.id,
+          paidAmountKobo,
+          expectedAmountKobo,
+        });
+        return res.status(400).json({ error: "Amount mismatch" });
+      }
+      await fulfillFromPaystack(order, reference || order.reference);
+    }
+
+    return res.json({ received: true, orderId: order.id, status: "paid" });
+  } catch (err) {
+    console.error("paystackWebhook", err);
+    return res.status(500).json({ error: err.message || "Webhook failed" });
   }
 }

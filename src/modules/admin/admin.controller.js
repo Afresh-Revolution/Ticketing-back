@@ -613,7 +613,7 @@ export async function getSales(req, res) {
            ), 'General x1') AS ticket_breakdown
          FROM "Order" o
          LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
-         WHERE o."status" IN ('paid', 'pending')
+         WHERE LOWER(TRIM(COALESCE(o."status", ''))) IN ('paid', 'pending', 'awaiting_payment')
          ORDER BY o."createdAt" DESC
          LIMIT 500`
       : `SELECT
@@ -636,12 +636,21 @@ export async function getSales(req, res) {
            ), 'General x1') AS ticket_breakdown
          FROM "Order" o
          LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
-         WHERE o."status" IN ('paid', 'pending')
+         WHERE LOWER(TRIM(COALESCE(o."status", ''))) IN ('paid', 'pending', 'awaiting_payment')
            AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))
          ORDER BY o."createdAt" DESC
          LIMIT 500`;
     const params = superAdmin ? [] : [userIdParam];
-    const result = await query(sql, params).catch(() => ({ rows: [] }));
+    try {
+      const { reconcileUnpaidPaystackOrders } = await import('../order/order.controller.js');
+      await reconcileUnpaidPaystackOrders({ limit: 20 });
+    } catch (err) {
+      console.error('reconcileUnpaidPaystackOrders', err?.message || err);
+    }
+    const result = await query(sql, params).catch((err) => {
+      console.error('getSales query', err);
+      return { rows: [] };
+    });
     const rawList = (result.rows || []).map((r) => ({
       id: r.id,
       event_id: r.eventId,
@@ -652,7 +661,7 @@ export async function getSales(req, res) {
       amount: r.totalAmount,
       ticket_count: Number(r.ticket_count) || 1,
       ticket_breakdown: r.ticket_breakdown || '',
-      status: r.status,
+      status: displaySaleStatus(r.status),
       created_at: r.createdAt,
       event_title: r.event_title,
     }));
@@ -693,6 +702,12 @@ export async function getSales(req, res) {
   }
 }
 
+function displaySaleStatus(status) {
+  const value = String(status ?? '').trim().toLowerCase();
+  if (value === 'paid' || value === 'completed' || value === 'success') return 'paid';
+  return 'pending';
+}
+
 function normalizeSaleStatus(statusInput, body = null) {
   if (typeof statusInput === 'boolean') return statusInput ? 'paid' : 'pending';
 
@@ -700,7 +715,7 @@ function normalizeSaleStatus(statusInput, body = null) {
   if (value === 'paid' || value === 'completed' || value === 'success' || value === 'changed' || value === 'true') {
     return 'paid';
   }
-  if (value === 'pending' || value === 'unpaid' || value === 'false') {
+  if (value === 'pending' || value === 'unpaid' || value === 'awaiting_payment' || value === 'false') {
     return 'pending';
   }
 
