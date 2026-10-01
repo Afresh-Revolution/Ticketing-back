@@ -7,6 +7,7 @@ import {
   ensureUserPasswordCompat,
   ensureTopUserSchema,
   ensureWithdrawalDbSchema,
+  ensureUserEmailUnique,
 } from './shared/config/db.js';
 
 const server = app.listen(config.port, async () => {
@@ -20,6 +21,7 @@ const server = app.listen(config.port, async () => {
     await ensureUserPasswordCompat();
     await ensureTopUserSchema();
     await ensureWithdrawalDbSchema();
+    await ensureUserEmailUnique();
   } else {
     console.warn('[server] Database not connected. Set DATABASE_URL in .env and run: psql $DATABASE_URL -f db/schema.sql');
   }

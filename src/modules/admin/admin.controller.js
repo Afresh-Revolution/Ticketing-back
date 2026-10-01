@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import {
   query,
   createId,
+  getPool,
   ensureTableIdDefault,
   ensureWithdrawalDbSchema,
 } from '../../shared/config/db.js';
@@ -298,17 +299,17 @@ export async function suspendAdmin(req, res) {
     if (req.userRole !== 'superadmin') {
       return res.status(403).json({ error: 'Forbidden' });
     }
-    const id = parseInt(req.params.id, 10);
-    if (Number.isNaN(id)) {
+    const id = String(req.params.id || '').trim();
+    if (!id) {
       return res.status(400).json({ error: 'Invalid admin id' });
     }
-    const currentId = Number(req.userId) ?? req.userId;
+    const currentId = String(req.userId ?? req.user?.id ?? '');
     if (id === currentId) {
       return res.status(400).json({ error: 'Cannot suspend your own account' });
     }
     const suspended = req.body?.suspended === true;
     const result = await query(
-      `UPDATE "User" SET "suspended" = $1, "updatedAt" = NOW() WHERE id = $2 AND role = 'admin' RETURNING id, "suspended"`,
+      `UPDATE "User" SET "suspended" = $1, "updatedAt" = NOW() WHERE id::text = $2 AND LOWER(role) = 'admin' RETURNING id, "suspended"`,
       [suspended, id]
     );
     if (!result.rows || result.rows.length === 0) {
@@ -323,29 +324,98 @@ export async function suspendAdmin(req, res) {
 
 /** DELETE /api/admin/admins/:id – remove an admin user (superadmin only). Cannot delete self or another superadmin. */
 export async function deleteAdmin(req, res) {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+
   try {
     if (req.userRole !== 'superadmin') {
       return res.status(403).json({ error: 'Forbidden' });
     }
-    const id = parseInt(req.params.id, 10);
-    if (Number.isNaN(id)) {
-      return res.status(400).json({ error: 'Invalid admin id' });
-    }
-    const currentId = Number(req.userId) || req.userId;
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ error: 'Invalid admin id' });
+    const currentId = String(req.userId ?? req.user?.id ?? '');
     if (id === currentId) {
       return res.status(400).json({ error: 'Cannot delete your own account' });
     }
-    const result = await query(
-      `DELETE FROM "User" WHERE id = $1 AND role = 'admin' RETURNING id`,
-      [id]
-    );
-    if (!result.rows || result.rows.length === 0) {
-      return res.status(404).json({ error: 'Admin not found or cannot be deleted' });
+
+    const client = await pool.connect();
+    const tryQ = async (text, params = []) => {
+      try {
+        return await client.query(text, params);
+      } catch (err) {
+        const msg = String(err?.message || '');
+        if (/does not exist|undefined column|relation .* does not exist/i.test(msg)) return null;
+        throw err;
+      }
+    };
+
+    try {
+      await client.query('BEGIN');
+      const found = await client.query(
+        `SELECT id, email, role FROM "User" WHERE id::text = $1 FOR UPDATE`,
+        [id]
+      );
+      const user = found.rows?.[0];
+      if (!user) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Admin not found' });
+      }
+      const role = String(user.role || '').toLowerCase();
+      if (role === 'superadmin') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Superadmin accounts cannot be deleted' });
+      }
+      if (role !== 'admin') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'That account is not an admin' });
+      }
+
+      const email = String(user.email || '');
+      const idText = String(user.id);
+      await tryQ(`DELETE FROM "VerificationCode" WHERE LOWER(email) = LOWER($1)`, [email]);
+      await tryQ(`DELETE FROM "BankAccount" WHERE "userId"::text = $1`, [idText]);
+      await tryQ(`DELETE FROM "Membership" WHERE "userId"::text = $1`, [idText]);
+      await tryQ(`DELETE FROM "Withdrawal" WHERE "userId"::text = $1`, [idText]);
+      await tryQ(`DELETE FROM "Withdrawal" WHERE "adminId"::text = $1`, [idText]);
+      await tryQ(`UPDATE "Event" SET "createdBy" = NULL WHERE "createdBy"::text = $1`, [idText]);
+      await tryQ(`UPDATE "WalkInSale" SET "recordedBy" = NULL WHERE "recordedBy"::text = $1`, [idText]);
+      await tryQ(`UPDATE "Coupon" SET "createdBy" = NULL WHERE "createdBy"::text = $1`, [idText]);
+      await tryQ(
+        `UPDATE "Order" SET "userId" = NULL, "updatedAt" = NOW() WHERE "userId"::text = $1`,
+        [idText]
+      );
+      await tryQ(`UPDATE "Ticket" SET "userId" = NULL WHERE "userId"::text = $1`, [idText]);
+      await tryQ(`UPDATE merch_orders SET user_id = NULL WHERE user_id::text = $1`, [idText]);
+      await tryQ(`UPDATE merch_save_requests SET user_id = NULL WHERE user_id::text = $1`, [idText]);
+
+      const deleted = await client.query(`DELETE FROM "User" WHERE id::text = $1 RETURNING id`, [
+        idText,
+      ]);
+      if (!deleted.rows?.length) {
+        await client.query('ROLLBACK');
+        return res.status(500).json({ error: 'Failed to delete admin' });
+      }
+      await client.query('COMMIT');
+      return res.json({ message: 'Admin deleted', id: deleted.rows[0].id });
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* ignore */
+      }
+      throw err;
+    } finally {
+      client.release();
     }
-    return res.status(204).send();
   } catch (err) {
     console.error('deleteAdmin', err);
-    return res.status(500).json({ error: 'Failed to delete admin' });
+    const msg = String(err?.message || '');
+    if (/foreign key|violates|restrict/i.test(msg)) {
+      return res.status(409).json({
+        error: 'Could not delete this admin because related records could not be cleared.',
+      });
+    }
+    return res.status(500).json({ error: err.message || 'Failed to delete admin' });
   }
 }
 

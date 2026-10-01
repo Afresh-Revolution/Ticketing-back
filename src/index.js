@@ -14,6 +14,7 @@ import {
   ensureTopUserSchema,
   ensureWithdrawalDbSchema,
   ensureEventStreamingSchema,
+  ensureUserEmailUnique,
 } from "./shared/config/db.js";
 import {
   applySecurityMiddleware,
@@ -86,6 +87,7 @@ ensureUserSequence()
   .then(() => ensureTopUserSchema())
   .then(() => ensureWithdrawalDbSchema())
   .then(() => ensureEventStreamingSchema())
+  .then(() => ensureUserEmailUnique())
   .then(() => {
     app.listen(port, () => {
       console.log(`Ticketing-back listening on port ${port}`);

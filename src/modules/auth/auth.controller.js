@@ -74,6 +74,23 @@ async function migrateLegacyPasswordHash(userId, hash) {
   );
 }
 
+function isUniqueViolation(err) {
+  return err?.code === '23505' || /duplicate key|unique constraint/i.test(String(err?.message || ''));
+}
+
+async function findUsersByNormalizedEmail(email) {
+  const em = String(email || '').trim().toLowerCase();
+  if (!em) return [];
+  const result = await query(
+    `SELECT "id", "email", "role", "emailVerified"
+     FROM "User"
+     WHERE LOWER(TRIM("email")) = $1
+     ORDER BY "createdAt" ASC NULLS LAST, id ASC`,
+    [em]
+  );
+  return result.rows || [];
+}
+
 export async function signIn(req, res) {
   try {
     const { email, password, otp } = req.body || {};
@@ -143,8 +160,8 @@ export async function signUp(req, res) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    const existing = await query('SELECT "id" FROM "User" WHERE "email" = $1', [em]);
-    if (existing.rows.length > 0) {
+    const existing = await findUsersByNormalizedEmail(em);
+    if (existing.length > 0) {
       return res.status(400).json({ error: 'Email already registered' });
     }
 
@@ -159,6 +176,9 @@ export async function signUp(req, res) {
 
     return res.status(201).json({ message: 'Account created. Check your email for the verification code.' });
   } catch (err) {
+    if (isUniqueViolation(err)) {
+      return res.status(400).json({ error: 'Email already registered' });
+    }
     console.error('signUp', err);
     return res.status(500).json({ error: err.message || 'Sign up failed' });
   }
@@ -196,7 +216,7 @@ export async function resetPassword(req, res) {
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
     const result = await query(
-      'UPDATE "User" SET "passwordHash" = $1, "updatedAt" = NOW() WHERE "email" = $2 RETURNING "id"',
+      'UPDATE "User" SET "passwordHash" = $1, "updatedAt" = NOW() WHERE LOWER(TRIM("email")) = $2 RETURNING "id"',
       [passwordHash, em]
     );
     if (result.rows.length === 0) {
@@ -236,8 +256,8 @@ export async function createAdmin(req, res) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    const existing = await query('SELECT "id" FROM "User" WHERE "email" = $1', [em]);
-    if (existing.rows.length > 0) {
+    const existing = await findUsersByNormalizedEmail(em);
+    if (existing.length > 0) {
       return res.status(400).json({ error: 'Email already registered' });
     }
 
@@ -257,6 +277,9 @@ export async function createAdmin(req, res) {
       token,
     });
   } catch (err) {
+    if (isUniqueViolation(err)) {
+      return res.status(400).json({ error: 'Email already registered' });
+    }
     console.error('createAdmin', err);
     return res.status(500).json({ error: 'Failed to create admin' });
   }
@@ -275,13 +298,11 @@ export async function organizerSignup(req, res) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    const existingUser = await query(
-      'SELECT u."id", u."emailVerified", u."role" FROM "User" u WHERE LOWER(u."email") = $1',
-      [em]
-    );
-    const user = existingUser.rows[0];
+    const matches = await findUsersByNormalizedEmail(em);
+    const user = matches[0];
+    const existingRole = String(user?.role || '').toLowerCase();
 
-    if (user && user.role === 'admin' && user.emailVerified) {
+    if (user && (existingRole === 'superadmin' || (existingRole === 'admin' && user.emailVerified))) {
       return res.status(400).json({ error: 'An account with this email already exists. Sign in at the admin login.' });
     }
 
@@ -311,6 +332,9 @@ export async function organizerSignup(req, res) {
       });
     }
   } catch (err) {
+    if (isUniqueViolation(err)) {
+      return res.status(400).json({ error: 'An account with this email already exists. Sign in at the admin login.' });
+    }
     console.error('organizerSignup', err);
     return res.status(500).json({ error: err.message || 'Failed to register as organizer' });
   }
@@ -331,7 +355,7 @@ export async function organizerVerifyOtp(req, res) {
     }
 
     const result = await query(
-      'UPDATE "User" SET "emailVerified" = TRUE, "updatedAt" = NOW() WHERE "email" = $1 RETURNING "id"',
+      'UPDATE "User" SET "emailVerified" = TRUE, "updatedAt" = NOW() WHERE LOWER(TRIM("email")) = $1 RETURNING "id"',
       [em]
     );
     if (result.rows.length === 0) {

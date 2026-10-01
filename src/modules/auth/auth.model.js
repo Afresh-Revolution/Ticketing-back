@@ -28,11 +28,22 @@ export const authModel = {
     const id = createId();
     const now = new Date().toISOString();
     const email = normalizeEmail(data.email);
-    await query(
-      `INSERT INTO "User" (id, email, password, name, "emailVerified", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, FALSE, $5, $6)`,
-      [id, email, data.password, data.name ?? null, now, now]
-    );
+    const existing = await this.findUserByEmail(email);
+    if (existing) {
+      throw Object.assign(new Error('Email already registered'), { statusCode: 400, code: '23505' });
+    }
+    try {
+      await query(
+        `INSERT INTO "User" (id, email, password, name, "emailVerified", "createdAt", "updatedAt")
+         VALUES ($1, $2, $3, $4, FALSE, $5, $6)`,
+        [id, email, data.password, data.name ?? null, now, now]
+      );
+    } catch (err) {
+      if (err?.code === '23505') {
+        throw Object.assign(new Error('Email already registered'), { statusCode: 400, code: '23505' });
+      }
+      throw err;
+    }
     const { rows } = await query('SELECT * FROM "User" WHERE id = $1', [id]);
     return rowToUser(rows[0]);
   },
@@ -40,10 +51,21 @@ export const authModel = {
     const id = createId();
     const now = new Date().toISOString();
     const email = normalizeEmail(data.email);
-    await query(
-      `INSERT INTO "User" (id, email, password, name, role, "emailVerified", "createdAt", "updatedAt") VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7)`,
-      [id, email, data.password, data.name, 'admin', now, now]
-    );
+    const existing = await this.findUserByEmail(email);
+    if (existing) {
+      throw Object.assign(new Error('Email already registered'), { statusCode: 400, code: '23505' });
+    }
+    try {
+      await query(
+        `INSERT INTO "User" (id, email, password, name, role, "emailVerified", "createdAt", "updatedAt") VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7)`,
+        [id, email, data.password, data.name, 'admin', now, now]
+      );
+    } catch (err) {
+      if (err?.code === '23505') {
+        throw Object.assign(new Error('Email already registered'), { statusCode: 400, code: '23505' });
+      }
+      throw err;
+    }
     const { rows } = await query('SELECT * FROM "User" WHERE id = $1', [id]);
     return rowToUser(rows[0]);
   },

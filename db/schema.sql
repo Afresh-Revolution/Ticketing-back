@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS "User" (
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "username" VARCHAR(255);
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "passwordHash" VARCHAR(255);
 CREATE INDEX IF NOT EXISTS "User_email_idx" ON "User" ("email");
+CREATE UNIQUE INDEX IF NOT EXISTS "User_email_lower_uidx" ON "User" (LOWER(TRIM("email"))) WHERE "email" IS NOT NULL AND TRIM("email") <> '';
 CREATE INDEX IF NOT EXISTS "User_role_idx" ON "User" ("role");
 CREATE UNIQUE INDEX IF NOT EXISTS "User_username_idx" ON "User" ("username") WHERE "username" IS NOT NULL;
 

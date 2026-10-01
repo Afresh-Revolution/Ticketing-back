@@ -392,6 +392,37 @@ export async function ensureTopUserSchema() {
   }
 }
 
+/**
+ * Case-insensitive unique emails. Skips index creation when duplicates already exist
+ * so startup never fails; application lookups still block new duplicates.
+ */
+export async function ensureUserEmailUnique() {
+  if (!pool) return;
+  try {
+    const dupes = await query(`
+      SELECT LOWER(TRIM(email)) AS email, COUNT(*)::int AS n
+      FROM "User"
+      WHERE email IS NOT NULL AND TRIM(email) <> ''
+      GROUP BY LOWER(TRIM(email))
+      HAVING COUNT(*) > 1
+    `);
+    if (dupes.rows.length > 0) {
+      console.warn(
+        `[db] Cannot add unique email index: ${dupes.rows.length} duplicate email(s). ` +
+          dupes.rows.map((r) => `${r.email} (${r.n})`).join(', ')
+      );
+      return;
+    }
+    await query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS "User_email_lower_uidx"
+      ON "User" (LOWER(TRIM(email)))
+      WHERE email IS NOT NULL AND TRIM(email) <> ''
+    `);
+  } catch (err) {
+    console.warn('[db] ensureUserEmailUnique:', err.message);
+  }
+}
+
 export async function disconnectDb() {
   if (pool) await pool.end();
 }
