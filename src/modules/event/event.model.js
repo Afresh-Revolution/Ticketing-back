@@ -42,6 +42,8 @@ export function normalizeEventImageUrls(imageUrls, imageUrl) {
 function rowToEvent(row) {
   if (!row) return null;
   const imageUrls = parseImageUrls(row);
+  const recurrenceFrequency = String(row.recurrenceFrequency || 'none').toLowerCase();
+  const isRecurring = Boolean(row.isRecurring) && recurrenceFrequency !== 'none';
   return {
     id: row.id,
     title: row.title,
@@ -63,6 +65,10 @@ function rowToEvent(row) {
     streamProvider: row.streamProvider || 'youtube',
     isLive: Boolean(row.isLive),
     liveStartedAt: row.liveStartedAt ?? null,
+    isRecurring,
+    recurrenceFrequency: isRecurring ? recurrenceFrequency : 'none',
+    recurrenceWeekday: row.recurrenceWeekday ?? null,
+    recurrenceUntil: row.recurrenceUntil ?? null,
     createdBy: row.createdBy,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -172,6 +178,34 @@ function normalizeTicketTypeKey(value) {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '');
+}
+
+function normalizeRecurrence(data = {}) {
+  const frequency = String(data.recurrenceFrequency || 'none').toLowerCase().trim();
+  const allowed = new Set(['none', 'daily', 'weekly', 'biweekly', 'monthly']);
+  const recurrenceFrequency = allowed.has(frequency) ? frequency : 'none';
+  const isRecurring =
+    data.isRecurring === true ||
+    data.isRecurring === 'true' ||
+    (recurrenceFrequency !== 'none' && data.isRecurring !== false && data.isRecurring !== 'false');
+  const weekdayRaw = String(data.recurrenceWeekday || '').toLowerCase().trim();
+  const weekdays = new Set([
+    'monday',
+    'tuesday',
+    'wednesday',
+    'thursday',
+    'friday',
+    'saturday',
+    'sunday',
+  ]);
+  const needsWeekday = recurrenceFrequency === 'weekly' || recurrenceFrequency === 'biweekly';
+  return {
+    isRecurring: Boolean(isRecurring) && recurrenceFrequency !== 'none',
+    recurrenceFrequency: isRecurring && recurrenceFrequency !== 'none' ? recurrenceFrequency : 'none',
+    recurrenceWeekday:
+      isRecurring && needsWeekday && weekdays.has(weekdayRaw) ? weekdayRaw : null,
+    recurrenceUntil: isRecurring && data.recurrenceUntil ? data.recurrenceUntil : null,
+  };
 }
 
 async function resolveOrganizerName(createdBy) {
@@ -314,10 +348,11 @@ export const eventModel = {
     const imageUrl = imageUrls[0] ?? null;
     const eventType = data.eventType || 'in-person';
     const price = Number(data.price) || 0;
+    const recurrence = normalizeRecurrence(data);
 
     const insertResult = await query(
-      `INSERT INTO "Event" (title, description, date, "endDate", venue, "imageUrl", "imageUrls", category, "startTime", "endTime", price, currency, "isTrending", location, "eventType", "streamUrl", "streamProvider", "createdBy", "isPublished", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), NOW())
+      `INSERT INTO "Event" (title, description, date, "endDate", venue, "imageUrl", "imageUrls", category, "startTime", "endTime", price, currency, "isTrending", location, "eventType", "streamUrl", "streamProvider", "isRecurring", "recurrenceFrequency", "recurrenceWeekday", "recurrenceUntil", "createdBy", "isPublished", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, NOW(), NOW())
        RETURNING id`,
       [
         data.title,
@@ -337,6 +372,10 @@ export const eventModel = {
         eventType,
         data.streamUrl?.trim() || null,
         data.streamProvider || 'youtube',
+        recurrence.isRecurring,
+        recurrence.recurrenceFrequency,
+        recurrence.recurrenceWeekday,
+        recurrence.recurrenceUntil,
         data.createdBy ?? null,
         data.isPublished !== false,
       ]
@@ -390,6 +429,24 @@ export const eventModel = {
       data.imageUrl = imageUrls[0] ?? null;
     }
 
+    if (
+      data.isRecurring !== undefined ||
+      data.recurrenceFrequency !== undefined ||
+      data.recurrenceWeekday !== undefined ||
+      data.recurrenceUntil !== undefined
+    ) {
+      const recurrence = normalizeRecurrence({
+        isRecurring: data.isRecurring,
+        recurrenceFrequency: data.recurrenceFrequency,
+        recurrenceWeekday: data.recurrenceWeekday,
+        recurrenceUntil: data.recurrenceUntil,
+      });
+      data.isRecurring = recurrence.isRecurring;
+      data.recurrenceFrequency = recurrence.recurrenceFrequency;
+      data.recurrenceWeekday = recurrence.recurrenceWeekday;
+      data.recurrenceUntil = recurrence.recurrenceUntil;
+    }
+
     const map = {
       title: 'title',
       description: 'description',
@@ -409,6 +466,10 @@ export const eventModel = {
       streamUrl: 'streamUrl',
       streamProvider: 'streamProvider',
       isPublished: 'isPublished',
+      isRecurring: 'isRecurring',
+      recurrenceFrequency: 'recurrenceFrequency',
+      recurrenceWeekday: 'recurrenceWeekday',
+      recurrenceUntil: 'recurrenceUntil',
     };
     for (const [key, col] of Object.entries(map)) {
       if (data[key] !== undefined) {

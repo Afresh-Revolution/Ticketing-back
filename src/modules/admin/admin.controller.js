@@ -615,7 +615,7 @@ export async function getSales(req, res) {
          LEFT JOIN "Event" e ON e.id::text = o."eventId"::text
          WHERE o."status" IN ('paid', 'pending')
          ORDER BY o."createdAt" DESC
-         LIMIT 100`
+         LIMIT 500`
       : `SELECT
            o.id,
            o."eventId",
@@ -639,7 +639,7 @@ export async function getSales(req, res) {
          WHERE o."status" IN ('paid', 'pending')
            AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))
          ORDER BY o."createdAt" DESC
-         LIMIT 100`;
+         LIMIT 500`;
     const params = superAdmin ? [] : [userIdParam];
     const result = await query(sql, params).catch(() => ({ rows: [] }));
     const rawList = (result.rows || []).map((r) => ({

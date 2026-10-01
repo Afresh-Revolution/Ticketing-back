@@ -189,9 +189,12 @@ export async function initializePayment(req, res, next) {
       return res.status(400).json({ error: 'Failed to initialize payment' });
     }
 
+    const txRef = init.reference || reference;
+    await merchModel.updateMerchOrderStatus(orderId, order.status || 'pending', txRef);
+
     res.json({
       authorizationUrl: init.authorization_url,
-      reference: init.reference || reference,
+      reference: txRef,
       orderId: String(orderId),
     });
   } catch (e) {
@@ -202,23 +205,28 @@ export async function initializePayment(req, res, next) {
 export async function verifyPayment(req, res, next) {
   try {
     const { orderId, reference } = req.body;
-    if (!reference) return res.status(400).json({ error: 'reference required' });
+    const order = orderId ? await merchModel.findMerchOrderById(orderId) : null;
+    const txRef = String(reference || order?.paystack_reference || '').trim();
+    if (!txRef) return res.status(400).json({ error: 'reference required' });
     if (!isPaystackConfigured()) {
       return res.status(503).json({ error: 'Paystack not configured' });
     }
 
-    const paystackTx = await verifyTransaction(reference);
+    const paystackTx = await verifyTransaction(txRef);
     if (!paystackTx || String(paystackTx.status || '').toLowerCase() !== 'success') {
       return res.status(400).json({ error: 'Payment not verified' });
     }
 
-    const updated = await merchModel.updateMerchOrderStatus(orderId, 'paid', reference);
+    const resolvedOrderId = orderId || paystackTx?.metadata?.orderId;
+    if (!resolvedOrderId) return res.status(400).json({ error: 'orderId required' });
+
+    const updated = await merchModel.updateMerchOrderStatus(resolvedOrderId, 'paid', txRef);
     if (!updated) return res.status(404).json({ error: 'Order not found' });
 
-    await sendMerchReceiptEmail(orderId);
-    await notifyAdminsMerchOrder(orderId, 'Paid');
+    await sendMerchReceiptEmail(resolvedOrderId);
+    await notifyAdminsMerchOrder(resolvedOrderId, 'Paid');
 
-    res.json({ status: 'paid', id: orderId });
+    res.json({ status: 'paid', id: resolvedOrderId });
   } catch (e) {
     next(e);
   }

@@ -293,13 +293,22 @@ async function fulfillPaidOrder(order, reference) {
   return getOrderById(order.id);
 }
 
-/** Reject ticket purchases after the event's last day (endDate, else date). */
+/** Reject ticket purchases after the event's last day (endDate/recurrenceUntil, else date). */
 async function assertEventOnSale(eventId) {
   const result = await query(
-    `SELECT id, date, "endDate" FROM "Event" WHERE id::text = $1 LIMIT 1`,
+    `SELECT id, date, "endDate", "isRecurring", "recurrenceUntil"
+     FROM "Event" WHERE id::text = $1 LIMIT 1`,
     [String(eventId)]
   ).catch((e) => {
-    if (e?.code === '42P01') return { rows: [] };
+    if (e?.code === '42P01' || e?.code === '42703') {
+      return query(
+        `SELECT id, date, "endDate" FROM "Event" WHERE id::text = $1 LIMIT 1`,
+        [String(eventId)]
+      ).catch((err) => {
+        if (err?.code === '42P01') return { rows: [] };
+        throw err;
+      });
+    }
     throw e;
   });
   const event = result.rows?.[0];
@@ -308,7 +317,8 @@ async function assertEventOnSale(eventId) {
     err.statusCode = 404;
     throw err;
   }
-  const ref = event.endDate || event.date;
+  const ref =
+    (event.isRecurring && event.recurrenceUntil) || event.endDate || event.date;
   if (!ref) return;
   const end = new Date(ref);
   if (Number.isNaN(end.getTime())) return;
@@ -630,24 +640,29 @@ export async function initializePayment(req, res) {
   }
 }
 
-/** POST /api/orders/verify - body: orderId, optional reference (falls back to order.reference) */
+/** POST /api/orders/verify - body: orderId and/or reference (falls back to order.reference) */
 export async function verifyOrder(req, res) {
   try {
     const { orderId } = req.body || {};
     let reference = req.body?.reference;
-    if (!orderId) {
-      return res.status(400).json({ error: 'orderId is required' });
+    let order = orderId ? await getOrderById(orderId) : null;
+    if (!order && reference) {
+      order = await getOrderByReference(String(reference).trim());
     }
-    const order = await getOrderById(orderId);
-    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (!order) {
+      return res.status(orderId || reference ? 404 : 400).json({
+        error: orderId || reference ? 'Order not found' : 'orderId is required',
+      });
+    }
 
+    const resolvedOrderId = order.id;
     reference = String(reference || order.reference || '').trim();
 
     if (String(order.status || '').toLowerCase() === 'paid') {
       await fulfillPaidOrder(order, reference || order.reference);
       return res.json({
         message: 'Verified',
-        orderId,
+        orderId: resolvedOrderId,
         status: 'paid',
         reference: reference || order.reference || null,
       });
@@ -679,7 +694,7 @@ export async function verifyOrder(req, res) {
     }
 
     await fulfillPaidOrder(order, reference);
-    return res.json({ message: 'Verified', orderId, status: 'paid', reference });
+    return res.json({ message: 'Verified', orderId: resolvedOrderId, status: 'paid', reference });
   } catch (err) {
     console.error('verifyOrder', err);
     const statusCode = Number(err?.statusCode) || 500;
@@ -716,7 +731,13 @@ export async function paystackWebhook(req, res) {
     }
 
     const reference = String(data.reference || '').trim();
-    const metadataOrderId = data.metadata?.orderId || data.metadata?.order_id;
+    const customFields = Array.isArray(data.metadata?.custom_fields) ? data.metadata.custom_fields : [];
+    const metadataOrderId =
+      data.metadata?.orderId ||
+      data.metadata?.order_id ||
+      customFields.find((field) =>
+        ['orderid', 'order_id'].includes(String(field?.variable_name || field?.display_name || '').toLowerCase())
+      )?.value;
     let order = metadataOrderId ? await getOrderById(String(metadataOrderId)) : null;
     if (!order && reference) order = await getOrderByReference(reference);
     if (!order) {

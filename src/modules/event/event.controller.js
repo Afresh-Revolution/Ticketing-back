@@ -110,6 +110,7 @@ export async function create(req, res, next) {
     const { 
       title, description, date, endDate, venue, category, startTime, endTime, price, imageUrl, imageUrls, isTrending, location,
       eventType, streamUrl, streamProvider,
+      isRecurring, recurrenceFrequency, recurrenceWeekday, recurrenceUntil,
       ticketTypes,
       merch,
     } = req.body;
@@ -128,13 +129,13 @@ export async function create(req, res, next) {
       title,
       description,
       date,
-      endDate: endDate ?? null,
+      endDate: endDate || null,
       venue,
       imageUrl: normalizedImageUrls[0] ?? imageUrl,
       imageUrls: normalizedImageUrls,
       category, 
       startTime,
-      endTime: endTime ?? null,
+      endTime: endTime || null,
       price,
       currency: 'NGN',
       isTrending: isTrending || false,
@@ -142,6 +143,10 @@ export async function create(req, res, next) {
       eventType: eventType || 'in-person',
       streamUrl,
       streamProvider,
+      isRecurring,
+      recurrenceFrequency,
+      recurrenceWeekday,
+      recurrenceUntil: recurrenceUntil || null,
       ticketTypes, // Pass ticketTypes to model
       // Synthetic superadmin (id 0) is not in User table; use null to satisfy FK
       createdBy: req.user && req.user.id !== 0 && req.user.id !== '0' ? req.user.id : null
@@ -186,6 +191,10 @@ export async function update(req, res, next) {
       eventType,
       streamUrl,
       streamProvider,
+      isRecurring,
+      recurrenceFrequency,
+      recurrenceWeekday,
+      recurrenceUntil,
       ticketTypes,
       merch,
     } = req.body;
@@ -217,6 +226,10 @@ export async function update(req, res, next) {
       ...(eventType != null && { eventType }),
       ...(streamUrl !== undefined && { streamUrl }),
       ...(streamProvider != null && { streamProvider }),
+      ...(isRecurring !== undefined && { isRecurring }),
+      ...(recurrenceFrequency !== undefined && { recurrenceFrequency }),
+      ...(recurrenceWeekday !== undefined && { recurrenceWeekday }),
+      ...(recurrenceUntil !== undefined && { recurrenceUntil: recurrenceUntil || null }),
       ...(ticketTypes != null && { ticketTypes }),
     });
 

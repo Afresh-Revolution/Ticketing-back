@@ -257,6 +257,10 @@ export async function ensureEventStreamingSchema() {
       `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "streamProvider" VARCHAR(50) DEFAULT 'youtube'`,
       `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "isLive" BOOLEAN DEFAULT FALSE`,
       `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "liveStartedAt" TIMESTAMPTZ`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "isRecurring" BOOLEAN NOT NULL DEFAULT false`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "recurrenceFrequency" TEXT NOT NULL DEFAULT 'none'`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "recurrenceWeekday" TEXT`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "recurrenceUntil" TIMESTAMPTZ`,
     ];
     for (const sql of eventAlters) {
       await query(sql).catch(() => ({}));
