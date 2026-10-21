@@ -25,6 +25,7 @@ export async function listEvents(req, res) {
          e."venue",
          e."price",
          e."imageUrl",
+         e."imageUrls",
          e."startTime",
          e."category",
          e."isTrending",
@@ -43,7 +44,20 @@ export async function listEvents(req, res) {
        LIMIT $1`,
       [take]
     ).catch(() => ({ rows: [] }));
-    const list = (result.rows || []).map((row) => ({
+    const list = (result.rows || []).map((row) => {
+      let imageUrls = [];
+      if (Array.isArray(row.imageUrls)) imageUrls = row.imageUrls;
+      else if (typeof row.imageUrls === 'string') {
+        try {
+          const parsed = JSON.parse(row.imageUrls);
+          if (Array.isArray(parsed)) imageUrls = parsed;
+        } catch {
+          imageUrls = [];
+        }
+      }
+      imageUrls = imageUrls.map((url) => String(url || '').trim()).filter(Boolean).slice(0, 3);
+      if (!imageUrls.length && row.imageUrl) imageUrls = [String(row.imageUrl)];
+      return {
       id: String(row.id),
       title: row.title,
       date: row.date,
@@ -52,13 +66,15 @@ export async function listEvents(req, res) {
       location: row.location,
       venue: row.venue ?? null,
       price: row.price,
-      imageUrl: row.imageUrl,
+      imageUrl: imageUrls[0] || row.imageUrl || null,
+      imageUrls,
       startTime: row.startTime,
       isTrending: Boolean(row.isTrending),
       eventType: row.eventType ?? 'in-person',
       isLive: Boolean(row.isLive),
       ticketsSold: Number(row.ticketsSold) || 0,
-    }));
+    };
+    });
     return res.json(list);
   } catch {
     return res.json([]);
