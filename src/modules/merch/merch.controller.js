@@ -106,9 +106,6 @@ export async function createOrder(req, res, next) {
     for (const line of items) {
       const merch = await merchModel.fetchMerchById(line.merchId);
       if (!merch) return res.status(400).json({ error: 'Merch not found' });
-      if (merch.availability === 'at_event') {
-        return res.status(400).json({ error: 'This merch is only available at the event' });
-      }
       const img = merch.images.find((i) => i.id === line.imageId);
       if (!img) return res.status(400).json({ error: 'Invalid merch image' });
       const unitPrice = merch.sameAmount ? Number(merch.unitPrice) || 0 : Number(img.unitPrice) || 0;
