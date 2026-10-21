@@ -150,6 +150,26 @@ async function verifiedCreatorIds() {
   return new Set((result.rows || []).map((r) => String(r.userId)));
 }
 
+export async function eventsByIds(ids) {
+  const unique = [...new Set((ids || []).map((id) => String(id).trim()).filter(Boolean))].slice(0, 100);
+  if (!unique.length) return [];
+  const placeholders = unique.map((_, index) => `$${index + 1}`).join(', ');
+  const result = await query(
+    `SELECT e.*,
+        COALESCE((
+          SELECT MIN(tt.price)::int FROM "TicketType" tt WHERE tt."eventId"::text = e.id::text
+        ), e.price, 0) AS "startingPrice"
+     FROM "Event" e
+     WHERE e.id::text IN (${placeholders})`,
+    unique,
+  ).catch(async (err) => {
+    console.error('[gatewav2] eventsByIds', err.message);
+    return query(`SELECT e.* FROM "Event" e WHERE e.id::text IN (${placeholders})`, unique);
+  });
+  const byId = new Map((result.rows || []).map((row) => [String(row.id), publicEvent(row, null, null)]));
+  return unique.map((id) => byId.get(id)).filter(Boolean);
+}
+
 export async function searchEvents(params) {
   const page = Math.max(1, num(params.page, 1));
   const pageSize = Math.min(PAGE_MAX, Math.max(1, num(params.pageSize, 20)));

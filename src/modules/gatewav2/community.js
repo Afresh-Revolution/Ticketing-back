@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { query, createId } from '../../shared/config/db.js';
 import { httpError, userIdOf, isSuper, audit, loadEvent, requireFlag } from './access.js';
-import { searchEvents } from './discover.js';
+import { eventsByIds, searchEvents } from './discover.js';
 
 function token() {
   return crypto.randomBytes(18).toString('hex');
@@ -27,18 +27,32 @@ async function blockedEither(a, b) {
 
 export async function toggleFavorite(req, eventId, on) {
   const userId = requireUser(req);
-  const event = await loadEvent(eventId);
+  const found = await query(`SELECT id FROM "Event" WHERE id::text = $1 LIMIT 1`, [String(eventId)]);
+  const event = found.rows?.[0];
   if (!event) throw httpError(404, 'Event not found');
+  const savedId = String(event.id);
   if (!on) {
-    await query(`DELETE FROM "Favorite" WHERE "userId" = $1 AND "eventId" = $2`, [userId, String(event.id)]);
+    await query(`DELETE FROM "Favorite" WHERE "userId" = $1 AND "eventId" = $2`, [userId, savedId]);
     return { saved: false };
   }
-  await query(
-    `INSERT INTO "Favorite" (id, "userId", "eventId") VALUES ($1, $2, $3)
-     ON CONFLICT ("userId", "eventId") DO NOTHING`,
-    [createId(), userId, String(event.id)],
-  );
-  return { saved: true };
+  try {
+    await query(
+      `INSERT INTO "Favorite" (id, "userId", "eventId") VALUES ($1, $2, $3)
+       ON CONFLICT ("userId", "eventId") DO NOTHING`,
+      [createId(), userId, savedId],
+    );
+  } catch (err) {
+    if (err?.code !== '42P10') throw err;
+    await query(
+      `INSERT INTO "Favorite" (id, "userId", "eventId")
+       SELECT $1, $2, $3
+       WHERE NOT EXISTS (
+         SELECT 1 FROM "Favorite" WHERE "userId" = $2 AND "eventId" = $3
+       )`,
+      [createId(), userId, savedId],
+    );
+  }
+  return { saved: true, eventId: savedId };
 }
 
 export async function listFavorites(req) {
@@ -49,15 +63,7 @@ export async function listFavorites(req) {
   );
   const ids = (result.rows || []).map((row) => String(row.eventId)).filter(Boolean);
   if (!ids.length) return [];
-  const searched = await searchEvents({
-    ids: ids.join(','),
-    page: 1,
-    pageSize: Math.min(100, ids.length),
-    includePast: 'true',
-    includeCancelled: 'true',
-  });
-  const byId = new Map((searched.events || []).map((event) => [String(event.id), event]));
-  return ids.map((id) => byId.get(id)).filter(Boolean);
+  return eventsByIds(ids);
 }
 
 export async function followOrganizer(req, body, on) {
