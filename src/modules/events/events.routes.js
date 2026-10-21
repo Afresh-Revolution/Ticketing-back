@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import * as eventsController from './events.controller.js';
 import * as streamController from '../stream/stream.controller.js';
+import * as merchController from '../merch/merch.controller.js';
 import { requireAuth } from '../../middleware/auth.js';
 
 const router = express.Router();
@@ -15,6 +16,8 @@ const upload = multer({
 });
 
 router.get('/', eventsController.listEvents);
+router.get('/:id/merch', merchController.listByEvent);
+router.post('/:id/merch', requireAuth, merchController.replaceForEvent);
 router.get('/:id/live-status', streamController.getLiveStatus);
 router.get('/:id/stream', streamController.getStreamAccess);
 router.get('/:id', eventsController.getEvent);

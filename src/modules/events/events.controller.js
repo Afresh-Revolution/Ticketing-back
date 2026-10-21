@@ -4,6 +4,16 @@ import {
   uploadImageBufferToCloudinary,
 } from '../../shared/services/cloudinary.service.js';
 import { eventModel } from '../event/event.model.js';
+import * as merchModel from '../merch/merch.model.js';
+
+async function saveEventMerch(eventId, merch) {
+  if (!Array.isArray(merch)) return;
+  try {
+    await merchModel.replaceMerchForEvent(eventId, merch);
+  } catch (err) {
+    console.error('[events] merch save:', err.message);
+  }
+}
 
 /** GET /api/events - list events (?trending=true&take=3)
  *  When trending=true, results are ranked by paid tickets sold (most bought first).
@@ -185,6 +195,7 @@ export async function createEvent(req, res) {
       createdBy: finalCreatedBy,
       isPublished: body.isPublished !== false,
     });
+    await saveEventMerch(created.id, body.merch);
 
     const full = await eventModel.findById(created.id);
     const payload = full || created;
@@ -242,11 +253,13 @@ export async function updateEvent(req, res) {
       ticketTypes: body.ticketTypes,
     });
     if (!updated) return res.status(404).json({ error: 'Event not found' });
+    await saveEventMerch(eventId, body.merch);
+    const full = (await eventModel.findById(eventId)) || updated;
 
     return res.json({
-      ...updated,
-      id: String(updated.id),
-      ticketTypes: updated.tickets || [],
+      ...full,
+      id: String(full.id ?? updated.id),
+      ticketTypes: full.tickets || updated.tickets || [],
     });
     
   } catch (err) {

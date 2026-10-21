@@ -288,8 +288,9 @@ export async function toggleTrending(req, res, next) {
     if (!event) return res.status(404).json({ error: 'Event not found' });
     if (!canModifyEvent(event, req.user.id)) return res.status(403).json({ error: 'You do not own this event' });
 
+    const requested = req.body && typeof req.body.isTrending === 'boolean' ? req.body.isTrending : !event.isTrending;
     const updated = await eventModel.update(req.params.id, {
-      isTrending: !event.isTrending
+      isTrending: requested,
     });
     
     res.json(updated);
