@@ -775,11 +775,54 @@ export async function getSales(req, res) {
     const deduped = Array.from(dedupedMap.values())
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .slice(0, 200);
-    return res.json(deduped);
+    const merchSales = await listPaidMerchSales(superAdmin, userIdParam);
+    const seen = new Set(deduped.map((sale) => String(sale.id)));
+    const combined = [...deduped, ...merchSales.filter((sale) => !seen.has(String(sale.id)))]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 200);
+    return res.json(combined);
   } catch (err) {
     console.error('getSales', err);
     return res.json([]);
   }
+}
+
+async function listPaidMerchSales(superAdmin, userIdParam) {
+  const sql = superAdmin
+    ? `SELECT mo.id, mo.event_id AS "eventId", mo.full_name AS "fullName", mo.email, mo.phone,
+              mo.total_amount AS "totalAmount", mo.created_at AS "createdAt", e.title AS event_title
+       FROM merch_orders mo
+       LEFT JOIN "Event" e ON e.id::text = mo.event_id::text
+       WHERE LOWER(TRIM(COALESCE(mo.status, ''))) = 'paid'
+       ORDER BY mo.created_at DESC
+       LIMIT 200`
+    : `SELECT mo.id, mo.event_id AS "eventId", mo.full_name AS "fullName", mo.email, mo.phone,
+              mo.total_amount AS "totalAmount", mo.created_at AS "createdAt", e.title AS event_title
+       FROM merch_orders mo
+       LEFT JOIN "Event" e ON e.id::text = mo.event_id::text
+       WHERE LOWER(TRIM(COALESCE(mo.status, ''))) = 'paid'
+         AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))
+       ORDER BY mo.created_at DESC
+       LIMIT 200`;
+  const result = await query(sql, superAdmin ? [] : [userIdParam]).catch((err) => {
+    console.error('listPaidMerchSales', err?.message || err);
+    return { rows: [] };
+  });
+  return (result.rows || []).map((row) => ({
+    id: row.id,
+    event_id: row.eventId,
+    reference: '',
+    buyer_name: row.fullName,
+    buyer_email: row.email,
+    buyer_phone: row.phone,
+    amount: row.totalAmount,
+    ticket_count: 1,
+    ticket_breakdown: 'Merch',
+    status: 'paid',
+    created_at: row.createdAt,
+    event_title: row.event_title,
+    source: 'merch',
+  }));
 }
 
 function displaySaleStatus(status) {
