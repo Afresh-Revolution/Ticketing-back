@@ -6,8 +6,11 @@ import { userPageModel } from './userPage/userPage.model.js';
 export async function getMyOrders(req, res) {
   try {
     const userId = req.userId;
-    if (!userId) {
+    if (userId == null || userId === '') {
       return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (Number(userId) === 0) {
+      return res.json([]);
     }
     const profile = await userPageModel.getProfile(userId);
     const userEmail = profile?.email ?? req.user?.email ?? '';
@@ -63,7 +66,7 @@ export async function getMyOrders(req, res) {
 export async function deleteMyOrder(req, res) {
   try {
     const userId = req.userId;
-    if (!userId) {
+    if (userId == null || userId === '' || Number(userId) === 0) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
