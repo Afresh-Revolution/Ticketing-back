@@ -47,25 +47,17 @@ export async function listFavorites(req) {
     `SELECT "eventId" FROM "Favorite" WHERE "userId" = $1 ORDER BY "createdAt" DESC LIMIT 100`,
     [userId],
   );
-  const ids = new Set((result.rows || []).map((r) => String(r.eventId)));
-  if (!ids.size) return [];
-  const searched = await searchEvents({ page: 1, pageSize: 30, includeCancelled: 'true' });
-  const extraPages = ids.size > searched.events.length;
-  let events = searched.events.filter((e) => ids.has(e.id));
-  if (extraPages || events.length < ids.size) {
-    const more = await query(
-      `SELECT id::text AS id FROM "Event" WHERE id::text = ANY($1::text[])`,
-      [[...ids]],
-    );
-    const known = new Set(events.map((e) => e.id));
-    for (const row of more.rows || []) {
-      if (!known.has(row.id)) {
-        const detail = (await searchEvents({ q: '', page: 1, pageSize: 30 })).events.find((e) => e.id === row.id);
-        if (detail) events.push(detail);
-      }
-    }
-  }
-  return events;
+  const ids = (result.rows || []).map((row) => String(row.eventId)).filter(Boolean);
+  if (!ids.length) return [];
+  const searched = await searchEvents({
+    ids: ids.join(','),
+    page: 1,
+    pageSize: Math.min(100, ids.length),
+    includePast: 'true',
+    includeCancelled: 'true',
+  });
+  const byId = new Map((searched.events || []).map((event) => [String(event.id), event]));
+  return ids.map((id) => byId.get(id)).filter(Boolean);
 }
 
 export async function followOrganizer(req, body, on) {

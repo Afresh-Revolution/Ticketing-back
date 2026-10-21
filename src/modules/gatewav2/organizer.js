@@ -599,11 +599,14 @@ export async function announceFollowers(req, eventId, body) {
     `SELECT f."userId", u.email
      FROM "OrganizerFollow" f
      JOIN "User" u ON u.id = f."userId"
-     JOIN "NotificationPreference" p ON p."userId" = f."userId"
-     WHERE f."organizerName" = $1
-       AND f."notifyNextEvent" = TRUE
-       AND p."organizerAnnouncements" = TRUE`,
-    [event.organizer],
+     LEFT JOIN "NotificationPreference" p ON p."userId" = f."userId"
+     WHERE f."notifyNextEvent" = TRUE
+       AND COALESCE(p."organizerAnnouncements", TRUE) = TRUE
+       AND (
+         ($2::int IS NOT NULL AND f."organizerUserId" = $2)
+         OR ($1 <> '' AND lower(f."organizerName") = lower($1))
+       )`,
+    [String(event.organizer || '').trim(), event.createdBy != null ? Number(event.createdBy) : null],
   ).catch(() => ({ rows: [] }));
   let sent = 0;
   for (const follower of followers.rows || []) {

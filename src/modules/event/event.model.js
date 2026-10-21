@@ -185,6 +185,24 @@ async function replaceDiscountTiers(ticketTypeId, tiers) {
   }
 }
 
+function lowestTicketPrice(tickets, fallback = 0) {
+  const amounts = (Array.isArray(tickets) ? tickets : [])
+    .map((ticket) => Number(ticket?.price))
+    .filter((amount) => Number.isFinite(amount) && amount >= 0);
+  return amounts.length ? Math.min(...amounts) : (Number(fallback) || 0);
+}
+
+async function syncLowestPrice(eventId) {
+  await query(
+    `UPDATE "Event" e
+     SET price = COALESCE((
+       SELECT MIN(tt.price)::int FROM "TicketType" tt WHERE tt."eventId"::text = e.id::text
+     ), e.price, 0)
+     WHERE e.id::text = $1`,
+    [String(eventId)],
+  );
+}
+
 function mapTicketRow(t) {
   return {
     id: t.id,
@@ -293,7 +311,7 @@ export const eventModel = {
     if (events.length && opts.include?.tickets) {
       const eventIds = events.map((e) => e.id);
       const { rows: ticketRows } = await query(
-        'SELECT * FROM "TicketType" WHERE "eventId" = ANY($1)',
+        'SELECT * FROM "TicketType" WHERE "eventId" = ANY($1) ORDER BY price ASC, name ASC',
         [eventIds]
       );
       const discountsByTicketId = await loadDiscountTiers(ticketRows.map((ticket) => ticket.id));
@@ -305,7 +323,9 @@ export const eventModel = {
           discountTiers: discountsByTicketId[String(t.id)] || [],
         }));
       }
-      events.forEach((e) => { e.tickets = byEventId[e.id] || []; });
+      events.forEach((e) => {
+        e.tickets = (byEventId[e.id] || []).sort((a, b) => Number(a.price) - Number(b.price));
+      });
     }
     return events;
   },
@@ -315,7 +335,10 @@ export const eventModel = {
     if (!event) return null;
     
     // Fetch Ticket Types (pools) with sold count from paid orders
-    const { rows: ticketTypeRows } = await query('SELECT * FROM "TicketType" WHERE "eventId" = $1', [id]);
+    const { rows: ticketTypeRows } = await query(
+      'SELECT * FROM "TicketType" WHERE "eventId" = $1 ORDER BY price ASC, name ASC',
+      [id],
+    );
     const ticketIds = ticketTypeRows.map(t => t.id);
     const discountsByTicketId = await loadDiscountTiers(ticketIds);
     let soldByTicketId = {};
@@ -375,7 +398,7 @@ export const eventModel = {
     const imageUrl = imageUrls[0] ?? null;
     const sponsors = normalizeSponsors(data.sponsors);
     const eventType = data.eventType || 'in-person';
-    const price = Number(data.price) || 0;
+    const price = lowestTicketPrice(data.ticketTypes, data.price);
     const recurrence = normalizeRecurrence(data);
 
     const insertResult = await query(
@@ -443,6 +466,7 @@ export const eventModel = {
           type === 'paid' ? ticket.discountTiers : []
         );
       }
+      await syncLowestPrice(id);
     }
 
     const { rows } = await query('SELECT * FROM "Event" WHERE id = $1', [id]);
@@ -597,6 +621,7 @@ export const eventModel = {
           [existingId]
         );
       }
+      await syncLowestPrice(id);
     }
     return eventModel.findById(id);
   },

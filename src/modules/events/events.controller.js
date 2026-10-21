@@ -41,7 +41,9 @@ export async function listEvents(req, res) {
          e."endDate",
          e."location",
          e."venue",
-         e."price",
+         COALESCE((
+           SELECT MIN(tt.price)::int FROM "TicketType" tt WHERE tt."eventId"::text = e.id::text
+         ), e."price", 0) AS "price",
          e."imageUrl",
          e."imageUrls",
          e."startTime",
