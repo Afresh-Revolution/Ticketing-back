@@ -98,7 +98,10 @@ function asyncRoute(handler) {
     Promise.resolve(handler(req, res)).catch((err) => {
       const status = Number(err?.statusCode) || 500;
       if (status >= 500) console.error('[gatewav2]', err);
-      res.status(status).json({ error: err.message || 'Request failed' });
+      const message = status >= 500
+        ? 'Something went wrong. Please try again.'
+        : (err?.message || 'Request failed');
+      res.status(status).json({ error: message });
     });
   };
 }

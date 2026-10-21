@@ -213,7 +213,7 @@ export async function getPlan(req, planId) {
     query(
       `SELECT m.*, COALESCE(NULLIF(BTRIM(u.name), ''), 'Member') AS "displayName"
        FROM "PlanMember" m
-       LEFT JOIN "User" u ON u.id = m."userId"
+       LEFT JOIN "User" u ON u.id::text = m."userId"::text
        WHERE m."planId" = $1
        ORDER BY CASE WHEN m.role = 'owner' THEN 0 ELSE 1 END, m."userId" ASC`,
       [planId],
@@ -223,7 +223,7 @@ export async function getPlan(req, planId) {
     }),
     query(`SELECT * FROM "PlanOption" WHERE "planId" = $1`, [planId]),
     query(
-      `SELECT v.* FROM "PlanVote" v JOIN "PlanOption" o ON o.id = v."optionId" WHERE o."planId" = $1`,
+      `SELECT v.* FROM "PlanVote" v JOIN "PlanOption" o ON o.id::text = v."optionId"::text WHERE o."planId" = $1`,
       [planId],
     ),
   ]);
