@@ -290,7 +290,14 @@ async function fulfillPaidOrder(order, reference) {
     await ensureOrderTicketCode(order.id, order.ticketCode);
   }
 
-  return getOrderById(order.id);
+  const fresh = await getOrderById(order.id);
+  if (fresh && String(fresh.status || '').toLowerCase() === 'paid') {
+    const { settlePromoterForOrder } = await import('../gatewav2/organizer.js');
+    await settlePromoterForOrder(fresh).catch((err) => {
+      console.error('[orders] promoter', err?.message || err);
+    });
+  }
+  return fresh;
 }
 
 /** Reject ticket purchases after the event's last day (endDate/recurrenceUntil, else date). */
@@ -404,6 +411,8 @@ export async function createOrder(req, res) {
     }
 
     await assertEventOnSale(eventId);
+    const { assertPurchasable, rememberCheckout } = await import('../gatewav2/organizer.js');
+    await assertPurchasable(eventId, req.body?.sessionId);
 
     const itemPricing = await calculateOrderItems(eventId, items);
     const coupon = couponCode ? await getValidCoupon(eventId, couponCode) : null;
@@ -464,6 +473,10 @@ export async function createOrder(req, res) {
         throw e;
       });
     }
+
+    await rememberCheckout(row.id, req.body).catch((err) => {
+      console.error('[orders] attribution', err?.message || err);
+    });
 
     if (isFreeOrder) {
       if (coupon?.id) {
@@ -756,6 +769,19 @@ export async function paystackWebhook(req, res) {
     if (!order) {
       console.warn('[paystackWebhook] No order for reference', reference);
       return res.json({ received: true, orderFound: false });
+    }
+
+    if (reference) {
+      const receipt = await query(
+        `INSERT INTO "WebhookReceipt" (id, provider, reference, event)
+         VALUES ($1, 'paystack', $2, $3)
+         ON CONFLICT (provider, reference, event) DO NOTHING
+         RETURNING id`,
+        [createId(), reference, event],
+      ).catch(() => null);
+      if (receipt && !receipt.rows?.length && String(order.status || '').toLowerCase() === 'paid') {
+        return res.json({ received: true, duplicate: true, orderId: order.id });
+      }
     }
 
     if (String(data.status || '').toLowerCase() === 'success') {

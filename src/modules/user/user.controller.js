@@ -268,6 +268,9 @@ export async function deleteAccount(req, res) {
       [idText],
     );
 
+    const { purgeUser } = await import('../gatewav2/organizer.js');
+    await purgeUser(client, idText);
+
     // HARD DELETE the account row — this is the only account-deletion path
     const deleted = await client.query(
       `DELETE FROM "User" WHERE id = $1 RETURNING id, email`,

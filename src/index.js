@@ -30,6 +30,8 @@ import eventsRoutes from "./modules/events/events.routes.js";
 import userRoutes from "./modules/user/user.routes.js";
 import adminRoutes from "./modules/admin/admin.routes.js";
 import merchOrderRoutes, { saveRequestRouter } from "./modules/merch/merch.routes.js";
+import gatewav2Routes from "./modules/gatewav2/routes.js";
+import { ensureGatewav2Schema } from "./modules/gatewav2/schema.js";
 
 const app = express();
 applySecurityMiddleware(app);
@@ -71,6 +73,7 @@ app.use("/api/merch-save-requests", saveRequestRouter);
 app.use("/api/events", eventsRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/admin", adminRateLimit, adminRoutes);
+app.use("/api/gatewav2", gatewav2Routes);
 
 app.get("/health", (req, res) => {
   res.json({ ok: true });
@@ -93,6 +96,7 @@ ensureUserSequence()
   .then(() => ensureEventStreamingSchema())
   .then(() => ensureUserEmailUnique())
   .then(() => ensurePushTokenSchema())
+  .then(() => ensureGatewav2Schema())
   .then(() => {
     app.listen(port, () => {
       console.log(`Ticketing-back listening on port ${port}`);

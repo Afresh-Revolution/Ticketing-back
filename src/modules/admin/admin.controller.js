@@ -2840,10 +2840,21 @@ export async function verifyTicket(req, res) {
       : 'General x1';
 
     const createdByText = row.createdBy == null ? null : String(row.createdBy);
+    let staffRole = null;
+    if (!superAdmin && userIdText) {
+      const staff = await query(
+        `SELECT role FROM "EventStaff"
+         WHERE "eventId" = $1 AND "userId"::text = $2 AND status = 'active' LIMIT 1`,
+        [String(row.eventId), userIdText],
+      ).catch(() => ({ rows: [] }));
+      staffRole = staff.rows?.[0]?.role || null;
+    }
     const allowed =
       superAdmin ||
       (createdByText !== null && createdByText === userIdText) ||
-      (createdByText === null && userIdText === '0');
+      (createdByText === null && userIdText === '0') ||
+      staffRole === 'checkin' ||
+      staffRole === 'manager';
 
     if (!allowed) {
       return res.status(403).json({
@@ -2857,7 +2868,35 @@ export async function verifyTicket(req, res) {
       });
     }
 
-    if (String(row.status || '').toLowerCase() !== 'paid') {
+    const orderStatus = String(row.status || '').toLowerCase();
+    if (['refunded', 'revoked', 'cancelled', 'canceled'].includes(orderStatus)) {
+      return res.status(200).json({
+        valid: false,
+        reason: 'revoked',
+        message: 'This ticket was revoked or refunded.',
+        eventTitle,
+        fullName: row.fullName || undefined,
+        scanCount,
+        totalQuantity,
+        ticketType,
+        ticketBreakdown,
+      });
+    }
+
+    const expectedEventId = req.body?.expectedEventId ? String(req.body.expectedEventId) : '';
+    if (expectedEventId && expectedEventId !== String(row.eventId)) {
+      return res.status(200).json({
+        valid: false,
+        reason: 'incorrect_event',
+        message: 'This ticket is for a different event.',
+        eventTitle,
+        fullName: row.fullName || undefined,
+        ticketType,
+        ticketBreakdown,
+      });
+    }
+
+    if (orderStatus !== 'paid') {
       return res.status(400).json({
         valid: false,
         reason: 'unpaid',
@@ -2917,6 +2956,11 @@ export async function verifyTicket(req, res) {
 
     const nextScanCount = logged ? scanCount + 1 : scanCount;
     const fullyUsed = nextScanCount >= totalQuantity;
+
+    if (logged) {
+      const { awardStampForOrder } = await import('../gatewav2/organizer.js');
+      await awardStampForOrder(row.id).catch(() => null);
+    }
 
     return res.status(200).json({
       valid: true,
