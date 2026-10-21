@@ -152,6 +152,7 @@ function shapePlan(plan, members, options, votes, viewerId) {
     ownerUserId: plan.ownerUserId,
     members: (members || []).map((m) => ({
       userId: m.userId,
+      name: String(m.displayName || '').trim() || 'Member',
       role: m.role,
       rsvp: m.rsvp,
       payment: m.sharePayment && (m.userId === viewerId || plan.ownerUserId === viewerId) ? m.paymentLabel || null : null,
@@ -209,7 +210,17 @@ export async function listPlans(req) {
 export async function getPlan(req, planId) {
   const { plan, userId } = await planAccess(req, planId);
   const [members, options, votes] = await Promise.all([
-    query(`SELECT * FROM "PlanMember" WHERE "planId" = $1`, [planId]),
+    query(
+      `SELECT m.*, COALESCE(NULLIF(BTRIM(u.name), ''), 'Member') AS "displayName"
+       FROM "PlanMember" m
+       LEFT JOIN "User" u ON u.id = m."userId"
+       WHERE m."planId" = $1
+       ORDER BY CASE WHEN m.role = 'owner' THEN 0 ELSE 1 END, m."userId" ASC`,
+      [planId],
+    ).catch((err) => {
+      if (err?.code !== '42703') throw err;
+      return query(`SELECT *, 'Member' AS "displayName" FROM "PlanMember" WHERE "planId" = $1`, [planId]);
+    }),
     query(`SELECT * FROM "PlanOption" WHERE "planId" = $1`, [planId]),
     query(
       `SELECT v.* FROM "PlanVote" v JOIN "PlanOption" o ON o.id = v."optionId" WHERE o."planId" = $1`,
