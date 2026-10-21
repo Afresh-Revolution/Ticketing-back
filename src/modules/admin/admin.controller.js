@@ -33,6 +33,7 @@ import { listLandingVideos, createLandingVideo, updateLandingVideo, deleteLandin
 import { normalizeExternalUrl } from '../../shared/utils/normalizeExternalUrl.js';
 import { NIGERIAN_BANKS_FALLBACK } from './nigerianBanks.js';
 import { eventModel } from '../event/event.model.js';
+import * as merchModel from '../merch/merch.model.js';
 
 function mapLandingVideoRow(row) {
   if (!row) return null;
@@ -594,6 +595,13 @@ export async function patchAdminEvent(req, res) {
     }
     if (Array.isArray(body.sponsors)) extra.sponsors = body.sponsors;
     if (Object.keys(extra).length) await eventModel.update(eventId, extra);
+    if (Array.isArray(body.merch)) {
+      try {
+        await merchModel.replaceMerchForEvent(eventId, body.merch);
+      } catch (merchErr) {
+        console.error('[admin] merch save on patch:', merchErr.message);
+      }
+    }
     return res.json({ message: 'Updated' });
   } catch (err) {
     console.error('patchAdminEvent', err);
