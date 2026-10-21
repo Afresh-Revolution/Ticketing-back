@@ -306,6 +306,20 @@ export async function createSaveRequest(req, res, next) {
 export async function adminListOrders(req, res, next) {
   try {
     const rows = await merchModel.listMerchOrdersForAdmin(req.user.id, req.user.role);
+    const itemRows = await merchModel.getMerchItemsByOrderIds(rows.map((row) => row.id)).catch(() => []);
+    const itemsByOrder = new Map();
+    for (const item of itemRows) {
+      const key = String(item.order_id);
+      if (!itemsByOrder.has(key)) itemsByOrder.set(key, []);
+      itemsByOrder.get(key).push({
+        description: item.merch_description || 'Merch',
+        typeName: item.type_name || '',
+        colorName: item.color_name || '',
+        quantity: Number(item.quantity) || 0,
+        unitPrice: Number(item.unit_price) || 0,
+        lineTotal: Number(item.line_total) || 0,
+      });
+    }
     res.json({
       orders: rows.map((r) => ({
         id: r.id,
@@ -313,10 +327,13 @@ export async function adminListOrders(req, res, next) {
         eventTitle: r.event_title,
         buyerName: r.full_name,
         buyerEmail: r.email,
+        buyerPhone: r.phone,
+        address: r.address,
         amount: Number(r.total_amount),
         status: r.status,
         paymentMethod: r.payment_method,
         createdAt: r.created_at,
+        items: itemsByOrder.get(String(r.id)) || [],
       })),
     });
   } catch (e) {

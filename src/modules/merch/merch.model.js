@@ -371,6 +371,20 @@ export async function getMerchOrderItems(orderId) {
   return rows;
 }
 
+export async function getMerchItemsByOrderIds(orderIds) {
+  const ids = [...new Set((orderIds || []).map((id) => String(id)).filter(Boolean))];
+  if (!ids.length) return [];
+  const { rows } = await query(
+    `SELECT moi.order_id, moi.quantity, moi.unit_price, moi.line_total, moi.color_name, moi.type_name,
+            em.description AS merch_description
+     FROM merch_order_items moi
+     JOIN event_merch em ON em.id = moi.merch_id
+     WHERE moi.order_id::text = ANY($1::text[])`,
+    [ids]
+  );
+  return rows;
+}
+
 export async function createSaveRequest(data) {
   const hasDescriptionColumn = await saveRequestHasDescriptionColumn();
   if (hasDescriptionColumn) {
