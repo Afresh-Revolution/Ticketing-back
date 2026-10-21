@@ -10,11 +10,10 @@ export async function authMiddleware(req, res, next) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
-  // Handle superadmin token for development/hardcoded auth
   if (token.startsWith('superadmin-token-')) {
     req.user = {
       id: 0,
-      email: 'ticketing@2026gmail.com',
+      email: config.superAdminEmail,
       name: 'Super Admin',
       role: 'superadmin'
     };
@@ -23,6 +22,16 @@ export async function authMiddleware(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, config.jwtSecret);
+    const decodedId = decoded.userId ?? decoded.id;
+    if (decoded.role === 'superadmin' && (decodedId === 0 || decodedId === '0')) {
+      req.user = {
+        id: 0,
+        email: decoded.email || config.superAdminEmail,
+        name: decoded.name || 'Super Admin',
+        role: 'superadmin'
+      };
+      return next();
+    }
     const { rows } = await query(
       'SELECT id, email, name, role FROM "User" WHERE id = $1',
       [decoded.userId]

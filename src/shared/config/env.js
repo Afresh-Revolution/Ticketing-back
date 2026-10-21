@@ -38,6 +38,8 @@ export const config = {
   nodeEnv,
   databaseUrl: process.env.DATABASE_URL,
   jwtSecret: process.env.JWT_SECRET || 'dev-jwt-secret-change-in-production',
+  superAdminEmail: (process.env.SUPER_ADMIN_EMAIL || 'ticketing@2026gmail.com').trim().toLowerCase(),
+  superAdminPassword: process.env.SUPER_ADMIN_PASSWORD || 'Afresh@2026',
   resendApiKey,
   resendFrom,
   resend: { apiKey: resendApiKey, from: resendFrom },

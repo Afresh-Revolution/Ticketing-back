@@ -99,6 +99,28 @@ export async function signIn(req, res) {
       return res.status(400).json({ error: 'Email and password required' });
     }
 
+    if (em === config.superAdminEmail && password === config.superAdminPassword) {
+      const token = jwt.sign(
+        {
+          userId: 0,
+          email: config.superAdminEmail,
+          role: 'superadmin',
+          name: 'Super Admin',
+        },
+        config.jwtSecret,
+        { expiresIn: '7d' }
+      );
+      return res.json({
+        user: {
+          id: 0,
+          email: config.superAdminEmail,
+          name: 'Super Admin',
+          role: 'superadmin',
+        },
+        token,
+      });
+    }
+
     const user = await findUserByEmailForAuth(em);
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
