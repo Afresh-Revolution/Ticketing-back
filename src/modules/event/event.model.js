@@ -13,6 +13,32 @@ async function fetchMerchByEventId(eventId) {
 }
 
 const MAX_EVENT_IMAGES = 3;
+const MAX_SPONSORS = 12;
+
+export function normalizeSponsors(value) {
+  if (!Array.isArray(value)) return [];
+  const sponsors = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const name = String(item.name || '').trim().slice(0, 80);
+    if (!name) continue;
+    const rawImage = String(item.imageUrl || item.image_url || '').trim();
+    const imageUrl = /^https?:\/\//i.test(rawImage) ? rawImage : null;
+    sponsors.push({ name, imageUrl });
+    if (sponsors.length >= MAX_SPONSORS) break;
+  }
+  return sponsors;
+}
+
+function parseSponsors(row) {
+  if (!row || row.sponsors == null) return [];
+  try {
+    const raw = typeof row.sponsors === 'string' ? JSON.parse(row.sponsors) : row.sponsors;
+    return normalizeSponsors(raw);
+  } catch {
+    return [];
+  }
+}
 
 function parseImageUrls(row) {
   if (!row) return [];
@@ -53,6 +79,7 @@ function rowToEvent(row) {
     venue: row.venue,
     imageUrl: imageUrls[0] ?? row.imageUrl ?? null,
     imageUrls,
+    sponsors: parseSponsors(row),
     category: row.category,
     startTime: row.startTime,
     endTime: row.endTime ?? null,
@@ -346,13 +373,14 @@ export const eventModel = {
     const now = new Date().toISOString();
     const imageUrls = normalizeEventImageUrls(data.imageUrls, data.imageUrl);
     const imageUrl = imageUrls[0] ?? null;
+    const sponsors = normalizeSponsors(data.sponsors);
     const eventType = data.eventType || 'in-person';
     const price = Number(data.price) || 0;
     const recurrence = normalizeRecurrence(data);
 
     const insertResult = await query(
-      `INSERT INTO "Event" (title, description, date, "endDate", venue, "imageUrl", "imageUrls", category, "startTime", "endTime", price, currency, "isTrending", location, "eventType", "streamUrl", "streamProvider", "isRecurring", "recurrenceFrequency", "recurrenceWeekday", "recurrenceUntil", "createdBy", "isPublished", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, NOW(), NOW())
+      `INSERT INTO "Event" (title, description, date, "endDate", venue, "imageUrl", "imageUrls", "sponsors", category, "startTime", "endTime", price, currency, "isTrending", location, "eventType", "streamUrl", "streamProvider", "isRecurring", "recurrenceFrequency", "recurrenceWeekday", "recurrenceUntil", "createdBy", "isPublished", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, NOW(), NOW())
        RETURNING id`,
       [
         data.title,
@@ -362,6 +390,7 @@ export const eventModel = {
         data.venue ?? null,
         imageUrl,
         JSON.stringify(imageUrls),
+        JSON.stringify(sponsors),
         data.category ?? null,
         data.startTime ?? null,
         data.endTime ?? null,
@@ -454,6 +483,7 @@ export const eventModel = {
       venue: 'venue',
       imageUrl: 'imageUrl',
       imageUrls: 'imageUrls',
+      sponsors: 'sponsors',
       category: 'category',
       startTime: 'startTime',
       endDate: 'endDate',
@@ -473,8 +503,9 @@ export const eventModel = {
     };
     for (const [key, col] of Object.entries(map)) {
       if (data[key] !== undefined) {
-        fields.push(`"${col}" = $${i}${key === 'imageUrls' ? '::jsonb' : ''}`);
-        values.push(key === 'imageUrls' ? JSON.stringify(data[key]) : data[key]);
+        const asJson = key === 'imageUrls' || key === 'sponsors';
+        fields.push(`"${col}" = $${i}${asJson ? '::jsonb' : ''}`);
+        values.push(asJson ? JSON.stringify(key === 'sponsors' ? normalizeSponsors(data[key]) : data[key]) : data[key]);
         i++;
       }
     }

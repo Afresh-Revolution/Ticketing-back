@@ -133,6 +133,7 @@ export async function create(req, res, next) {
       venue,
       imageUrl: normalizedImageUrls[0] ?? imageUrl,
       imageUrls: normalizedImageUrls,
+      sponsors: req.body.sponsors,
       category, 
       startTime,
       endTime: endTime || null,
@@ -231,6 +232,7 @@ export async function update(req, res, next) {
       ...(recurrenceWeekday !== undefined && { recurrenceWeekday }),
       ...(recurrenceUntil !== undefined && { recurrenceUntil: recurrenceUntil || null }),
       ...(ticketTypes != null && { ticketTypes }),
+      ...(Array.isArray(req.body.sponsors) && { sponsors: req.body.sponsors }),
     });
 
     if (merch != null && Array.isArray(merch)) {

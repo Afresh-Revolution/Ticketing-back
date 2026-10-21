@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS "Event" (
   "price" INTEGER DEFAULT 0,
   "imageUrl" VARCHAR(512),
   "imageUrls" JSONB DEFAULT '[]'::jsonb,
+  "sponsors" JSONB DEFAULT '[]'::jsonb,
   "startTime" VARCHAR(50),
   "endDate" DATE,
   "endTime" VARCHAR(50),

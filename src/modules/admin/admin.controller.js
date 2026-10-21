@@ -587,12 +587,13 @@ export async function patchAdminEvent(req, res) {
     if (!result.rows?.length) return res.status(404).json({ error: 'Event not found' });
     // Keep ticket + discount-tier writes on the shared event model so admin fallback
     // updates stay consistent with POST/PATCH /api/events.
+    const extra = {};
     if (Array.isArray(body.ticketTypes)) {
-      await eventModel.update(eventId, {
-        ticketTypes: body.ticketTypes,
-        eventType: body.eventType,
-      });
+      extra.ticketTypes = body.ticketTypes;
+      extra.eventType = body.eventType;
     }
+    if (Array.isArray(body.sponsors)) extra.sponsors = body.sponsors;
+    if (Object.keys(extra).length) await eventModel.update(eventId, extra);
     return res.json({ message: 'Updated' });
   } catch (err) {
     console.error('patchAdminEvent', err);

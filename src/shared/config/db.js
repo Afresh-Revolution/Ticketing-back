@@ -248,6 +248,7 @@ export async function ensureEventStreamingSchema() {
   try {
     const eventAlters = [
       `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "imageUrls" JSONB DEFAULT '[]'::jsonb`,
+      `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "sponsors" JSONB DEFAULT '[]'::jsonb`,
       `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "endDate" DATE`,
       `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "endTime" VARCHAR(50)`,
       `ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS "venue" VARCHAR(512)`,
