@@ -28,6 +28,7 @@ import { paystackWebhook } from "./modules/orders/orders.controller.js";
 import eventsRoutes from "./modules/events/events.routes.js";
 import userRoutes from "./modules/user/user.routes.js";
 import adminRoutes from "./modules/admin/admin.routes.js";
+import merchOrderRoutes, { saveRequestRouter } from "./modules/merch/merch.routes.js";
 
 const app = express();
 applySecurityMiddleware(app);
@@ -64,6 +65,8 @@ app.post("/api/auth/organizer-verify-otp", authController.organizerVerifyOtp);
 app.use("/api/auth", authRateLimit, authRoutes);
 app.use("/api/landing", landingRoutes);
 app.use("/api/orders", paymentRateLimit, ordersRoutes);
+app.use("/api/merch-orders", paymentRateLimit, merchOrderRoutes);
+app.use("/api/merch-save-requests", saveRequestRouter);
 app.use("/api/events", eventsRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api/admin", adminRateLimit, adminRoutes);
