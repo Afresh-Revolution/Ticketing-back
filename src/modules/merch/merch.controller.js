@@ -11,6 +11,7 @@ import {
 } from '../../shared/services/paystack.service.js';
 import { normalizeBuyerEmail } from '../../shared/utils/email.js';
 import { getManualPaymentDetails } from '../../shared/config/env.js';
+import { paymentDecisionCopy, sendPushToEmail } from '../../shared/services/push.service.js';
 
 /** GET /api/merch-orders/manual-payment-details – bank transfer info from env. */
 export function getManualPaymentDetailsHandler(_req, res) {
@@ -203,8 +204,17 @@ export async function verifyPayment(req, res, next) {
   try {
     const { orderId, reference } = req.body;
     const order = orderId ? await merchModel.findMerchOrderById(orderId) : null;
+    if (!order && !reference) return res.status(400).json({ error: 'orderId required' });
+    if (order) {
+      const current = String(order.status || 'pending').toLowerCase();
+      if (current === 'paid' || current === 'cancelled' || current === 'rejected') {
+        return res.json({ status: current, id: order.id, approved: current === 'paid' });
+      }
+    }
     const txRef = String(reference || order?.paystack_reference || '').trim();
-    if (!txRef) return res.status(400).json({ error: 'reference required' });
+    if (!txRef) {
+      return res.json({ status: String(order?.status || 'pending').toLowerCase(), id: order?.id || null });
+    }
     if (!isPaystackConfigured()) {
       return res.status(503).json({ error: 'Paystack not configured' });
     }
@@ -224,6 +234,17 @@ export async function verifyPayment(req, res, next) {
     await notifyAdminsMerchOrder(resolvedOrderId, 'Paid');
 
     res.json({ status: 'paid', id: resolvedOrderId });
+  } catch (e) {
+    next(e);
+  }
+}
+
+export async function getPaymentStatus(req, res, next) {
+  try {
+    const order = await merchModel.findMerchOrderById(req.params.id);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    const status = String(order.status || 'pending').toLowerCase();
+    res.json({ id: order.id, status, approved: status === 'paid' });
   } catch (e) {
     next(e);
   }
@@ -320,6 +341,14 @@ export async function adminUpdateOrderStatus(req, res, next) {
     if (!prev) return res.status(404).json({ error: 'Order not found' });
 
     await merchModel.updateMerchOrderStatus(req.params.id, status, null);
+
+    if (status !== prev.status) {
+      const copy = paymentDecisionCopy(status, 'merch');
+      await sendPushToEmail(prev.email, {
+        ...copy,
+        data: { orderId: String(req.params.id), orderKind: 'merch', status },
+      });
+    }
 
     if (status === 'paid' && prev.status !== 'paid') {
       await sendMerchReceiptEmail(req.params.id);

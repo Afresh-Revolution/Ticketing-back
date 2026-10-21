@@ -13,6 +13,7 @@ router.post('/coupon-preview', optionalAuth, ordersController.validateCoupon);
 router.post('/initialize-payment', optionalAuth, ordersController.initializePayment);
 router.post('/verify', ordersController.verifyOrder);
 router.post('/manual-payment-notify', optionalAuth, ordersController.notifyManualPayment);
+router.get('/:id/status', ordersController.getPaymentStatus);
 // Webhook is mounted in index.js with express.raw for signature verification.
 
 export default router;

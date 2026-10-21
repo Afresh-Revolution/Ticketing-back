@@ -640,6 +640,19 @@ export async function initializePayment(req, res) {
   }
 }
 
+/** GET /api/orders/:id/status – current order status, including a manual approval. */
+export async function getPaymentStatus(req, res) {
+  try {
+    const order = await getOrderById(req.params.id);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    const status = String(order.status || 'pending').toLowerCase();
+    return res.json({ id: String(order.id), status, approved: status === 'paid' });
+  } catch (err) {
+    console.error('getPaymentStatus', err);
+    return res.status(500).json({ error: 'Could not read payment status' });
+  }
+}
+
 /** POST /api/orders/verify - body: orderId and/or reference (falls back to order.reference) */
 export async function verifyOrder(req, res) {
   try {

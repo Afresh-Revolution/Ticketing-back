@@ -28,6 +28,7 @@ import {
   generateWithdrawalTransferReference,
   listBanks as paystackListBanks,
 } from '../../shared/services/paystack.service.js';
+import { paymentDecisionCopy, sendPushToEmail } from '../../shared/services/push.service.js';
 import { uploadVideoBufferToCloudinary, deleteVideoFromCloudinary, isCloudinaryConfigured } from '../../shared/services/cloudinary.service.js';
 import { listLandingVideos, createLandingVideo, updateLandingVideo, deleteLandingVideo } from '../landing/videos/videos.model.js';
 import { normalizeExternalUrl } from '../../shared/utils/normalizeExternalUrl.js';
@@ -1058,6 +1059,13 @@ export async function updateSaleStatus(req, res) {
           console.error('updateSaleStatus walk-in email warning', emailErr);
         }
       }
+      if (previousStatus !== status && freshWalkInSale.email) {
+        const copy = paymentDecisionCopy(status, 'ticket');
+        await sendPushToEmail(freshWalkInSale.email, {
+          ...copy,
+          data: { orderId: String(walkInId), orderKind: 'ticket', status },
+        });
+      }
 
       return res.json({
         message: emailError ? 'Sale status updated, but email failed' : 'Sale status updated',
@@ -1093,6 +1101,13 @@ export async function updateSaleStatus(req, res) {
         emailError = emailErr?.message || 'Status updated, but ticket email failed';
         console.error('updateSaleStatus email warning', emailErr);
       }
+    }
+    if (previousStatus !== status && sale.email) {
+      const copy = paymentDecisionCopy(status, 'ticket');
+      await sendPushToEmail(sale.email, {
+        ...copy,
+        data: { orderId, orderKind: 'ticket', status },
+      });
     }
 
     return res.json({

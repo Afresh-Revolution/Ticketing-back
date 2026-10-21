@@ -424,6 +424,24 @@ export async function ensureUserEmailUnique() {
   }
 }
 
+export async function ensurePushTokenSchema() {
+  if (!pool) return;
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS push_tokens (
+        token TEXT PRIMARY KEY,
+        email TEXT,
+        user_id TEXT,
+        trending_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS push_tokens_email_idx ON push_tokens (email)`);
+  } catch (err) {
+    console.warn('[db] ensurePushTokenSchema:', err.message);
+  }
+}
+
 export async function disconnectDb() {
   if (pool) await pool.end();
 }

@@ -10,6 +10,7 @@ router.post('/', optionalAuth, merchController.createOrder);
 router.post('/initialize-payment', optionalAuth, merchController.initializePayment);
 router.post('/verify', merchController.verifyPayment);
 router.post('/manual-payment-notify', merchController.manualPaymentNotify);
+router.get('/:id/status', merchController.getPaymentStatus);
 
 export const saveRequestRouter = Router();
 saveRequestRouter.post('/', merchController.createSaveRequest);

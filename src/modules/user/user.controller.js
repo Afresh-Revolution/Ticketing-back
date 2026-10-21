@@ -312,3 +312,23 @@ export async function deleteAccount(req, res) {
     client.release();
   }
 }
+
+/** POST /api/user/push-token – save this device for payment and trending alerts. */
+export async function registerPushToken(req, res) {
+  try {
+    const token = String(req.body?.token || '').trim();
+    const email = String(req.body?.email || req.user?.email || '').trim();
+    if (!token) return res.status(400).json({ error: 'token is required' });
+    const { savePushToken } = await import('../../shared/services/push.service.js');
+    await savePushToken({
+      token,
+      email,
+      userId: req.userId ?? req.user?.id ?? null,
+      trendingEnabled: req.body?.trendingEnabled !== false,
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[user] push token:', err?.message || err);
+    return res.status(500).json({ error: 'Could not save push token' });
+  }
+}
