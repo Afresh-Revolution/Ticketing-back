@@ -1,7 +1,7 @@
 import { query } from '../../shared/config/db.js';
 import { loadEvent } from './access.js';
 
-const PAGE_MAX = 30;
+const PAGE_MAX = 100;
 
 function num(value, fallback = 0) {
   const n = Number(value);
@@ -68,6 +68,15 @@ function availabilityOf(row) {
   if (capacity > 0 && sold >= capacity) return 'sold_out';
   if (capacity > 0 && capacity - sold <= Math.max(3, Math.round(capacity * 0.1))) return 'limited';
   return 'available';
+}
+
+function eventHasEnded(row) {
+  const until = row.isRecurring && row.recurrenceUntil ? row.recurrenceUntil : row.endDate || row.date;
+  if (!until) return false;
+  const end = new Date(until);
+  if (Number.isNaN(end.getTime())) return false;
+  end.setHours(23, 59, 59, 999);
+  return end.getTime() < Date.now();
 }
 
 function imageUrlsOf(row) {
@@ -168,7 +177,13 @@ export async function searchEvents(params) {
      WHERE (COALESCE(e."isPublished", TRUE) = TRUE
         OR LOWER(COALESCE(e."listingStatus", '')) = 'cancelled')
        ${idList ? 'AND e.id::text = ANY($1::text[])' : ''}
-     ORDER BY e."date" ASC NULLS LAST
+     ORDER BY
+       CASE
+         WHEN COALESCE(e."endDate", e."date") IS NULL THEN 0
+         WHEN COALESCE(e."endDate", e."date") >= CURRENT_DATE THEN 0
+         ELSE 1
+       END ASC,
+       e."date" ASC NULLS LAST
      LIMIT 400`,
     idList ? [idList] : [],
   ).catch(() => ({ rows: [] }));
@@ -187,6 +202,7 @@ export async function searchEvents(params) {
   let rows = result.rows || [];
   rows = rows.filter((row) => {
     if (idFilter && !idFilter.has(String(row.id))) return false;
+    if (params.includePast !== 'true' && !range && eventHasEnded(row)) return false;
     const listing = String(row.listingStatus || 'published').toLowerCase();
     if (listing === 'draft') return false;
     if (params.includeCancelled !== 'true' && listing === 'cancelled' && params.when) {
@@ -247,7 +263,28 @@ export async function collectionBySlug(slug) {
     slug,
   ]);
   const collection = found.rows?.[0];
-  if (!collection) return null;
+  if (!collection) {
+    const match = /^this-weekend-in-([a-z0-9-]+)$/.exec(String(slug || '').toLowerCase());
+    if (!match) return null;
+    const cities = await listCities();
+    const city = cities.find((item) => String(item.slug).toLowerCase() === match[1]);
+    if (!city) return null;
+    const weekend = await searchEvents({
+      city: city.slug,
+      when: 'weekend',
+      page: 1,
+      pageSize: 30,
+    });
+    return {
+      id: `col_this_weekend_${city.slug}`,
+      slug: `this-weekend-in-${city.slug}`,
+      title: `This Weekend in ${city.name}`,
+      description: `Published events in ${city.name} this weekend.`,
+      citySlug: city.slug,
+      kind: 'weekend',
+      events: weekend.events,
+    };
+  }
   const pinned = await query(
     `SELECT "eventId" FROM "CollectionEvent" WHERE "collectionId" = $1 ORDER BY "sortOrder" ASC, "eventId" ASC`,
     [collection.id],

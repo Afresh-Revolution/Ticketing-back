@@ -24,7 +24,15 @@ export async function listEvents(req, res) {
     const take = Math.min(parseInt(req.query.take, 10) || 50, 100);
     const orderBy = trending
       ? `"ticketsSold" DESC, "date" ASC`
-      : `"date" ASC`;
+      : `CASE
+           WHEN COALESCE(e."endDate", e."date") IS NULL THEN 0
+           WHEN COALESCE(e."endDate", e."date") >= CURRENT_DATE THEN 0
+           ELSE 1
+         END ASC,
+         CASE
+           WHEN COALESCE(e."endDate", e."date") IS NULL OR COALESCE(e."endDate", e."date") >= CURRENT_DATE THEN e."date"
+         END ASC NULLS LAST,
+         e."date" DESC`;
     const result = await query(
       `SELECT
          e."id",
