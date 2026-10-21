@@ -19,6 +19,8 @@ import {
   blockUser,
   createCircle,
   createPlan,
+  deleteCircle,
+  deletePlan,
   exportMine,
   followOrganizer,
   getCircle,
@@ -246,6 +248,9 @@ router.post('/plans', writeLimit, requireAuth, asyncRoute(async (req, res) => {
 router.get('/plans/:id', requireAuth, asyncRoute(async (req, res) => {
   res.json(await getPlan(req, req.params.id));
 }));
+router.delete('/plans/:id', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await deletePlan(req, req.params.id));
+}));
 router.post('/plans/:id/options', writeLimit, requireAuth, asyncRoute(async (req, res) => {
   res.status(201).json(await addPlanOption(req, req.params.id, req.body || {}));
 }));
@@ -273,6 +278,9 @@ router.post('/circles', writeLimit, requireAuth, asyncRoute(async (req, res) => 
 }));
 router.get('/circles/:id', requireAuth, asyncRoute(async (req, res) => {
   res.json(await getCircle(req, req.params.id));
+}));
+router.delete('/circles/:id', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await deleteCircle(req, req.params.id));
 }));
 router.post('/circles/:id/invites', writeLimit, requireAuth, asyncRoute(async (req, res) => {
   res.status(201).json(await inviteToCircle(req, req.params.id));

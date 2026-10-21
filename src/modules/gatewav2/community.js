@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import { query, createId } from '../../shared/config/db.js';
+import { query, createId, getPool } from '../../shared/config/db.js';
+import { sendPushToEmail } from '../../shared/services/push.service.js';
 import { httpError, userIdOf, isSuper, audit, loadEvent, requireFlag } from './access.js';
 import { eventsByIds, searchEvents } from './discover.js';
 
@@ -207,6 +208,52 @@ export async function listPlans(req) {
   return result.rows || [];
 }
 
+async function execOptional(client, sql, params) {
+  await client.query('SAVEPOINT gatewav_delete');
+  try {
+    await client.query(sql, params);
+    await client.query('RELEASE SAVEPOINT gatewav_delete');
+  } catch (err) {
+    await client.query('ROLLBACK TO SAVEPOINT gatewav_delete');
+    if (err?.code !== '42P01' && err?.code !== '42703') throw err;
+  }
+}
+
+export async function deletePlan(req, planId) {
+  const { plan, userId } = await planAccess(req, planId);
+  if (Number(plan.ownerUserId) !== Number(userId) && !isSuper(req)) {
+    throw httpError(403, 'Only the plan owner can delete this plan.');
+  }
+  const pool = getPool();
+  if (!pool) throw httpError(500, 'Something went wrong. Please try again.');
+  const id = String(planId);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await execOptional(
+      client,
+      `DELETE FROM "PlanVote" v
+       USING "PlanOption" o
+       WHERE v."optionId"::text = o.id::text AND o."planId"::text = $1`,
+      [id],
+    );
+    await execOptional(client, `DELETE FROM "PlanOption" WHERE "planId"::text = $1`, [id]);
+    await execOptional(client, `DELETE FROM "PlanInvite" WHERE "planId"::text = $1`, [id]);
+    await execOptional(client, `DELETE FROM "PlanMember" WHERE "planId"::text = $1`, [id]);
+    await execOptional(client, `UPDATE "Circle" SET "planId" = NULL WHERE "planId"::text = $1`, [id]);
+    const removed = await client.query(`DELETE FROM "Plan" WHERE id::text = $1`, [id]);
+    if (!removed.rowCount) throw httpError(404, 'Plan not found');
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  await audit(userId, 'plan_deleted', 'plan', id, {});
+  return { deleted: true };
+}
+
 export async function getPlan(req, planId) {
   const { plan, userId } = await planAccess(req, planId);
   const [members, options, votes] = await Promise.all([
@@ -333,11 +380,36 @@ export async function createCircle(req, body) {
   if (body.visibility === 'public') {
     throw httpError(403, 'Public circles stay off until moderation review is in place. Use an invite-only circle.');
   }
+  const planId = body.planId ? String(body.planId) : null;
+  const eventId = body.eventId ? String(body.eventId) : null;
+  if (!planId && !eventId) throw httpError(400, 'Link this circle to a plan or an event.');
+  if (planId) {
+    const plan = await query(
+      `SELECT p.id FROM "Plan" p
+       JOIN "PlanMember" m ON m."planId" = p.id
+       WHERE p.id = $1 AND (m."userId"::text = $2 OR p."ownerUserId"::text = $2)`,
+      [planId, String(userId)],
+    );
+    if (!plan.rows?.length && !isSuper(req)) throw httpError(403, 'You can only link a plan you belong to.');
+  }
+  let official = false;
+  if (body.official) {
+    if (!eventId) throw httpError(400, 'An official community has to be linked to an event.');
+    const event = await query(`SELECT "createdBy" FROM "Event" WHERE id::text = $1`, [eventId]);
+    if (!event.rows?.length) throw httpError(404, 'Event not found');
+    if (Number(event.rows[0].createdBy) !== Number(userId) && !isSuper(req)) {
+      throw httpError(403, 'Only the event organizer can make this the official community.');
+    }
+    official = true;
+  } else if (eventId) {
+    const event = await query(`SELECT id FROM "Event" WHERE id::text = $1`, [eventId]);
+    if (!event.rows?.length) throw httpError(404, 'Event not found');
+  }
   const id = createId();
   await query(
-    `INSERT INTO "Circle" (id, "planId", "eventId", name, "ownerUserId", visibility)
-     VALUES ($1, $2, $3, $4, $5, 'invite_only')`,
-    [id, body.planId || null, body.eventId ? String(body.eventId) : null, name.slice(0, 80), userId],
+    `INSERT INTO "Circle" (id, "planId", "eventId", name, "ownerUserId", visibility, official)
+     VALUES ($1, $2, $3, $4, $5, 'invite_only', $6)`,
+    [id, planId, eventId, name.slice(0, 80), userId, official],
   );
   await query(
     `INSERT INTO "CircleMembership" (id, "circleId", "userId", role, status, "adultConfirmed")
@@ -359,41 +431,106 @@ async function circleMember(req, circleId) {
   );
   const membership = member.rows?.[0];
   if (await blockedEither(userId, row.ownerUserId)) throw httpError(403, 'You cannot access this circle');
+  const blockedByMember = await query(
+    `SELECT 1 FROM "UserBlock" ub
+     JOIN "CircleMembership" m ON m."circleId" = $1 AND m.status = 'active'
+     WHERE ub."blockerUserId"::text = m."userId"::text AND ub."blockedUserId"::text = $2
+     LIMIT 1`,
+    [circleId, String(userId)],
+  );
+  if (blockedByMember.rows?.length && !isSuper(req)) throw httpError(403, 'You cannot access this circle');
   if ((!membership || membership.status !== 'active') && !isSuper(req)) {
     throw httpError(403, 'This circle is invite-only');
   }
   return { circle: row, userId, membership, isOwner: row.ownerUserId === userId || isSuper(req) };
 }
 
+async function notifyCircleMembers(circleId, exceptUserId, payload) {
+  const members = await query(
+    `SELECT u.email
+     FROM "CircleMembership" m
+     JOIN "User" u ON u.id::text = m."userId"::text
+     LEFT JOIN "NotificationPreference" p ON p."userId"::text = m."userId"::text
+     WHERE m."circleId" = $1
+       AND m.status = 'active'
+       AND m."userId"::text <> $2
+       AND COALESCE(p.reminders, TRUE) = TRUE`,
+    [circleId, String(exceptUserId)],
+  ).catch(() => ({ rows: [] }));
+  for (const member of members.rows || []) {
+    await sendPushToEmail(member.email, payload).catch(() => null);
+  }
+}
+
 export async function getCircle(req, circleId) {
   const { circle, userId, isOwner } = await circleMember(req, circleId);
   const members = await query(
-    `SELECT m."userId", m.role, m.status FROM "CircleMembership" m
+    `SELECT m."userId", m.role,
+            COALESCE(NULLIF(BTRIM(u.name), ''), 'Member') AS "displayName",
+            pm.rsvp AS rsvp,
+            EXISTS (
+              SELECT 1 FROM "Order" o
+              WHERE o."eventId"::text = $2
+                AND o."userId"::text = m."userId"::text
+                AND lower(COALESCE(o.status, '')) IN ('paid', 'completed', 'success')
+            ) AS "hasTicket"
+     FROM "CircleMembership" m
+     LEFT JOIN "User" u ON u.id::text = m."userId"::text
+     LEFT JOIN "PlanMember" pm
+       ON pm."planId" = $3 AND pm."userId"::text = m."userId"::text
      WHERE m."circleId" = $1 AND m.status = 'active'`,
-    [circleId],
+    [circleId, circle.eventId ? String(circle.eventId) : '', circle.planId || ''],
   );
   const visible = [];
   for (const member of members.rows || []) {
     if (await blockedEither(userId, member.userId)) continue;
-    visible.push({ userId: member.userId, role: member.role });
+    visible.push({
+      userId: member.userId,
+      name: member.displayName,
+      role: member.role,
+      rsvp: member.rsvp || null,
+      hasTicket: Boolean(member.hasTicket),
+    });
   }
+  const event = circle.eventId
+    ? await query(`SELECT title FROM "Event" WHERE id::text = $1`, [String(circle.eventId)]).catch(() => ({ rows: [] }))
+    : { rows: [] };
+  const plan = circle.planId
+    ? await query(`SELECT name FROM "Plan" WHERE id = $1`, [circle.planId]).catch(() => ({ rows: [] }))
+    : { rows: [] };
+  const invites = isOwner
+    ? await query(
+      `SELECT token, "expiresAt" FROM "CircleInvite"
+       WHERE "circleId" = $1 AND "revokedAt" IS NULL AND "expiresAt" > NOW()
+       ORDER BY "createdAt" DESC`,
+      [circleId],
+    ).catch(() => ({ rows: [] }))
+    : { rows: [] };
   return {
     id: circle.id,
     name: circle.name,
     eventId: circle.eventId,
+    eventTitle: event.rows?.[0]?.title || null,
     planId: circle.planId,
+    planName: plan.rows?.[0]?.name || null,
+    official: Boolean(circle.official),
     visibility: circle.visibility,
     isOwner,
     members: visible,
-    policy: 'Invite-only. No public chat. Phone numbers are never shown. Circles are for adults 18+.',
+    invites: (invites.rows || []).map((row) => ({ token: row.token, expiresAt: row.expiresAt })),
+    policy: 'Invite-only. No public chat. Phone numbers are never shown. Interest is not a ticket. Circles are for adults 18+.',
   };
 }
 
 export async function listCircles(req) {
   const userId = requireUser(req);
   const result = await query(
-    `SELECT c.id, c.name, c."eventId", c.visibility FROM "Circle" c
+    `SELECT c.id, c.name, c."eventId", c."planId", c."ownerUserId", c.visibility, c.official,
+            e.title AS "eventTitle", p.name AS "planName"
+     FROM "Circle" c
      JOIN "CircleMembership" m ON m."circleId" = c.id
+     LEFT JOIN "Event" e ON e.id::text = c."eventId"
+     LEFT JOIN "Plan" p ON p.id = c."planId"
      WHERE m."userId" = $1 AND m.status = 'active'
      ORDER BY c."createdAt" DESC`,
     [userId],
@@ -421,6 +558,36 @@ export async function revokeCircleInvite(req, circleId, inviteToken) {
     circleId,
   ]);
   return { revoked: true };
+}
+
+export async function deleteCircle(req, circleId) {
+  const { circle, userId } = await circleMember(req, circleId);
+  if (Number(circle.ownerUserId) !== Number(userId) && !isSuper(req)) {
+    throw httpError(403, 'Only the circle owner can delete this circle.');
+  }
+  const pool = getPool();
+  if (!pool) throw httpError(500, 'Something went wrong. Please try again.');
+  const id = String(circleId);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await execOptional(client, `DELETE FROM "CircleInvite" WHERE "circleId"::text = $1`, [id]);
+    await execOptional(client, `DELETE FROM "CircleMembership" WHERE "circleId"::text = $1`, [id]);
+    await execOptional(client, `DELETE FROM "ModerationRecord" WHERE "circleId"::text = $1`, [id]);
+    const removed = await client.query(`DELETE FROM "Circle" WHERE id::text = $1`, [id]);
+    if (!removed.rowCount) {
+      await client.query('ROLLBACK');
+      throw httpError(404, 'Circle not found');
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* already closed */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+  await audit(userId, 'circle_deleted', 'circle', id, {});
+  return { deleted: true };
 }
 
 export async function leaveCircle(req, circleId) {
@@ -466,7 +633,15 @@ export async function acceptCircleInvite(req, inviteToken, adultConfirmed) {
      ON CONFLICT ("circleId", "userId") DO UPDATE SET status = 'active', "adultConfirmed" = TRUE`,
     [createId(), row.circleId, userId],
   );
-  return getCircle(req, row.circleId);
+  const joined = await getCircle(req, row.circleId);
+  const person = await query(`SELECT name FROM "User" WHERE id::text = $1`, [String(userId)]).catch(() => ({ rows: [] }));
+  const name = String(person.rows?.[0]?.name || '').trim() || 'Someone';
+  await notifyCircleMembers(row.circleId, userId, {
+    title: joined.name || 'Private circle',
+    body: `${name} joined the circle.`,
+    data: { circleId: String(row.circleId) },
+  });
+  return joined;
 }
 
 export async function blockUser(req, blockedUserId) {
@@ -480,8 +655,12 @@ export async function blockUser(req, blockedUserId) {
   );
   await query(
     `UPDATE "CircleMembership" SET status = 'blocked'
-     WHERE "userId" = $2 AND "circleId" IN (SELECT id FROM "Circle" WHERE "ownerUserId" = $1)`,
-    [userId, other],
+     WHERE "userId"::text = $2
+       AND "circleId" IN (
+         SELECT "circleId" FROM "CircleMembership"
+         WHERE "userId"::text = $1 AND status = 'active'
+       )`,
+    [String(userId), String(other)],
   );
   await audit(userId, 'user_blocked', 'user', other, {});
   return { blocked: true };
