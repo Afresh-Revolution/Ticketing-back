@@ -8,17 +8,29 @@ import {
   httpError,
   isSuper,
   loadEvent,
-  requireFlag,
   userIdOf,
 } from './access.js';
 import { generateSessionInstants } from './recurrence.js';
+import { ensureGatewav2Schema } from './schema.js';
 
 function code() {
   return crypto.randomBytes(6).toString('hex');
 }
 
+const MISSING_SCHEMA = new Set(['42P01', '42703', '42883']);
+
+async function q(sql, params) {
+  try {
+    return await query(sql, params);
+  } catch (err) {
+    if (!MISSING_SCHEMA.has(err?.code)) throw err;
+    await ensureGatewav2Schema({ force: true });
+    return query(sql, params);
+  }
+}
+
 export async function listSessions(eventId) {
-  const result = await query(
+  const result = await q(
     `SELECT id, "eventId", "startsAt", "endsAt", timezone, capacity, price, status, "cancelReason"
      FROM "EventSession"
      WHERE "eventId" = $1 AND "startsAt" > NOW() - INTERVAL '1 day'
@@ -30,7 +42,6 @@ export async function listSessions(eventId) {
 }
 
 export async function generateSessions(req, eventId, body) {
-  await requireFlag('experiences');
   const { event } = await assertManager(req, eventId);
   const frequency = body.frequency || event.recurrenceFrequency;
   const instants = generateSessionInstants({
@@ -43,10 +54,13 @@ export async function generateSessions(req, eventId, body) {
     max: body.max || 52,
     blackouts: Array.isArray(body.blackouts) ? body.blackouts : [],
   });
+  if (!instants.length) {
+    throw httpError(400, 'Add a date on this event before generating weekly sessions.');
+  }
   let created = 0;
   for (const instant of instants) {
     const id = `${event.id}:${instant.startsAt}`;
-    const inserted = await query(
+    const inserted = await q(
       `INSERT INTO "EventSession" (id, "eventId", "startsAt", timezone, capacity, price, status)
        VALUES ($1, $2, $3, $4, $5, $6, 'scheduled')
        ON CONFLICT ("eventId", "startsAt") DO NOTHING
@@ -90,13 +104,23 @@ export async function cancelSession(req, eventId, sessionId, reason) {
 
 export async function inviteStaff(req, eventId, body) {
   const access = await assertManager(req, eventId);
-  const staffUserId = Number(body.userId);
-  if (!staffUserId) throw httpError(400, 'Staff user id is required');
+  let staffUserId = Number(body.userId);
+  if (!staffUserId && body.email) {
+    const email = String(body.email).trim().toLowerCase();
+    if (!email.includes('@')) throw httpError(400, 'Enter the email on their GateWav account.');
+    const found = await query(`SELECT id FROM "User" WHERE LOWER(TRIM(email)) = $1 LIMIT 1`, [email]);
+    const raw = found.rows?.[0]?.id;
+    staffUserId = Number(raw);
+    if (raw == null || !Number.isFinite(staffUserId) || staffUserId <= 0) {
+      throw httpError(404, 'No GateWav account uses that email. They need to sign up first.');
+    }
+  }
+  if (!staffUserId) throw httpError(400, 'Enter the email on their GateWav account.');
   const role = body.role === 'manager' ? 'manager' : 'checkin';
   if (role === 'manager' && access.role === 'manager') {
     throw httpError(403, 'Only the organizer can grant manager access');
   }
-  await query(
+  await q(
     `INSERT INTO "EventStaff" (id, "eventId", "userId", role, status, "invitedBy")
      VALUES ($1, $2, $3, $4, 'active', $5)
      ON CONFLICT ("eventId", "userId") DO UPDATE SET role = EXCLUDED.role, status = 'active'`,
@@ -109,10 +133,26 @@ export async function inviteStaff(req, eventId, body) {
 export async function listStaff(req, eventId) {
   await assertManager(req, eventId);
   const result = await query(
-    `SELECT "userId", role, status, "createdAt" FROM "EventStaff" WHERE "eventId" = $1 ORDER BY "createdAt" ASC`,
+    `SELECT s."userId", s.role, s.status, s."createdAt", u.name, u.email
+     FROM "EventStaff" s
+     LEFT JOIN "User" u ON u.id::text = s."userId"::text
+     WHERE s."eventId" = $1 AND s.status <> 'revoked'
+     ORDER BY s."createdAt" ASC`,
     [String(eventId)],
-  );
-  return result.rows || [];
+  ).catch(async (err) => {
+    if (!['42P01', '42703', '42883'].includes(err?.code)) throw err;
+    return query(
+      `SELECT "userId", role, status, "createdAt" FROM "EventStaff" WHERE "eventId" = $1 ORDER BY "createdAt" ASC`,
+      [String(eventId)],
+    );
+  });
+  return (result.rows || []).map((row) => ({
+    userId: row.userId,
+    role: row.role,
+    status: row.status,
+    name: row.name || '',
+    email: row.email || '',
+  }));
 }
 
 export async function removeStaff(req, eventId, staffUserId) {
@@ -127,17 +167,28 @@ export async function removeStaff(req, eventId, staffUserId) {
 
 export async function guestList(req, eventId) {
   await assertCheckin(req, eventId);
-  const result = await query(
-    `SELECT o.id, o."fullName", o.email, o.status, o."ticketCode", o."totalAmount", o."createdAt",
+  const guestSql = `SELECT o.id, o."fullName", o.email, o.status, o."totalAmount", o."createdAt",
             COALESCE(SUM(oi.quantity), 0)::int AS tickets
      FROM "Order" o
      LEFT JOIN "OrderItem" oi ON oi."orderId"::text = o.id::text
      WHERE o."eventId"::text = $1
      GROUP BY o.id
      ORDER BY o."createdAt" DESC
-     LIMIT 500`,
-    [String(eventId)],
-  );
+     LIMIT 500`;
+  const result = await q(guestSql, [String(eventId)]).catch(async (err) => {
+    if (err?.code !== '42803') throw err;
+    return q(
+      `SELECT o.id, o."fullName", o.email, o.status, o."totalAmount", o."createdAt",
+              COALESCE(SUM(oi.quantity), 0)::int AS tickets
+       FROM "Order" o
+       LEFT JOIN "OrderItem" oi ON oi."orderId"::text = o.id::text
+       WHERE o."eventId"::text = $1
+       GROUP BY o.id, o."fullName", o.email, o.status, o."totalAmount", o."createdAt"
+       ORDER BY o."createdAt" DESC
+       LIMIT 500`,
+      [String(eventId)],
+    );
+  });
   return (result.rows || []).map((row) => ({
     id: String(row.id),
     fullName: row.fullName,
@@ -185,12 +236,24 @@ export async function issueComp(req, eventId, body) {
   if (cap > 0 && used + quantity > cap) throw httpError(400, 'Not enough tickets left for this comp');
   const orderId = createId();
   const ticketCode = `COMP-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-  await query(
-    `INSERT INTO "Order" (id, "eventId", "fullName", email, "totalAmount", status, reference, "ticketCode")
-     VALUES ($1, $2, $3, $4, 0, 'paid', $5, $6)`,
-    [orderId, event.id, name, email, `comp_${orderId.slice(0, 8)}`, ticketCode],
-  );
-  await query(
+  const reference = `comp_${orderId.slice(0, 8)}`;
+  const orderParams = [orderId, String(event.id), name, email, reference];
+  try {
+    await q(
+      `INSERT INTO "Order" ("id", "eventId", "fullName", "email", "totalAmount", "status", "reference", "originalAmount", "discountAmount", "quantityDiscountAmount")
+       VALUES ($1, $2, $3, $4, 0, 'paid', $5, 0, 0, 0)`,
+      orderParams,
+    );
+  } catch (err) {
+    if (err?.code !== '42703' && err?.code !== '23502') throw err;
+    await q(
+      `INSERT INTO "Order" (id, "eventId", "fullName", email, "totalAmount", status, reference)
+       VALUES ($1, $2, $3, $4, 0, 'paid', $5)`,
+      orderParams,
+    );
+  }
+  await query(`UPDATE "Order" SET "ticketCode" = $2 WHERE id::text = $1`, [orderId, ticketCode]).catch(() => null);
+  await q(
     `INSERT INTO "OrderItem" (id, "orderId", "ticketTypeId", quantity, price) VALUES ($1, $2, $3, $4, 0)`,
     [createId(), orderId, ticketTypeId, quantity],
   );
@@ -209,13 +272,16 @@ export async function setRefundStatus(req, orderId, body) {
     ? body.status
     : 'initiated';
   const id = createId();
-  await query(
+  await q(
     `INSERT INTO "RefundCase" (id, "orderId", "eventId", status, reason, "actorUserId")
      VALUES ($1, $2, $3, $4, $5, $6)`,
     [id, String(row.id), String(row.eventId), status, body.reason ? String(body.reason).slice(0, 400) : null, userIdOf(req)],
   );
   if (status === 'completed' || status === 'chargeback') {
-    await query(`UPDATE "Order" SET status = 'refunded', "updatedAt" = NOW() WHERE id::text = $1`, [String(row.id)]);
+    await q(`UPDATE "Order" SET status = 'refunded', "updatedAt" = NOW() WHERE id::text = $1`, [String(row.id)]).catch((err) => {
+      if (err?.code !== '42703') throw err;
+      return query(`UPDATE "Order" SET status = 'refunded' WHERE id::text = $1`, [String(row.id)]);
+    });
     await query(
       `UPDATE "PromoterConversion"
        SET status = 'reversed', "commissionAmount" = 0, "reversedReason" = $2, "updatedAt" = NOW()
@@ -232,7 +298,6 @@ export async function setRefundStatus(req, orderId, body) {
 }
 
 export async function createCampaign(req, eventId, body) {
-  await requireFlag('promoters');
   const { event } = await assertManager(req, eventId);
   const name = String(body.name || '').trim();
   if (!name) throw httpError(400, 'Campaign name is required');
@@ -240,7 +305,7 @@ export async function createCampaign(req, eventId, body) {
   const value = Math.max(0, Math.round(Number(body.commissionValue) || 0));
   if (type === 'percent' && value > 100) throw httpError(400, 'Percent commission cannot exceed 100');
   const id = createId();
-  await query(
+  await q(
     `INSERT INTO "PromoterCampaign"
       (id, "eventId", "organizerUserId", name, "commissionType", "commissionValue", "windowDays", status)
      VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')`,
@@ -265,7 +330,7 @@ export async function invitePromoter(req, campaignId, body) {
   await assertManager(req, row.eventId);
   const shareCode = code();
   const id = createId();
-  await query(
+  await q(
     `INSERT INTO "PromoterMember" (id, "campaignId", "userId", email, "shareCode", status)
      VALUES ($1, $2, $3, $4, $5, 'active')`,
     [id, campaignId, body.userId != null ? Number(body.userId) : null, body.email ? String(body.email).slice(0, 160) : null, shareCode],
@@ -359,7 +424,8 @@ export async function promoterDashboard(req) {
   const userId = userIdOf(req);
   if (userId == null) throw httpError(401, 'Sign in to continue.');
   const result = await query(
-    `SELECT m."shareCode", c.name AS campaign, c."eventId", c."commissionType", c."commissionValue",
+    `SELECT m."shareCode", c.name AS campaign, c."eventId", e.title AS "eventTitle",
+            c."commissionType", c."commissionValue",
             (SELECT COUNT(*)::int FROM "PromoterClick" k WHERE k."shareCode" = m."shareCode") AS clicks,
             (SELECT COUNT(*)::int FROM "PromoterConversion" v WHERE v."shareCode" = m."shareCode" AND v.status <> 'reversed') AS orders,
             (SELECT COALESCE(SUM("ticketCount"), 0)::int FROM "PromoterConversion" v WHERE v."shareCode" = m."shareCode" AND v.status <> 'reversed') AS tickets,
@@ -367,6 +433,7 @@ export async function promoterDashboard(req) {
             (SELECT COALESCE(SUM("commissionAmount"), 0)::int FROM "PromoterConversion" v WHERE v."shareCode" = m."shareCode" AND v.status = 'paid') AS paid
      FROM "PromoterMember" m
      JOIN "PromoterCampaign" c ON c.id = m."campaignId"
+     LEFT JOIN "Event" e ON e.id::text = c."eventId"
      WHERE m."userId"::text = $1
         OR m.email = (SELECT email FROM "User" WHERE id::text = $1 LIMIT 1)`,
     [String(userId)],
@@ -379,7 +446,7 @@ export async function promoterDashboard(req) {
 
 export async function campaignReport(req, eventId) {
   await assertManager(req, eventId);
-  const result = await query(
+  const result = await q(
     `SELECT c.id, c.name, c."commissionType", c."commissionValue", c."windowDays", c.status,
             m."shareCode", m.email, m.status AS member_status,
             (SELECT COUNT(*)::int FROM "PromoterClick" k WHERE k."shareCode" = m."shareCode") AS clicks,
@@ -423,9 +490,9 @@ export async function submitVerification(req, body) {
   const userId = userIdOf(req);
   if (userId == null) throw httpError(401, 'Sign in to continue.');
   const evidence = String(body.evidence || '').trim();
-  if (evidence.length < 12) throw httpError(400, 'Describe the evidence an admin should review');
+  if (evidence.length < 4) throw httpError(400, 'Add a short note about who you are.');
   const id = createId();
-  await query(
+  await q(
     `INSERT INTO "VerificationCase" (id, "userId", "organizerName", evidence, status)
      VALUES ($1, $2, $3, $4, 'submitted')`,
     [id, userId, body.organizerName ? String(body.organizerName).slice(0, 120) : null, evidence.slice(0, 2000)],
@@ -510,7 +577,7 @@ export async function createPerk(req, body) {
   const title = String(body.title || '').trim();
   if (!title) throw httpError(400, 'Benefit title is required');
   const id = createId();
-  await query(
+  await q(
     `INSERT INTO "Perk" (id, "eventId", "organizerUserId", title, description, quota, "validUntil", "costOwner", status)
      VALUES ($1, $2, $3, $4, $5, $6, $7, 'organizer', 'pending')`,
     [
@@ -537,14 +604,20 @@ export async function setListing(req, eventId, status) {
   await assertManager(req, eventId);
   const allowed = ['published', 'cancelled', 'draft'];
   if (!allowed.includes(status)) throw httpError(400, 'Status must be published, cancelled, or draft');
-  await query(
-    `UPDATE "Event"
-     SET "listingStatus" = $2,
-         "isPublished" = $3,
-         "updatedAt" = NOW()
-     WHERE id::text = $1`,
-    [String(eventId), status, status !== 'draft'],
-  );
+  const published = status === 'published';
+  try {
+    await q(
+      `UPDATE "Event"
+       SET "listingStatus" = $2,
+           "isPublished" = $3,
+           "updatedAt" = NOW()
+       WHERE id::text = $1`,
+      [String(eventId), status, published],
+    );
+  } catch (err) {
+    if (err?.code !== '42703') throw err;
+    await query(`UPDATE "Event" SET "isPublished" = $2 WHERE id::text = $1`, [String(eventId), published]);
+  }
   await audit(userIdOf(req), 'listing_status', 'event', eventId, { status });
   return { status, purchasable: status === 'published' };
 }

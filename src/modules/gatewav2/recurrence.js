@@ -50,8 +50,10 @@ export function zonedTimeToUtc(year, monthIndex, day, hour, minute, timeZone) {
 }
 
 function parseDate(value) {
-  const raw = String(value || '').slice(0, 10);
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return { year: value.getFullYear(), month: value.getMonth() + 1, day: value.getDate() };
+  }
+  const match = /(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ''));
   if (!match) return null;
   return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
 }

@@ -28,24 +28,15 @@ export async function audit(actorUserId, action, resourceType, resourceId, meta 
 }
 
 export async function loadEvent(eventId) {
-  const result = await query(
-    `SELECT id, title, date, "endDate", "startTime", "endTime", location, venue, category, price,
-            "imageUrl", description, organizer, "createdBy", "isPublished", "isRecurring",
-            "recurrenceFrequency", "recurrenceWeekday", "recurrenceUntil", "eventType",
-            "citySlug", latitude, longitude, timezone, accessibility, format, "listingStatus",
-            "skillLevel", "ageGuidance", "safetyNotes", "contactNotes"
-     FROM "Event" WHERE id::text = $1 LIMIT 1`,
-    [String(eventId)],
-  ).catch(async (err) => {
-    if (err?.code !== '42703') throw err;
-    return query(
-      `SELECT id, title, date, "endDate", "startTime", location, venue, category, price,
-              "imageUrl", description, organizer, "createdBy", "isPublished", "eventType"
-       FROM "Event" WHERE id::text = $1 LIMIT 1`,
-      [String(eventId)],
-    );
-  });
-  return result.rows?.[0] || null;
+  const id = String(eventId);
+  try {
+    const result = await query(`SELECT * FROM "Event" WHERE id::text = $1 LIMIT 1`, [id]);
+    return result.rows?.[0] || null;
+  } catch (err) {
+    if (err?.code !== '42703' && err?.code !== '42883') throw err;
+    const result = await query(`SELECT * FROM "Event" WHERE id = $1 LIMIT 1`, [eventId]);
+    return result.rows?.[0] || null;
+  }
 }
 
 export async function eventRole(req, eventId) {
