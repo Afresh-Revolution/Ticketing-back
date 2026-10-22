@@ -56,14 +56,17 @@ async function hardDeleteChat(chatId) {
   }
 }
 
-/** Removes the circle's chat rows when the linked event is over. Membership stays. */
+/** Removes an event chat after that event ends, and a plan chat if the plan is gone. Membership stays. */
 export async function purgeEndedCircleChats(circleId) {
   let rows = [];
   try {
     const result = await query(
-      `SELECT c.id, e.id AS "eventRowId", e.date, e."endDate", e."isRecurring", e."recurrenceUntil"
+      `SELECT c.id, c."eventId", c."planId",
+              e.id AS "eventRowId", e.date, e."endDate", e."isRecurring", e."recurrenceUntil",
+              p.id AS "planRowId"
        FROM "CircleChat" c
        LEFT JOIN "Event" e ON e.id::text = c."eventId"
+       LEFT JOIN "Plan" p ON p.id = c."planId"
        WHERE c."circleId" = $1`,
       [circleId],
     );
@@ -74,6 +77,14 @@ export async function purgeEndedCircleChats(circleId) {
   }
   let removed = false;
   for (const row of rows) {
+    const planChat = Boolean(row.planId) && !row.eventId;
+    if (planChat) {
+      if (!row.planRowId) {
+        await hardDeleteChat(row.id);
+        removed = true;
+      }
+      continue;
+    }
     if (!row.eventRowId || eventHasEnded(row)) {
       await hardDeleteChat(row.id);
       removed = true;
@@ -90,19 +101,29 @@ async function savedByUser(userId, eventId) {
   return Boolean(result.rows?.length);
 }
 
+async function loadPlanRow(planId) {
+  const result = await query(`SELECT id, name FROM "Plan" WHERE id = $1`, [planId]);
+  return result.rows?.[0] || null;
+}
+
 export async function circleChatState(circle, isOwner, userId) {
-  const empty = { open: false, eventEnded: false, canStart: false, canLink: Boolean(isOwner) };
+  const empty = { open: false, eventEnded: false, canStart: false, startKind: null, canLink: Boolean(isOwner) };
   try {
     await purgeEndedCircleChats(circle.id);
     const event = circle.eventId ? await loadEventRow(String(circle.eventId)) : null;
     const eventEnded = Boolean(circle.eventId) && eventHasEnded(event);
+    const plan = circle.planId ? await loadPlanRow(circle.planId) : null;
     const chat = await query(`SELECT id FROM "CircleChat" WHERE "circleId" = $1`, [circle.id]);
     const open = Boolean(chat.rows?.length);
     const saved = isOwner && circle.eventId ? await savedByUser(userId, circle.eventId) : false;
+    const eventOk = Boolean(isOwner && circle.eventId && !eventEnded && saved);
+    const planOk = Boolean(isOwner && plan);
+    const startKind = !open && eventOk ? 'event' : !open && planOk ? 'plan' : null;
     return {
       open,
       eventEnded,
-      canStart: Boolean(isOwner && circle.eventId && !eventEnded && !open && (saved || false)),
+      canStart: Boolean(startKind),
+      startKind,
       canLink: Boolean(isOwner && !open),
     };
   } catch (err) {
@@ -117,19 +138,35 @@ export async function openEventChat(circleId, eventId, userId) {
   if (!event || eventHasEnded(event)) return null;
   const id = createId();
   await query(
-    `INSERT INTO "CircleChat" (id, "circleId", "eventId", "startedBy")
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO "CircleChat" (id, "circleId", "eventId", "planId", "startedBy")
+     VALUES ($1, $2, $3, NULL, $4)
      ON CONFLICT ("circleId") DO NOTHING`,
     [id, circleId, String(event.id), userId],
   );
   return id;
 }
 
+/** Opens a chat for a linked plan. It stays until the plan is deleted. */
+export async function openPlanChat(circleId, planId, userId) {
+  const plan = await loadPlanRow(planId);
+  if (!plan) return null;
+  const id = createId();
+  const inserted = await query(
+    `INSERT INTO "CircleChat" (id, "circleId", "eventId", "planId", "startedBy")
+     VALUES ($1, $2, NULL, $3, $4)
+     ON CONFLICT ("circleId") DO NOTHING
+     RETURNING id`,
+    [id, circleId, String(plan.id), userId],
+  );
+  return inserted.rows?.[0]?.id || null;
+}
+
 async function activeChat(circleId) {
   const result = await query(
-    `SELECT c.*, e.title AS "eventTitle"
+    `SELECT c.*, e.title AS "eventTitle", p.name AS "planName"
      FROM "CircleChat" c
      LEFT JOIN "Event" e ON e.id::text = c."eventId"
+     LEFT JOIN "Plan" p ON p.id = c."planId"
      WHERE c."circleId" = $1`,
     [circleId],
   );
@@ -149,13 +186,17 @@ export async function getCircleChat(req, circleId) {
   const chat = state.open ? await activeChat(circleId) : null;
   if (!chat) {
     const event = circle.eventId ? await loadEventRow(String(circle.eventId)) : null;
+    const plan = circle.planId ? await loadPlanRow(circle.planId) : null;
     return {
       open: false,
       removed,
       eventEnded: state.eventEnded,
       canStart: state.canStart,
+      startKind: state.startKind,
       eventId: circle.eventId || null,
       eventTitle: event?.title || null,
+      planId: circle.planId || null,
+      planName: plan?.name || null,
       circleName: circle.name,
       messages: [],
     };
@@ -194,9 +235,12 @@ export async function getCircleChat(req, circleId) {
     removed: false,
     eventEnded: false,
     canStart: false,
+    startKind: null,
     chatId: chat.id,
     eventId: chat.eventId,
     eventTitle: chat.eventTitle || null,
+    planId: chat.planId || null,
+    planName: chat.planName || null,
     circleName: circle.name,
     messages: ordered.map((row) => {
       const mine = Number(row.senderUserId) === Number(userId);
@@ -250,23 +294,36 @@ export async function startCircleChat(req, circleId) {
   await purgeEndedCircleChats(circleId);
   const fresh = await query(`SELECT * FROM "Circle" WHERE id = $1`, [circleId]);
   const circle = fresh.rows?.[0];
-  if (!circle?.eventId) throw httpError(400, 'Link a saved event before starting a chat.');
-  const event = await loadEventRow(circle.eventId);
-  if (!event || eventHasEnded(event)) {
-    throw httpError(400, 'That event has ended. Link another saved event, then start a new chat.');
-  }
-  if (!isSuper(req) && !(await savedByUser(userId, circle.eventId))) {
-    throw httpError(400, 'Save this event, link it to the circle, then start the chat.');
-  }
   const existing = await query(`SELECT id FROM "CircleChat" WHERE "circleId" = $1`, [circleId]);
   if (!existing.rows?.length) {
-    await query(
-      `INSERT INTO "CircleChat" (id, "circleId", "eventId", "startedBy")
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT ("circleId") DO NOTHING`,
-      [createId(), circleId, String(event.id), userId],
-    );
-    await audit(userId, 'circle_chat_started', 'circle', circleId, { eventId: String(event.id) });
+    const event = circle?.eventId ? await loadEventRow(circle.eventId) : null;
+    const eventLive = Boolean(event && !eventHasEnded(event));
+    const eventReady = eventLive && (isSuper(req) || await savedByUser(userId, circle.eventId));
+    if (eventReady) {
+      await query(
+        `INSERT INTO "CircleChat" (id, "circleId", "eventId", "planId", "startedBy")
+         VALUES ($1, $2, $3, NULL, $4)
+         ON CONFLICT ("circleId") DO NOTHING`,
+        [createId(), circleId, String(event.id), userId],
+      );
+      await audit(userId, 'circle_chat_started', 'circle', circleId, { eventId: String(event.id) });
+    } else if (circle?.planId) {
+      const plan = await loadPlanRow(circle.planId);
+      if (!plan) throw httpError(400, 'That plan is no longer available.');
+      await query(
+        `INSERT INTO "CircleChat" (id, "circleId", "eventId", "planId", "startedBy")
+         VALUES ($1, $2, NULL, $3, $4)
+         ON CONFLICT ("circleId") DO NOTHING`,
+        [createId(), circleId, String(plan.id), userId],
+      );
+      await audit(userId, 'circle_chat_started', 'circle', circleId, { planId: String(plan.id) });
+    } else if (eventLive) {
+      throw httpError(400, 'Save this event, link it to the circle, then start the chat.');
+    } else if (circle?.eventId) {
+      throw httpError(400, 'That event has ended. Link another saved event, or a plan, then start a new chat.');
+    } else {
+      throw httpError(400, 'Link a plan or a saved event before starting a chat.');
+    }
   }
   return getCircleChat(req, circleId);
 }
@@ -277,8 +334,8 @@ async function requireOpenChat(req, circleId) {
   const chat = await activeChat(circleId);
   if (!chat) {
     throw httpError(400, removed
-      ? 'This event has ended. The chat was removed. Everyone stays in the circle.'
-      : 'Start a chat for the linked event before sending a message.');
+      ? 'This chat was removed. Everyone stays in the circle.'
+      : 'Start a chat for the linked plan or event before sending a message.');
   }
   return { ...member, chat };
 }

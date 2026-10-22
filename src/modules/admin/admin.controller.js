@@ -65,6 +65,48 @@ function isSuperAdmin(req) {
   return role === 'superadmin' || id === 0 || id === '0';
 }
 
+function promoterRate(type, value) {
+  const amount = Math.max(0, Math.round(Number(value) || 0));
+  return type === 'fixed' ? `₦${amount}` : `${amount}%`;
+}
+
+async function promoterCredits(orderIds) {
+  const ids = [...new Set((orderIds || []).map((id) => String(id || '')).filter(Boolean))];
+  const credits = new Map();
+  if (!ids.length) return credits;
+  try {
+    const result = await query(
+      `SELECT DISTINCT ON (v."orderId")
+              v."orderId"::text AS "orderId",
+              c."commissionType",
+              c."commissionValue",
+              COALESCE(NULLIF(BTRIM(m.email), ''), 'Promoter') AS email
+       FROM "PromoterConversion" v
+       JOIN "PromoterCampaign" c ON c.id = v."campaignId"
+       LEFT JOIN "PromoterMember" m ON m."shareCode" = v."shareCode"
+       WHERE v.status <> 'reversed'
+         AND v."orderId"::text = ANY($1::text[])
+       ORDER BY v."orderId", m."createdAt" DESC NULLS LAST`,
+      [ids],
+    );
+    for (const row of result.rows || []) {
+      credits.set(String(row.orderId), {
+        email: row.email,
+        rate: promoterRate(row.commissionType, row.commissionValue),
+      });
+    }
+  } catch (err) {
+    if (err?.code !== '42P01' && err?.code !== '42703') console.error('promoterCredits', err);
+  }
+  return credits;
+}
+
+function withPromoter(sale, credits) {
+  const credit = credits.get(String(sale.id));
+  if (!credit || sale.source === 'merch' || sale.source === 'walk_in') return sale;
+  return { ...sale, promoter_email: credit.email, promoter_rate: credit.rate };
+}
+
 function normalizeTicketTypeKey(value) {
   return String(value || '')
     .trim()
@@ -124,6 +166,22 @@ export async function getDashboard(req, res) {
       stats.ticketRevenue = Number(r.rows[0].ticket_rev) || 0;
       stats.ticketsSold = Number(r.rows[0].tickets_sold) || 0;
     }
+    const promoterSql = superAdmin
+      ? `SELECT COALESCE(SUM(CASE WHEN v."ticketCount" > 0 THEN v."ticketCount" ELSE 1 END), 0)::int AS tickets
+         FROM "PromoterConversion" v
+         WHERE v.status <> 'reversed'`
+      : `SELECT COALESCE(SUM(CASE WHEN v."ticketCount" > 0 THEN v."ticketCount" ELSE 1 END), 0)::int AS tickets
+         FROM "PromoterConversion" v
+         JOIN "PromoterCampaign" c ON c.id = v."campaignId"
+         JOIN "Event" e ON e.id::text = c."eventId"
+         WHERE v.status <> 'reversed'
+           AND ((e."createdBy"::text = $1) OR (e."createdBy" IS NULL AND $1 = '0'))`;
+    const promoterCount = await query(promoterSql, revParams).catch((err) => {
+      if (err?.code !== '42P01' && err?.code !== '42703') console.error('promoter ticket stats', err);
+      return { rows: [{ tickets: 0 }] };
+    });
+    stats.promoterTickets = Number(promoterCount.rows?.[0]?.tickets) || 0;
+    stats.directTickets = Math.max(0, stats.ticketsSold - stats.promoterTickets);
 
     const merchRevSql = superAdmin
       ? `SELECT COALESCE(SUM(mo.total_amount), 0) AS merch_rev
@@ -221,20 +279,22 @@ export async function getDashboard(req, res) {
          LIMIT 10`;
     const recentParams = superAdmin ? [] : [userIdParam];
     const recentResult = await query(recentSql, recentParams).catch(() => ({ rows: [] }));
-    recentSales.push(
-      ...(recentResult.rows || []).map((row) => ({
-        id: row.id,
-        source: row.source,
-        buyer_name: row.buyer_name,
-        buyer_email: row.buyer_email,
-        buyer_phone: row.buyer_phone,
-        status: row.status || 'pending',
-        ticket_count: Number(row.ticket_count) || 1,
-        amount: Number(row.amount) || 0,
-        created_at: row.created_at,
-        event_title: row.event_title || '',
-      }))
+    const mappedRecent = (recentResult.rows || []).map((row) => ({
+      id: row.id,
+      source: row.source,
+      buyer_name: row.buyer_name,
+      buyer_email: row.buyer_email,
+      buyer_phone: row.buyer_phone,
+      status: row.status || 'pending',
+      ticket_count: Number(row.ticket_count) || 1,
+      amount: Number(row.amount) || 0,
+      created_at: row.created_at,
+      event_title: row.event_title || '',
+    }));
+    const recentCredits = await promoterCredits(
+      mappedRecent.filter((sale) => sale.source === 'online').map((sale) => sale.id),
     );
+    recentSales.push(...mappedRecent.map((sale) => withPromoter(sale, recentCredits)));
 
     return res.json({ stats, recentSales });
   } catch (err) {
@@ -775,9 +835,11 @@ export async function getSales(req, res) {
     const deduped = Array.from(dedupedMap.values())
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .slice(0, 200);
+    const saleCredits = await promoterCredits(deduped.map((sale) => sale.id));
+    const labeled = deduped.map((sale) => withPromoter(sale, saleCredits));
     const merchSales = await listPaidMerchSales(superAdmin, userIdParam);
-    const seen = new Set(deduped.map((sale) => String(sale.id)));
-    const combined = [...deduped, ...merchSales.filter((sale) => !seen.has(String(sale.id)))]
+    const seen = new Set(labeled.map((sale) => String(sale.id)));
+    const combined = [...labeled, ...merchSales.filter((sale) => !seen.has(String(sale.id)))]
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .slice(0, 200);
     return res.json(combined);

@@ -468,6 +468,7 @@ export async function campaignReport(req, eventId) {
             m.id AS "memberId", m."shareCode", m.email, m.status AS member_status,
             (SELECT COUNT(*)::int FROM "PromoterClick" k WHERE k."shareCode" = m."shareCode") AS clicks,
             (SELECT COUNT(*)::int FROM "PromoterConversion" v WHERE v."shareCode" = m."shareCode" AND v.status <> 'reversed') AS qualified_orders,
+            (SELECT COALESCE(SUM(CASE WHEN v."ticketCount" > 0 THEN v."ticketCount" ELSE 1 END), 0)::int FROM "PromoterConversion" v WHERE v."shareCode" = m."shareCode" AND v.status <> 'reversed') AS tickets,
             (SELECT COALESCE(SUM(v."commissionAmount"), 0)::int FROM "PromoterConversion" v WHERE v."shareCode" = m."shareCode" AND v.status <> 'reversed') AS net_commission
      FROM "PromoterCampaign" c
      LEFT JOIN "PromoterMember" m ON m."campaignId" = c.id

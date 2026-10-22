@@ -3,7 +3,15 @@ import { query, createId, getPool } from '../../shared/config/db.js';
 import { sendPushToEmail } from '../../shared/services/push.service.js';
 import { httpError, userIdOf, isSuper, audit, loadEvent, requireFlag } from './access.js';
 import { eventsByIds, searchEvents } from './discover.js';
-import { circleChatState, openEventChat } from './circleChat.js';
+import { circleChatState, openEventChat, openPlanChat } from './circleChat.js';
+import {
+  canonicalRsvp,
+  circlePowers,
+  inviteUsable,
+  normalizeLifecycle,
+  validateCircleBody,
+  validatePlanBody,
+} from './experienceRules.js';
 
 function token() {
   return crypto.randomBytes(18).toString('hex');
@@ -128,7 +136,7 @@ export async function updateNotificationPrefs(req, body) {
   return { userId, ...next };
 }
 
-async function planAccess(req, planId) {
+export async function planAccess(req, planId) {
   const userId = requireUser(req);
   const plan = await query(`SELECT * FROM "Plan" WHERE id = $1`, [planId]);
   const row = plan.rows?.[0];
@@ -156,14 +164,24 @@ function shapePlan(plan, members, options, votes, viewerId) {
       userId: m.userId,
       name: String(m.displayName || '').trim() || 'Member',
       role: m.role,
-      rsvp: m.rsvp,
+      rsvp: canonicalRsvp(m.rsvp) || m.rsvp || 'invited',
       payment: m.sharePayment && (m.userId === viewerId || plan.ownerUserId === viewerId) ? m.paymentLabel || null : null,
     })),
+    kind: plan.kind || 'group',
+    circleId: plan.circleId || null,
+    activityType: plan.activityType || null,
+    eventId: plan.eventId || null,
+    location: plan.location || null,
+    startsAt: plan.startsAt || null,
+    lifecycle: normalizeLifecycle(plan.lifecycle || plan.status),
+    perPerson: plan.perPerson ?? null,
     options: (options || []).map((o) => ({
       id: o.id,
       eventId: o.eventId,
       proposedDate: o.proposedDate,
       label: o.label,
+      pollId: o.pollId || null,
+      kind: o.kind || null,
       votes: (votes || [])
         .filter((v) => v.optionId === o.id)
         .map((v) => ({ userId: v.userId, choice: v.choice })),
@@ -175,8 +193,12 @@ function shapePlan(plan, members, options, votes, viewerId) {
 export async function createPlan(req, body) {
   await requireFlag('plans');
   const userId = requireUser(req);
+  const problem = validatePlanBody(body);
+  if (problem) throw httpError(400, problem);
   const name = String(body.name || '').trim();
-  if (!name) throw httpError(400, 'Plan name is required');
+  const { findExistingPlanRequest, finishNewPlan } = await import('./experience.js');
+  const existingId = await findExistingPlanRequest(userId, body.clientRequestId);
+  if (existingId) return getPlan(req, existingId);
   const id = createId();
   await query(
     `INSERT INTO "Plan" (id, "ownerUserId", name, "budgetMin", "budgetMax", notes)
@@ -193,6 +215,7 @@ export async function createPlan(req, body) {
       [createId(), id, String(body.eventId), body.label ? String(body.label).slice(0, 120) : null],
     );
   }
+  await finishNewPlan(req, id, body);
   await audit(userId, 'plan_created', 'plan', id, {});
   return getPlan(req, id);
 }
@@ -239,6 +262,12 @@ export async function deletePlan(req, planId) {
       [id],
     );
     await execOptional(client, `DELETE FROM "PlanOption" WHERE "planId"::text = $1`, [id]);
+    await execOptional(client, `DELETE FROM "ExperienceMedia" WHERE "memoryId" IN (SELECT id FROM "ExperienceMemory" WHERE "planId"::text = $1)`, [id]);
+    await execOptional(client, `DELETE FROM "ExperienceMemory" WHERE "planId"::text = $1`, [id]);
+    await execOptional(client, `DELETE FROM "PlanComment" WHERE "planId"::text = $1`, [id]);
+    await execOptional(client, `DELETE FROM "PlanBudgetItem" WHERE "planId"::text = $1`, [id]);
+    await execOptional(client, `DELETE FROM "PlanPoll" WHERE "planId"::text = $1`, [id]);
+    await execOptional(client, `DELETE FROM "CircleActivity" WHERE "planId"::text = $1`, [id]);
     await execOptional(client, `DELETE FROM "PlanInvite" WHERE "planId"::text = $1`, [id]);
     await execOptional(client, `DELETE FROM "PlanMember" WHERE "planId"::text = $1`, [id]);
     await execOptional(client, `UPDATE "Circle" SET "planId" = NULL WHERE "planId"::text = $1`, [id]);
@@ -275,7 +304,14 @@ export async function getPlan(req, planId) {
       [planId],
     ),
   ]);
-  return shapePlan(plan, members.rows, options.rows, votes.rows, userId);
+  const shaped = shapePlan(plan, members.rows, options.rows, votes.rows, userId);
+  try {
+    const { enrichPlan } = await import('./experience.js');
+    return await enrichPlan(req, plan, shaped, userId);
+  } catch (err) {
+    if (err?.status) throw err;
+    return shaped;
+  }
 }
 
 export async function addPlanOption(req, planId, body) {
@@ -305,19 +341,26 @@ export async function votePlan(req, planId, optionId, choice) {
 }
 
 export async function rsvpPlan(req, planId, rsvp, sharePayment) {
-  const { userId } = await planAccess(req, planId);
-  const allowed = ['interested', 'tentative', 'going', 'declined'];
-  if (!allowed.includes(rsvp)) throw httpError(400, 'RSVP is not valid');
+  const { userId, plan } = await planAccess(req, planId);
+  const next = canonicalRsvp(rsvp);
+  if (!next || next === 'invited') throw httpError(400, 'Choose going, maybe, or not going.');
   await query(
     `UPDATE "PlanMember" SET rsvp = $1, "sharePayment" = $2 WHERE "planId" = $3 AND "userId" = $4`,
-    [rsvp, Boolean(sharePayment), planId, userId],
+    [next, Boolean(sharePayment), planId, userId],
   );
+  const { noteRsvp } = await import('./experience.js');
+  await noteRsvp(req, plan, userId, next).catch(() => null);
   return getPlan(req, planId);
 }
 
 export async function inviteToPlan(req, planId) {
-  const { isOwner, userId } = await planAccess(req, planId);
+  const { isOwner, userId, plan } = await planAccess(req, planId);
   if (!isOwner) throw httpError(403, 'Only the plan owner can invite');
+  if (plan.kind === 'personal') {
+    await query(`UPDATE "Plan" SET kind = 'group' WHERE id = $1`, [planId]).catch((err) => {
+      if (err?.code !== '42703') throw err;
+    });
+  }
   const value = token();
   const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
   await query(
@@ -325,6 +368,8 @@ export async function inviteToPlan(req, planId) {
     [value, planId, expires.toISOString(), userId],
   );
   await audit(userId, 'plan_invite_created', 'plan', planId, {});
+  const { recordFeature } = await import('./experience.js');
+  await recordFeature(req, 'plan_shared', { planId }).catch(() => null);
   return { token: value, expiresAt: expires.toISOString() };
 }
 
@@ -368,7 +413,12 @@ export async function acceptPlanInvite(req, inviteToken) {
      WHERE NOT EXISTS (SELECT 1 FROM "PlanMember" WHERE "planId" = $2 AND "userId" = $3)`,
     [createId(), row.planId, userId],
   );
+  await query(`UPDATE "Plan" SET kind = 'group' WHERE id = $1 AND kind = 'personal'`, [row.planId]).catch((err) => {
+    if (err?.code !== '42703') throw err;
+  });
   await audit(userId, 'plan_invite_accepted', 'plan', row.planId, {});
+  const { recordFeature } = await import('./experience.js');
+  await recordFeature(req, 'plan_invite_accepted', { planId: row.planId }).catch(() => null);
   return getPlan(req, row.planId);
 }
 
@@ -381,9 +431,10 @@ export async function createCircle(req, body) {
   if (body.visibility === 'public') {
     throw httpError(403, 'Public circles stay off until moderation review is in place. Use an invite-only circle.');
   }
+  const profileProblem = validateCircleBody(body, { creating: true });
+  if (profileProblem) throw httpError(400, profileProblem);
   const planId = body.planId ? String(body.planId) : null;
   const eventId = body.eventId ? String(body.eventId) : null;
-  if (!planId && !eventId) throw httpError(400, 'Link this circle to a plan or an event.');
   if (planId) {
     const plan = await query(
       `SELECT p.id FROM "Plan" p
@@ -417,17 +468,21 @@ export async function createCircle(req, body) {
      VALUES ($1, $2, $3, 'owner', 'active', TRUE)`,
     [createId(), id, userId],
   );
-  if (eventId) {
-    try {
+  try {
+    let opened = false;
+    if (eventId) {
       const saved = isSuper(req) || Boolean((await query(
         `SELECT 1 FROM "Favorite" WHERE "userId"::text = $1 AND "eventId"::text = $2 LIMIT 1`,
         [String(userId), eventId],
       )).rows?.length);
-      if (saved) await openEventChat(id, eventId, userId);
-    } catch (err) {
-      if (err?.code !== '42P01' && err?.code !== '42703') throw err;
+      if (saved) opened = Boolean(await openEventChat(id, eventId, userId));
     }
+    if (!opened && planId) await openPlanChat(id, planId, userId);
+  } catch (err) {
+    if (err?.code !== '42P01' && err?.code !== '42703') throw err;
   }
+  const { finishNewCircle } = await import('./experience.js');
+  await finishNewCircle(req, id, body);
   await audit(userId, 'circle_created', 'circle', id, {});
   return getCircle(req, id);
 }
@@ -511,17 +566,28 @@ export async function getCircle(req, circleId) {
   const plan = circle.planId
     ? await query(`SELECT name FROM "Plan" WHERE id = $1`, [circle.planId]).catch(() => ({ rows: [] }))
     : { rows: [] };
-  const invites = isOwner
+  const viewerMember = visible.find((member) => Number(member.userId) === Number(userId));
+  const powers = circlePowers(circle, { ...viewerMember, userId, role: viewerMember?.role }, isOwner);
+  const invites = powers.invite
     ? await query(
+      `SELECT token, "expiresAt", email FROM "CircleInvite"
+       WHERE "circleId" = $1 AND "revokedAt" IS NULL AND "expiresAt" > NOW()
+       ORDER BY "createdAt" DESC`,
+      [circleId],
+    ).catch(() => query(
       `SELECT token, "expiresAt" FROM "CircleInvite"
        WHERE "circleId" = $1 AND "revokedAt" IS NULL AND "expiresAt" > NOW()
        ORDER BY "createdAt" DESC`,
       [circleId],
-    ).catch(() => ({ rows: [] }))
+    ).catch(() => ({ rows: [] })))
     : { rows: [] };
-  return {
+  const shaped = {
     id: circle.id,
     name: circle.name,
+    description: circle.description || '',
+    coverUrl: circle.coverUrl || null,
+    avatarUrl: circle.avatarUrl || null,
+    category: circle.category || 'friends',
     eventId: circle.eventId,
     eventTitle: event.rows?.[0]?.title || null,
     planId: circle.planId,
@@ -529,17 +595,31 @@ export async function getCircle(req, circleId) {
     official: Boolean(circle.official),
     visibility: circle.visibility,
     isOwner,
+    powers,
+    memberCount: visible.length,
     members: visible,
-    invites: (invites.rows || []).map((row) => ({ token: row.token, expiresAt: row.expiresAt })),
+    invites: (invites.rows || []).map((row) => ({
+      token: row.token,
+      expiresAt: row.expiresAt,
+      email: row.email || null,
+    })),
     chat,
-    policy: 'Invite-only. Everyone in the circle can text in the group chat. That chat is deleted when the linked event ends, and the people stay. Phone numbers are never shown. Interest is not a ticket. Circles are for adults 18+.',
+    policy: 'Invite-only. Everyone in the circle can text about a linked plan or saved event. An event chat is deleted when that event ends, and the people stay. A plan chat stays with the circle. Phone numbers are never shown. Interest is not a ticket. Circles are for adults 18+.',
   };
+  try {
+    const { enrichCircle } = await import('./experience.js');
+    return await enrichCircle(req, circle, shaped, userId);
+  } catch (err) {
+    if (err?.status) throw err;
+    return shaped;
+  }
 }
 
 export async function listCircles(req) {
   const userId = requireUser(req);
   const result = await query(
     `SELECT c.id, c.name, c."eventId", c."planId", c."ownerUserId", c.visibility, c.official,
+            c.description, c.category, c."coverUrl",
             e.title AS "eventTitle", p.name AS "planName"
      FROM "Circle" c
      JOIN "CircleMembership" m ON m."circleId" = c.id
@@ -548,25 +628,43 @@ export async function listCircles(req) {
      WHERE m."userId" = $1 AND m.status = 'active'
      ORDER BY c."createdAt" DESC`,
     [userId],
-  );
+  ).catch((err) => {
+    if (err?.code !== '42703') throw err;
+    return query(
+      `SELECT c.id, c.name, c."eventId", c."planId", c."ownerUserId", c.visibility, c.official,
+              e.title AS "eventTitle", p.name AS "planName"
+       FROM "Circle" c
+       JOIN "CircleMembership" m ON m."circleId" = c.id
+       LEFT JOIN "Event" e ON e.id::text = c."eventId"
+       LEFT JOIN "Plan" p ON p.id = c."planId"
+       WHERE m."userId" = $1 AND m.status = 'active'
+       ORDER BY c."createdAt" DESC`,
+      [userId],
+    );
+  });
   return result.rows || [];
 }
 
 export async function inviteToCircle(req, circleId) {
-  const { isOwner, userId } = await circleMember(req, circleId);
-  if (!isOwner) throw httpError(403, 'Only the circle owner can invite');
+  const access = await circleMember(req, circleId);
+  const powers = circlePowers(access.circle, access.membership, access.isOwner);
+  if (!powers.invite) throw httpError(403, 'You do not have permission to invite people.');
+  const { userId } = access;
   const value = token();
   const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   await query(
     `INSERT INTO "CircleInvite" (token, "circleId", "expiresAt", "createdBy") VALUES ($1, $2, $3, $4)`,
     [value, circleId, expires.toISOString(), userId],
   );
+  const { recordFeature } = await import('./experience.js');
+  await recordFeature(req, 'circle_invite_sent', { circleId }).catch(() => null);
   return { token: value, expiresAt: expires.toISOString() };
 }
 
 export async function revokeCircleInvite(req, circleId, inviteToken) {
-  const { isOwner } = await circleMember(req, circleId);
-  if (!isOwner) throw httpError(403, 'Only the circle owner can revoke invites');
+  const access = await circleMember(req, circleId);
+  const powers = circlePowers(access.circle, access.membership, access.isOwner);
+  if (!powers.moderate) throw httpError(403, 'You cannot cancel that invite.');
   await query(`UPDATE "CircleInvite" SET "revokedAt" = NOW() WHERE token = $1 AND "circleId" = $2`, [
     inviteToken,
     circleId,
@@ -588,6 +686,8 @@ export async function deleteCircle(req, circleId) {
     await execOptional(client, `DELETE FROM "CircleChatMessage" WHERE "chatId" IN (SELECT id FROM "CircleChat" WHERE "circleId"::text = $1)`, [id]);
     await execOptional(client, `DELETE FROM "CircleChatRead" WHERE "chatId" IN (SELECT id FROM "CircleChat" WHERE "circleId"::text = $1)`, [id]);
     await execOptional(client, `DELETE FROM "CircleChat" WHERE "circleId"::text = $1`, [id]);
+    await execOptional(client, `UPDATE "Plan" SET "circleId" = NULL WHERE "circleId"::text = $1`, [id]);
+    await execOptional(client, `DELETE FROM "CircleActivity" WHERE "circleId"::text = $1`, [id]);
     await execOptional(client, `DELETE FROM "CircleInvite" WHERE "circleId"::text = $1`, [id]);
     await execOptional(client, `DELETE FROM "CircleMembership" WHERE "circleId"::text = $1`, [id]);
     await execOptional(client, `DELETE FROM "ModerationRecord" WHERE "circleId"::text = $1`, [id]);
@@ -609,7 +709,7 @@ export async function deleteCircle(req, circleId) {
 
 export async function leaveCircle(req, circleId) {
   const { userId, circle } = await circleMember(req, circleId);
-  if (circle.ownerUserId === userId) throw httpError(400, 'The owner can revoke invites instead of leaving');
+  if (Number(circle.ownerUserId) === Number(userId)) throw httpError(400, 'Transfer ownership before leaving.');
   await query(`UPDATE "CircleMembership" SET status = 'left' WHERE "circleId" = $1 AND "userId" = $2`, [
     circleId,
     userId,
@@ -624,9 +724,7 @@ export async function previewCircleInvite(inviteToken) {
     [inviteToken],
   );
   const row = result.rows?.[0];
-  if (!row || row.revokedAt || new Date(row.expiresAt).getTime() < Date.now()) {
-    throw httpError(404, 'This invite is no longer valid');
-  }
+  if (!inviteUsable(row)) throw httpError(404, 'This invite is no longer valid');
   return {
     name: row.name,
     expiresAt: row.expiresAt,
@@ -639,8 +737,12 @@ export async function acceptCircleInvite(req, inviteToken, adultConfirmed) {
   if (!adultConfirmed) throw httpError(400, 'Confirm you are 18 or older to join');
   const result = await query(`SELECT * FROM "CircleInvite" WHERE token = $1`, [inviteToken]);
   const row = result.rows?.[0];
-  if (!row || row.revokedAt || new Date(row.expiresAt).getTime() < Date.now()) {
-    throw httpError(404, 'This invite is no longer valid');
+  if (!inviteUsable(row)) throw httpError(404, 'This invite is no longer valid');
+  if (row.email) {
+    const me = await query(`SELECT email FROM "User" WHERE id::text = $1`, [String(userId)]);
+    if (String(me.rows?.[0]?.email || '').toLowerCase() !== String(row.email).toLowerCase()) {
+      throw httpError(403, 'This invite was sent to a different account.');
+    }
   }
   const circle = await query(`SELECT "ownerUserId" FROM "Circle" WHERE id = $1`, [row.circleId]);
   if (await blockedEither(userId, circle.rows?.[0]?.ownerUserId)) throw httpError(403, 'You cannot join this circle');
@@ -658,6 +760,8 @@ export async function acceptCircleInvite(req, inviteToken, adultConfirmed) {
     body: `${name} joined the circle.`,
     data: { circleId: String(row.circleId) },
   });
+  const { noteCircleJoined } = await import('./experience.js');
+  await noteCircleJoined(req, row.circleId, userId).catch(() => null);
   return joined;
 }
 
@@ -927,6 +1031,20 @@ export async function trackAnalytics(req, body) {
     'plan_created',
     'plan_invite_accepted',
     'vote_submitted',
+    'circle_created',
+    'circle_invite_sent',
+    'circle_invite_accepted',
+    'circle_member_joined',
+    'plan_shared',
+    'plan_poll_created',
+    'plan_vote_submitted',
+    'plan_rsvp_updated',
+    'plan_confirmed',
+    'plan_event_opened',
+    'plan_ticket_checkout_started',
+    'plan_ticket_purchase_confirmed',
+    'plan_completed',
+    'experience_memory_added',
     'promoter_conversion',
     'report_created',
     'review_submitted',

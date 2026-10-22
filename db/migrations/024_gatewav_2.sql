@@ -425,10 +425,14 @@ ON CONFLICT (key) DO NOTHING;
 CREATE TABLE IF NOT EXISTS "CircleChat" (
   id TEXT PRIMARY KEY,
   "circleId" TEXT NOT NULL UNIQUE,
-  "eventId" TEXT NOT NULL,
+  "eventId" TEXT,
+  "planId" TEXT,
   "startedBy" INTEGER NOT NULL,
   "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE "CircleChat" ADD COLUMN IF NOT EXISTS "planId" TEXT;
+ALTER TABLE "CircleChat" ALTER COLUMN "eventId" DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS "CircleChatMessage" (
   id TEXT PRIMARY KEY,
@@ -448,3 +452,112 @@ CREATE TABLE IF NOT EXISTS "CircleChatRead" (
   "lastReadAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY ("chatId", "userId")
 );
+
+ALTER TABLE "Circle" ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE "Circle" ADD COLUMN IF NOT EXISTS "coverUrl" TEXT;
+ALTER TABLE "Circle" ADD COLUMN IF NOT EXISTS "avatarUrl" TEXT;
+ALTER TABLE "Circle" ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'friends';
+ALTER TABLE "Circle" ADD COLUMN IF NOT EXISTS "memberCanCreatePlans" BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE "Circle" ADD COLUMN IF NOT EXISTS "memberCanInvite" BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE "CircleInvite" ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE "CircleInvite" ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
+
+ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'group';
+ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS "circleId" TEXT;
+ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS "activityType" TEXT;
+ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS "eventId" TEXT;
+ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS location TEXT;
+ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS "startsAt" TIMESTAMPTZ;
+ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS lifecycle TEXT NOT NULL DEFAULT 'voting';
+ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS "perPerson" INTEGER;
+ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS "reminderSentAt" TIMESTAMPTZ;
+ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS "clientRequestId" TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS "Plan_owner_request_idx"
+  ON "Plan" ("ownerUserId", "clientRequestId")
+  WHERE "clientRequestId" IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS "Plan_circleId_idx" ON "Plan" ("circleId");
+
+ALTER TABLE "PlanOption" ADD COLUMN IF NOT EXISTS "pollId" TEXT;
+ALTER TABLE "PlanOption" ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'custom';
+
+CREATE TABLE IF NOT EXISTS "PlanPoll" (
+  id TEXT PRIMARY KEY,
+  "planId" TEXT NOT NULL REFERENCES "Plan"(id) ON DELETE CASCADE,
+  question TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'custom',
+  "closesAt" TIMESTAMPTZ,
+  "closedAt" TIMESTAMPTZ,
+  "deadlineNotified" BOOLEAN NOT NULL DEFAULT FALSE,
+  "createdBy" INTEGER,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS "PlanPoll_planId_idx" ON "PlanPoll" ("planId");
+
+CREATE TABLE IF NOT EXISTS "PlanBudgetItem" (
+  id TEXT PRIMARY KEY,
+  "planId" TEXT NOT NULL REFERENCES "Plan"(id) ON DELETE CASCADE,
+  category TEXT NOT NULL,
+  label TEXT,
+  amount INTEGER NOT NULL DEFAULT 0,
+  "createdBy" INTEGER,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS "PlanBudgetItem_planId_idx" ON "PlanBudgetItem" ("planId");
+
+CREATE TABLE IF NOT EXISTS "PlanComment" (
+  id TEXT PRIMARY KEY,
+  "planId" TEXT NOT NULL REFERENCES "Plan"(id) ON DELETE CASCADE,
+  "userId" INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'comment',
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS "PlanComment_planId_idx" ON "PlanComment" ("planId", "createdAt");
+
+CREATE TABLE IF NOT EXISTS "CircleActivity" (
+  id TEXT PRIMARY KEY,
+  "circleId" TEXT,
+  "planId" TEXT,
+  kind TEXT NOT NULL,
+  "actorUserId" INTEGER,
+  summary TEXT NOT NULL,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS "CircleActivity_circleId_idx" ON "CircleActivity" ("circleId", "createdAt");
+CREATE INDEX IF NOT EXISTS "CircleActivity_planId_idx" ON "CircleActivity" ("planId", "createdAt");
+
+CREATE UNIQUE INDEX IF NOT EXISTS "CircleActivity_booking_idx"
+  ON "CircleActivity" ("planId", "actorUserId", kind)
+  WHERE kind = 'booking_confirmed';
+
+CREATE TABLE IF NOT EXISTS "ExperienceMemory" (
+  id TEXT PRIMARY KEY,
+  "planId" TEXT NOT NULL REFERENCES "Plan"(id) ON DELETE CASCADE,
+  "circleId" TEXT,
+  "userId" INTEGER NOT NULL,
+  title TEXT,
+  note TEXT,
+  rating INTEGER,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE ("planId", "userId")
+);
+
+CREATE INDEX IF NOT EXISTS "ExperienceMemory_planId_idx" ON "ExperienceMemory" ("planId");
+
+CREATE TABLE IF NOT EXISTS "ExperienceMedia" (
+  id TEXT PRIMARY KEY,
+  "memoryId" TEXT NOT NULL REFERENCES "ExperienceMemory"(id) ON DELETE CASCADE,
+  "userId" INTEGER NOT NULL,
+  "imageUrl" TEXT NOT NULL,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE ("memoryId", "imageUrl")
+);
+
+CREATE INDEX IF NOT EXISTS "ExperienceMedia_memoryId_idx" ON "ExperienceMedia" ("memoryId");

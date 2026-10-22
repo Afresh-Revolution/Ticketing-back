@@ -60,6 +60,29 @@ import {
   startCircleChat,
 } from './circleChat.js';
 import {
+  addBudgetItem,
+  addMemoryPhoto,
+  addPlanComment,
+  castPollVote,
+  closePoll,
+  convertPlan,
+  createPoll,
+  deleteBudgetItem,
+  deleteMemoryPhoto,
+  inboxCircleInvites,
+  inviteCircleByEmail,
+  invitePlanByEmail,
+  plansCircleMetrics,
+  rejectCircleInvite,
+  removeCircleMember,
+  saveMemory,
+  setCircleRole,
+  transferCircle,
+  transitionPlan,
+  updateCircle,
+  updatePlan,
+} from './experience.js';
+import {
   addMedia,
   announceFollowers,
   approvePerk,
@@ -211,6 +234,9 @@ router.get('/invites/circle/:token', publicLimit, asyncRoute(async (req, res) =>
 router.post('/analytics', publicLimit, optionalAuth, asyncRoute(async (req, res) => {
   res.json(await trackAnalytics(req, req.body || {}));
 }));
+router.get('/analytics/circles-plans', requireAuth, requireSuperAdmin, asyncRoute(async (req, res) => {
+  res.json(await plansCircleMetrics(req));
+}));
 
 router.post('/promoters/click', publicLimit, asyncRoute(async (req, res) => {
   const shareCode = String(req.body?.shareCode || '').trim();
@@ -269,6 +295,45 @@ router.post('/plans/:id/votes/:optionId', writeLimit, requireAuth, asyncRoute(as
 router.post('/plans/:id/rsvp', writeLimit, requireAuth, asyncRoute(async (req, res) => {
   res.json(await rsvpPlan(req, req.params.id, String(req.body?.rsvp || ''), req.body?.sharePayment));
 }));
+router.patch('/plans/:id', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await updatePlan(req, req.params.id, req.body || {}));
+}));
+router.post('/plans/:id/transition', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await transitionPlan(req, req.params.id, req.body || {}));
+}));
+router.post('/plans/:id/convert', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await convertPlan(req, req.params.id));
+}));
+router.post('/plans/:id/polls', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.status(201).json(await createPoll(req, req.params.id, req.body || {}));
+}));
+router.post('/plans/:id/polls/:pollId/vote', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await castPollVote(req, req.params.id, req.params.pollId, String(req.body?.optionId || '')));
+}));
+router.post('/plans/:id/polls/:pollId/close', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await closePoll(req, req.params.id, req.params.pollId));
+}));
+router.post('/plans/:id/budget', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.status(201).json(await addBudgetItem(req, req.params.id, req.body || {}));
+}));
+router.delete('/plans/:id/budget/:itemId', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await deleteBudgetItem(req, req.params.id, req.params.itemId));
+}));
+router.post('/plans/:id/comments', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.status(201).json(await addPlanComment(req, req.params.id, req.body || {}));
+}));
+router.post('/plans/:id/memories', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.status(201).json(await saveMemory(req, req.params.id, req.body || {}));
+}));
+router.post('/plans/:id/memories/:memoryId/media', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.status(201).json(await addMemoryPhoto(req, req.params.id, req.params.memoryId, req.body?.imageUrl));
+}));
+router.delete('/plans/:id/memories/:memoryId/media/:mediaId', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await deleteMemoryPhoto(req, req.params.id, req.params.memoryId, req.params.mediaId));
+}));
+router.post('/plans/:id/invites/email', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.status(201).json(await invitePlanByEmail(req, req.params.id, req.body?.email));
+}));
 router.post('/plans/:id/invites', writeLimit, requireAuth, asyncRoute(async (req, res) => {
   res.status(201).json(await inviteToPlan(req, req.params.id));
 }));
@@ -317,6 +382,27 @@ router.post('/circles/:id/invites/:token/revoke', writeLimit, requireAuth, async
 }));
 router.post('/circles/:id/leave', writeLimit, requireAuth, asyncRoute(async (req, res) => {
   res.json(await leaveCircle(req, req.params.id));
+}));
+router.get('/circles/invites/inbox', requireAuth, asyncRoute(async (req, res) => {
+  res.json({ invites: await inboxCircleInvites(req) });
+}));
+router.patch('/circles/:id', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await updateCircle(req, req.params.id, req.body || {}));
+}));
+router.post('/circles/:id/members/:userId/role', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await setCircleRole(req, req.params.id, req.params.userId, req.body?.role));
+}));
+router.post('/circles/:id/transfer', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await transferCircle(req, req.params.id, req.body?.userId));
+}));
+router.post('/circles/:id/members/:userId/remove', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await removeCircleMember(req, req.params.id, req.params.userId));
+}));
+router.post('/circles/:id/invites/email', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.status(201).json(await inviteCircleByEmail(req, req.params.id, req.body?.email));
+}));
+router.post('/invites/circle/:token/reject', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await rejectCircleInvite(req, req.params.token));
 }));
 router.post('/invites/circle/:token/accept', writeLimit, requireAuth, asyncRoute(async (req, res) => {
   res.json(await acceptCircleInvite(req, req.params.token, req.body?.adultConfirmed === true));
