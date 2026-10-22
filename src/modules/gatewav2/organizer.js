@@ -323,6 +323,23 @@ export async function createCampaign(req, eventId, body) {
   return { id, name, commissionType: type, commissionValue: value, attributionRule: 'last_touch' };
 }
 
+export async function updateCampaignCommission(req, campaignId, body) {
+  const campaign = await query(`SELECT * FROM "PromoterCampaign" WHERE id = $1`, [campaignId]);
+  const row = campaign.rows?.[0];
+  if (!row) throw httpError(404, 'Campaign not found');
+  await assertManager(req, row.eventId);
+  const value = Math.round(Number(body?.commissionValue));
+  if (!Number.isFinite(value) || value < 1 || value > 100) {
+    throw httpError(400, 'Commission must be between 1% and 100%.');
+  }
+  await q(
+    `UPDATE "PromoterCampaign" SET "commissionType" = 'percent', "commissionValue" = $2 WHERE id = $1`,
+    [row.id, value],
+  );
+  await audit(userIdOf(req), 'campaign_commission_updated', 'campaign', row.id, { commissionValue: value });
+  return { id: row.id, commissionType: 'percent', commissionValue: value };
+}
+
 export async function invitePromoter(req, campaignId, body) {
   const campaign = await query(`SELECT * FROM "PromoterCampaign" WHERE id = $1`, [campaignId]);
   const row = campaign.rows?.[0];

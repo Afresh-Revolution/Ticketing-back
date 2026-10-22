@@ -89,6 +89,7 @@ import {
   campaignReport,
   cancelSession,
   createCampaign,
+  updateCampaignCommission,
   createPerk,
   generateSessions,
   guestList,
@@ -471,6 +472,9 @@ router.post('/orders/:id/refund-status', writeLimit, requireAuth, asyncRoute(asy
 }));
 router.post('/events/:id/campaigns', writeLimit, requireAuth, asyncRoute(async (req, res) => {
   res.status(201).json(await createCampaign(req, req.params.id, req.body || {}));
+}));
+router.patch('/campaigns/:id', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await updateCampaignCommission(req, req.params.id, req.body || {}));
 }));
 router.get('/events/:id/campaigns', requireAuth, asyncRoute(async (req, res) => {
   res.json({ campaigns: await campaignReport(req, req.params.id) });
