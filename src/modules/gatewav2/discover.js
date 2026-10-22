@@ -177,6 +177,7 @@ export async function searchEvents(params) {
     ? new Set(String(params.ids).split(',').map((id) => id.trim()).filter(Boolean))
     : null;
   const idList = idFilter ? [...idFilter] : null;
+  const pastOnly = params.past === 'true' || params.past === true;
   const result = await query(
     `SELECT
        e.*,
@@ -199,11 +200,11 @@ export async function searchEvents(params) {
        ${idList ? 'AND e.id::text = ANY($1::text[])' : ''}
      ORDER BY
        CASE
-         WHEN COALESCE(e."endDate", e."date") IS NULL THEN 0
-         WHEN COALESCE(e."endDate", e."date") >= CURRENT_DATE THEN 0
-         ELSE 1
+         WHEN COALESCE(e."recurrenceUntil", e."endDate", e."date") IS NULL THEN ${pastOnly ? 1 : 0}
+         WHEN COALESCE(e."recurrenceUntil", e."endDate", e."date") >= CURRENT_DATE THEN ${pastOnly ? 1 : 0}
+         ELSE ${pastOnly ? 0 : 1}
        END ASC,
-       e."date" ASC NULLS LAST
+       e."date" ${pastOnly ? 'DESC' : 'ASC'} NULLS LAST
      LIMIT 400`,
     idList ? [idList] : [],
   ).catch(() => ({ rows: [] }));
@@ -222,7 +223,9 @@ export async function searchEvents(params) {
   let rows = result.rows || [];
   rows = rows.filter((row) => {
     if (idFilter && !idFilter.has(String(row.id))) return false;
-    if (params.includePast !== 'true' && !range && eventHasEnded(row)) return false;
+    if (pastOnly) {
+      if (!eventHasEnded(row)) return false;
+    } else if (params.includePast !== 'true' && !range && eventHasEnded(row)) return false;
     const listing = String(row.listingStatus || 'published').toLowerCase();
     if (listing === 'draft') return false;
     if (params.includeCancelled !== 'true' && listing === 'cancelled' && params.when) {
@@ -265,10 +268,12 @@ export async function searchEvents(params) {
   });
 
   rows.sort((a, b) => {
+    if (pastOnly && Boolean(a.isTrending) !== Boolean(b.isTrending)) return a.isTrending ? -1 : 1;
     const av = availabilityOf(a) === 'cancelled' ? 1 : 0;
     const bv = availabilityOf(b) === 'cancelled' ? 1 : 0;
     if (av !== bv) return av - bv;
-    return new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime();
+    const diff = new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime();
+    return pastOnly ? -diff : diff;
   });
 
   const total = rows.length;

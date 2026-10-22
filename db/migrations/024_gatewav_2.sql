@@ -421,3 +421,30 @@ INSERT INTO "FeatureFlag" (key, enabled) VALUES
   ('circles', TRUE),
   ('circles_public', FALSE)
 ON CONFLICT (key) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS "CircleChat" (
+  id TEXT PRIMARY KEY,
+  "circleId" TEXT NOT NULL UNIQUE,
+  "eventId" TEXT NOT NULL,
+  "startedBy" INTEGER NOT NULL,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "CircleChatMessage" (
+  id TEXT PRIMARY KEY,
+  "chatId" TEXT NOT NULL,
+  "senderUserId" INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  "replyToId" TEXT,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS "CircleChatMessage_chatId_idx"
+  ON "CircleChatMessage" ("chatId", "createdAt");
+
+CREATE TABLE IF NOT EXISTS "CircleChatRead" (
+  "chatId" TEXT NOT NULL,
+  "userId" INTEGER NOT NULL,
+  "lastReadAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("chatId", "userId")
+);

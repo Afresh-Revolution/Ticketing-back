@@ -3,6 +3,7 @@ import { query, createId, getPool } from '../../shared/config/db.js';
 import { sendPushToEmail } from '../../shared/services/push.service.js';
 import { httpError, userIdOf, isSuper, audit, loadEvent, requireFlag } from './access.js';
 import { eventsByIds, searchEvents } from './discover.js';
+import { circleChatState, openEventChat } from './circleChat.js';
 
 function token() {
   return crypto.randomBytes(18).toString('hex');
@@ -416,11 +417,22 @@ export async function createCircle(req, body) {
      VALUES ($1, $2, $3, 'owner', 'active', TRUE)`,
     [createId(), id, userId],
   );
+  if (eventId) {
+    try {
+      const saved = isSuper(req) || Boolean((await query(
+        `SELECT 1 FROM "Favorite" WHERE "userId"::text = $1 AND "eventId"::text = $2 LIMIT 1`,
+        [String(userId), eventId],
+      )).rows?.length);
+      if (saved) await openEventChat(id, eventId, userId);
+    } catch (err) {
+      if (err?.code !== '42P01' && err?.code !== '42703') throw err;
+    }
+  }
   await audit(userId, 'circle_created', 'circle', id, {});
   return getCircle(req, id);
 }
 
-async function circleMember(req, circleId) {
+export async function circleMember(req, circleId) {
   const userId = requireUser(req);
   const circle = await query(`SELECT * FROM "Circle" WHERE id = $1`, [circleId]);
   const row = circle.rows?.[0];
@@ -445,7 +457,7 @@ async function circleMember(req, circleId) {
   return { circle: row, userId, membership, isOwner: row.ownerUserId === userId || isSuper(req) };
 }
 
-async function notifyCircleMembers(circleId, exceptUserId, payload) {
+export async function notifyCircleMembers(circleId, exceptUserId, payload) {
   const members = await query(
     `SELECT u.email
      FROM "CircleMembership" m
@@ -464,6 +476,7 @@ async function notifyCircleMembers(circleId, exceptUserId, payload) {
 
 export async function getCircle(req, circleId) {
   const { circle, userId, isOwner } = await circleMember(req, circleId);
+  const chat = await circleChatState(circle, isOwner, userId);
   const members = await query(
     `SELECT m."userId", m.role,
             COALESCE(NULLIF(BTRIM(u.name), ''), 'Member') AS "displayName",
@@ -518,7 +531,8 @@ export async function getCircle(req, circleId) {
     isOwner,
     members: visible,
     invites: (invites.rows || []).map((row) => ({ token: row.token, expiresAt: row.expiresAt })),
-    policy: 'Invite-only. No public chat. Phone numbers are never shown. Interest is not a ticket. Circles are for adults 18+.',
+    chat,
+    policy: 'Invite-only. Everyone in the circle can text in the group chat. That chat is deleted when the linked event ends, and the people stay. Phone numbers are never shown. Interest is not a ticket. Circles are for adults 18+.',
   };
 }
 
@@ -571,6 +585,9 @@ export async function deleteCircle(req, circleId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await execOptional(client, `DELETE FROM "CircleChatMessage" WHERE "chatId" IN (SELECT id FROM "CircleChat" WHERE "circleId"::text = $1)`, [id]);
+    await execOptional(client, `DELETE FROM "CircleChatRead" WHERE "chatId" IN (SELECT id FROM "CircleChat" WHERE "circleId"::text = $1)`, [id]);
+    await execOptional(client, `DELETE FROM "CircleChat" WHERE "circleId"::text = $1`, [id]);
     await execOptional(client, `DELETE FROM "CircleInvite" WHERE "circleId"::text = $1`, [id]);
     await execOptional(client, `DELETE FROM "CircleMembership" WHERE "circleId"::text = $1`, [id]);
     await execOptional(client, `DELETE FROM "ModerationRecord" WHERE "circleId"::text = $1`, [id]);

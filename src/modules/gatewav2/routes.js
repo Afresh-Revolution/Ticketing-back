@@ -52,6 +52,14 @@ import {
   votePlan,
 } from './community.js';
 import {
+  deleteCircleMessage,
+  getCircleChat,
+  linkCircleEvent,
+  markCircleChatRead,
+  sendCircleMessage,
+  startCircleChat,
+} from './circleChat.js';
+import {
   addMedia,
   announceFollowers,
   approvePerk,
@@ -276,6 +284,24 @@ router.get('/circles', requireAuth, asyncRoute(async (req, res) => {
 }));
 router.post('/circles', writeLimit, requireAuth, asyncRoute(async (req, res) => {
   res.status(201).json(await createCircle(req, req.body || {}));
+}));
+router.get('/circles/:id/chat', requireAuth, asyncRoute(async (req, res) => {
+  res.json(await getCircleChat(req, req.params.id));
+}));
+router.post('/circles/:id/chat', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.status(201).json(await startCircleChat(req, req.params.id));
+}));
+router.post('/circles/:id/chat/messages', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.status(201).json(await sendCircleMessage(req, req.params.id, req.body || {}));
+}));
+router.post('/circles/:id/chat/read', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await markCircleChatRead(req, req.params.id, req.body?.lastCreatedAt));
+}));
+router.delete('/circles/:id/chat/messages/:messageId', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await deleteCircleMessage(req, req.params.id, req.params.messageId));
+}));
+router.post('/circles/:id/event', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await linkCircleEvent(req, req.params.id, req.body?.eventId));
 }));
 router.get('/circles/:id', requireAuth, asyncRoute(async (req, res) => {
   res.json(await getCircle(req, req.params.id));
