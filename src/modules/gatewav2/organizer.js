@@ -338,6 +338,22 @@ export async function invitePromoter(req, campaignId, body) {
   return { id, shareCode, status: 'active' };
 }
 
+export async function removePromoter(req, campaignId, memberId) {
+  const campaign = await query(`SELECT * FROM "PromoterCampaign" WHERE id = $1`, [campaignId]);
+  const row = campaign.rows?.[0];
+  if (!row) throw httpError(404, 'Campaign not found');
+  await assertManager(req, row.eventId);
+  const updated = await query(
+    `UPDATE "PromoterMember" SET status = 'removed'
+     WHERE id = $1 AND "campaignId" = $2 AND status = 'active'
+     RETURNING id`,
+    [memberId, campaignId],
+  );
+  if (!updated.rows?.length) throw httpError(404, 'Promoter not found');
+  await audit(userIdOf(req), 'promoter_removed', 'campaign', campaignId, { memberId });
+  return { removed: true };
+}
+
 export async function recordClick(shareCode, anonId) {
   const member = await query(
     `SELECT m."shareCode" FROM "PromoterMember" m
@@ -434,8 +450,9 @@ export async function promoterDashboard(req) {
      FROM "PromoterMember" m
      JOIN "PromoterCampaign" c ON c.id = m."campaignId"
      LEFT JOIN "Event" e ON e.id::text = c."eventId"
-     WHERE m."userId"::text = $1
-        OR m.email = (SELECT email FROM "User" WHERE id::text = $1 LIMIT 1)`,
+     WHERE m.status = 'active'
+       AND (m."userId"::text = $1
+        OR m.email = (SELECT email FROM "User" WHERE id::text = $1 LIMIT 1))`,
     [String(userId)],
   ).catch((err) => {
     if (err?.code === '42P01' || err?.code === '42703' || err?.code === '42883') return { rows: [] };
@@ -448,7 +465,7 @@ export async function campaignReport(req, eventId) {
   await assertManager(req, eventId);
   const result = await q(
     `SELECT c.id, c.name, c."commissionType", c."commissionValue", c."windowDays", c.status,
-            m."shareCode", m.email, m.status AS member_status,
+            m.id AS "memberId", m."shareCode", m.email, m.status AS member_status,
             (SELECT COUNT(*)::int FROM "PromoterClick" k WHERE k."shareCode" = m."shareCode") AS clicks,
             (SELECT COUNT(*)::int FROM "PromoterConversion" v WHERE v."shareCode" = m."shareCode" AND v.status <> 'reversed') AS qualified_orders,
             (SELECT COALESCE(SUM(v."commissionAmount"), 0)::int FROM "PromoterConversion" v WHERE v."shareCode" = m."shareCode" AND v.status <> 'reversed') AS net_commission

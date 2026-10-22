@@ -64,6 +64,7 @@ import {
   guestsToCsv,
   invitePromoter,
   inviteStaff,
+  removePromoter,
   issueComp,
   listMedia,
   listSessions,
@@ -361,6 +362,9 @@ router.get('/events/:id/campaigns', requireAuth, asyncRoute(async (req, res) => 
 }));
 router.post('/campaigns/:id/promoters', writeLimit, requireAuth, asyncRoute(async (req, res) => {
   res.status(201).json(await invitePromoter(req, req.params.id, req.body || {}));
+}));
+router.delete('/campaigns/:id/promoters/:memberId', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await removePromoter(req, req.params.id, req.params.memberId));
 }));
 router.get('/promoters/me', requireAuth, asyncRoute(async (req, res) => {
   res.json(await promoterDashboard(req));
