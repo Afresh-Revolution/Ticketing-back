@@ -367,13 +367,14 @@ export async function promoterDashboard(req) {
             (SELECT COALESCE(SUM("commissionAmount"), 0)::int FROM "PromoterConversion" v WHERE v."shareCode" = m."shareCode" AND v.status = 'paid') AS paid
      FROM "PromoterMember" m
      JOIN "PromoterCampaign" c ON c.id = m."campaignId"
-     WHERE m."userId" = $1 OR m.email = (SELECT email FROM "User" WHERE id = $1)`,
-    [userId],
-  );
-  return {
-    rule: 'Last touch. Commission is earned on confirmed paid orders only. Clicks are not earnings. Refunds and chargebacks reverse commission.',
-    rows: result.rows || [],
-  };
+     WHERE m."userId"::text = $1
+        OR m.email = (SELECT email FROM "User" WHERE id::text = $1 LIMIT 1)`,
+    [String(userId)],
+  ).catch((err) => {
+    if (err?.code === '42P01' || err?.code === '42703' || err?.code === '42883') return { rows: [] };
+    throw err;
+  });
+  return { rows: result.rows || [] };
 }
 
 export async function campaignReport(req, eventId) {
