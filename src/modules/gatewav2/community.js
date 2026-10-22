@@ -10,7 +10,7 @@ function token() {
 
 function requireUser(req) {
   const id = userIdOf(req);
-  if (id == null || id === 0) throw httpError(401, 'Sign in to continue.');
+  if (id == null) throw httpError(401, 'Sign in to continue.');
   return id;
 }
 
