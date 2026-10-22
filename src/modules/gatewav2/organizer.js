@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { query, createId } from '../../shared/config/db.js';
+import { query, createId, getPool } from '../../shared/config/db.js';
 import { sendPushToEmail } from '../../shared/services/push.service.js';
 import {
   assertCheckin,
@@ -458,7 +458,35 @@ export async function promoterDashboard(req) {
     if (err?.code === '42P01' || err?.code === '42703' || err?.code === '42883') return { rows: [] };
     throw err;
   });
-  return { rows: result.rows || [] };
+  const payouts = await q(
+    `SELECT id, "shareCode", "eventId", amount, status, "bankName", "accountName", "createdAt"
+     FROM "PromoterPayout"
+     WHERE "userId"::text = $1
+     ORDER BY "createdAt" DESC
+     LIMIT 30`,
+    [String(userId)],
+  );
+  const bank = await query(
+    `SELECT "accountName", "accountNumber", "bankCode", "bankName"
+     FROM "BankAccount" WHERE "userId"::text = $1 LIMIT 1`,
+    [String(userId)],
+  ).catch((err) => {
+    if (err?.code === '42P01' || err?.code === '42703') return { rows: [] };
+    throw err;
+  });
+  const account = bank.rows?.[0] || null;
+  return {
+    rows: result.rows || [],
+    payouts: payouts.rows || [],
+    bank: account
+      ? {
+        accountName: account.accountName || '',
+        accountNumber: account.accountNumber || '',
+        bankCode: account.bankCode || '',
+        bankName: account.bankName || '',
+      }
+      : null,
+  };
 }
 
 export async function campaignReport(req, eventId) {
@@ -477,6 +505,178 @@ export async function campaignReport(req, eventId) {
     [String(eventId)],
   );
   return result.rows || [];
+}
+
+async function promoterBank(userId) {
+  const bank = await query(
+    `SELECT "accountName", "accountNumber", "bankCode", "bankName"
+     FROM "BankAccount" WHERE "userId"::text = $1 LIMIT 1`,
+    [String(userId)],
+  ).catch((err) => {
+    if (err?.code === '42P01' || err?.code === '42703') return { rows: [] };
+    throw err;
+  });
+  return bank.rows?.[0] || null;
+}
+
+export async function requestPromoterPayout(req, shareCode) {
+  const userId = userIdOf(req);
+  if (userId == null) throw httpError(401, 'Sign in to continue.');
+  const code = String(shareCode || '').trim();
+  if (!code) throw httpError(400, 'Choose a campaign.');
+  const member = await query(
+    `SELECT m."shareCode", m."campaignId", c."eventId", e.title AS "eventTitle",
+            organizer.email AS "organizerEmail"
+     FROM "PromoterMember" m
+     JOIN "PromoterCampaign" c ON c.id = m."campaignId"
+     LEFT JOIN "Event" e ON e.id::text = c."eventId"::text
+     LEFT JOIN "User" organizer ON organizer.id::text = e."createdBy"::text
+     WHERE m."shareCode" = $1
+       AND m.status = 'active'
+       AND (m."userId"::text = $2
+         OR lower(m.email) = (SELECT lower(email) FROM "User" WHERE id::text = $2 LIMIT 1))`,
+    [code, String(userId)],
+  );
+  const campaign = member.rows?.[0];
+  if (!campaign) throw httpError(404, 'That campaign is not on your account.');
+  const bank = await promoterBank(userId);
+  if (!bank?.accountNumber || !bank?.bankCode) {
+    throw httpError(400, 'Save a bank account before requesting a payout.');
+  }
+  const open = await q(
+    `SELECT id FROM "PromoterPayout" WHERE "shareCode" = $1 AND status = 'pending' LIMIT 1`,
+    [code],
+  );
+  if (open.rows?.length) throw httpError(409, 'A payout request is already waiting for this campaign.');
+  const pending = await q(
+    `SELECT id, "commissionAmount"
+     FROM "PromoterConversion"
+     WHERE "shareCode" = $1 AND status = 'pending' AND "payoutId" IS NULL`,
+    [code],
+  );
+  const conversions = pending.rows || [];
+  const amount = conversions.reduce((sum, row) => sum + (Number(row.commissionAmount) || 0), 0);
+  if (amount <= 0) throw httpError(400, 'There is no pending commission to request.');
+  const id = createId();
+  const pool = getPool();
+  if (!pool) throw httpError(500, 'Something went wrong. Please try again.');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO "PromoterPayout"
+        (id, "userId", "eventId", "campaignId", "shareCode", amount, status, "accountName", "accountNumber", "bankCode", "bankName")
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10)`,
+      [
+        id,
+        userId,
+        String(campaign.eventId),
+        campaign.campaignId,
+        code,
+        amount,
+        bank.accountName || '',
+        bank.accountNumber,
+        bank.bankCode,
+        bank.bankName || '',
+      ],
+    );
+    const reserved = await client.query(
+      `UPDATE "PromoterConversion" SET "payoutId" = $1
+       WHERE id = ANY($2::text[]) AND status = 'pending' AND "payoutId" IS NULL`,
+      [id, conversions.map((row) => String(row.id))],
+    );
+    if (!reserved.rowCount) throw httpError(409, 'That commission was just included in another request.');
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (err?.code === '23505') throw httpError(409, 'A payout request is already waiting for this campaign.');
+    throw err;
+  } finally {
+    client.release();
+  }
+  if (campaign.organizerEmail) {
+    await sendPushToEmail(campaign.organizerEmail, {
+      title: 'Promoter payout request',
+      body: `A promoter asked for ₦${amount} on ${campaign.eventTitle || 'your event'}.`,
+      data: { eventId: String(campaign.eventId) },
+    }).catch(() => null);
+  }
+  await audit(userId, 'promoter_payout_requested', 'payout', id, { amount });
+  return { id, amount, status: 'pending' };
+}
+
+export async function listPromoterPayouts(req, eventId) {
+  await assertManager(req, eventId);
+  const result = await q(
+    `SELECT p.id, p."shareCode", p.amount, p.status, p."accountName", p."accountNumber", p."bankName", p."createdAt",
+            COALESCE(u.name, m.email, 'Promoter') AS promoter
+     FROM "PromoterPayout" p
+     LEFT JOIN "User" u ON u.id::text = p."userId"::text
+     LEFT JOIN "PromoterMember" m ON m."shareCode" = p."shareCode"
+     WHERE p."eventId"::text = $1
+     ORDER BY CASE WHEN p.status = 'pending' THEN 0 ELSE 1 END, p."createdAt" DESC
+     LIMIT 40`,
+    [String(eventId)],
+  );
+  return result.rows || [];
+}
+
+export async function reviewPromoterPayout(req, payoutId, decision) {
+  const userId = userIdOf(req);
+  if (userId == null) throw httpError(401, 'Sign in to continue.');
+  const found = await q(`SELECT * FROM "PromoterPayout" WHERE id = $1`, [String(payoutId)]);
+  const payout = found.rows?.[0];
+  if (!payout) throw httpError(404, 'Payout request not found.');
+  if (payout.status !== 'pending') throw httpError(409, 'This request was already reviewed.');
+  await assertManager(req, payout.eventId);
+  const approve = decision === 'approve';
+  if (!approve && decision !== 'decline') throw httpError(400, 'Choose approve or decline.');
+  const pool = getPool();
+  if (!pool) throw httpError(500, 'Something went wrong. Please try again.');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const updated = await client.query(
+      `UPDATE "PromoterPayout"
+       SET status = $2, "reviewedBy" = $3, "updatedAt" = NOW()
+       WHERE id = $1 AND status = 'pending'
+       RETURNING id`,
+      [payout.id, approve ? 'approved' : 'declined', userId],
+    );
+    if (!updated.rowCount) throw httpError(409, 'This request was already reviewed.');
+    if (approve) {
+      await client.query(
+        `UPDATE "PromoterConversion"
+         SET status = 'paid', "updatedAt" = NOW()
+         WHERE "payoutId" = $1 AND status = 'pending'`,
+        [payout.id],
+      );
+    } else {
+      await client.query(
+        `UPDATE "PromoterConversion" SET "payoutId" = NULL
+         WHERE "payoutId" = $1 AND status = 'pending'`,
+        [payout.id],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  const promoter = await query(`SELECT email FROM "User" WHERE id::text = $1`, [String(payout.userId)]).catch(() => ({ rows: [] }));
+  if (promoter.rows?.[0]?.email) {
+    await sendPushToEmail(promoter.rows[0].email, {
+      title: approve ? 'Payout approved' : 'Payout declined',
+      body: approve
+        ? `Your ₦${payout.amount} commission request was approved.`
+        : 'Your commission payout request was declined. The amount is pending again.',
+      data: { eventId: String(payout.eventId) },
+    }).catch(() => null);
+  }
+  await audit(userId, approve ? 'promoter_payout_approved' : 'promoter_payout_declined', 'payout', payout.id, {});
+  return { id: payout.id, status: approve ? 'approved' : 'declined' };
 }
 
 export async function markCommissionPaid(req, conversionId) {

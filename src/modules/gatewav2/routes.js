@@ -105,6 +105,9 @@ import {
   moderateMedia,
   moderationQueue,
   promoterDashboard,
+  listPromoterPayouts,
+  requestPromoterPayout,
+  reviewPromoterPayout,
   recordClick,
   removeStaff,
   resolveReport,
@@ -480,6 +483,15 @@ router.delete('/campaigns/:id/promoters/:memberId', writeLimit, requireAuth, asy
 }));
 router.get('/promoters/me', requireAuth, asyncRoute(async (req, res) => {
   res.json(await promoterDashboard(req));
+}));
+router.post('/promoters/payouts', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.status(201).json(await requestPromoterPayout(req, req.body?.shareCode));
+}));
+router.get('/events/:id/promoter-payouts', requireAuth, asyncRoute(async (req, res) => {
+  res.json({ payouts: await listPromoterPayouts(req, req.params.id) });
+}));
+router.post('/promoter-payouts/:id/review', writeLimit, requireAuth, asyncRoute(async (req, res) => {
+  res.json(await reviewPromoterPayout(req, req.params.id, String(req.body?.decision || '')));
 }));
 router.post('/events/:id/media', writeLimit, requireAuth, asyncRoute(async (req, res) => {
   res.status(201).json(await addMedia(req, req.params.id, req.body || {}));

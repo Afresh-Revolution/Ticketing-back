@@ -561,3 +561,28 @@ CREATE TABLE IF NOT EXISTS "ExperienceMedia" (
 );
 
 CREATE INDEX IF NOT EXISTS "ExperienceMedia_memoryId_idx" ON "ExperienceMedia" ("memoryId");
+
+ALTER TABLE "PromoterConversion" ADD COLUMN IF NOT EXISTS "payoutId" TEXT;
+
+CREATE TABLE IF NOT EXISTS "PromoterPayout" (
+  id TEXT PRIMARY KEY,
+  "userId" INTEGER NOT NULL,
+  "eventId" TEXT NOT NULL,
+  "campaignId" TEXT NOT NULL,
+  "shareCode" TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  "accountName" TEXT,
+  "accountNumber" TEXT,
+  "bankCode" TEXT,
+  "bankName" TEXT,
+  "reviewedBy" INTEGER,
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS "PromoterPayout_pending_share_idx"
+  ON "PromoterPayout" ("shareCode")
+  WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS "PromoterPayout_event_idx" ON "PromoterPayout" ("eventId", "createdAt");
