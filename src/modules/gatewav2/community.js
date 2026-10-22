@@ -767,16 +767,23 @@ export async function listReviews(eventId) {
 export async function passportFor(req) {
   await requireFlag('passport');
   const userId = requireUser(req);
-  const privacy = await query(`SELECT hidden FROM "PassportPrivacy" WHERE "userId" = $1`, [userId]);
+  const id = String(userId);
+  const privacy = await query(`SELECT hidden FROM "PassportPrivacy" WHERE "userId"::text = $1`, [id]).catch((err) => {
+    if (err?.code === '42P01' || err?.code === '42703' || err?.code === '42883') return { rows: [] };
+    throw err;
+  });
   const hidden = privacy.rows?.[0] ? Boolean(privacy.rows[0].hidden) : true;
   const stamps = await query(
     `SELECT s.id, s."eventId", s."awardedAt", s.source, e.title
      FROM "AttendanceStamp" s
      LEFT JOIN "Event" e ON e.id::text = s."eventId"
-     WHERE s."userId" = $1
+     WHERE s."userId"::text = $1
      ORDER BY s."awardedAt" DESC`,
-    [userId],
-  );
+    [id],
+  ).catch((err) => {
+    if (err?.code === '42P01' || err?.code === '42703' || err?.code === '42883') return { rows: [] };
+    throw err;
+  });
   const perks = await query(
     `SELECT p.id, p.title, p.description, p.quota, p."redeemedCount", p."validUntil", p."eventId", p.status
      FROM "Perk" p
@@ -784,7 +791,10 @@ export async function passportFor(req) {
        AND (p."validUntil" IS NULL OR p."validUntil" > NOW())
        AND p."redeemedCount" < p.quota
      ORDER BY p."createdAt" DESC LIMIT 30`,
-  );
+  ).catch((err) => {
+    if (err?.code === '42P01' || err?.code === '42703' || err?.code === '42883') return { rows: [] };
+    throw err;
+  });
   return {
     hidden,
     stamps: stamps.rows || [],
@@ -798,7 +808,7 @@ export async function setPassportHidden(req, hidden) {
   await query(
     `INSERT INTO "PassportPrivacy" ("userId", hidden) VALUES ($1, $2)
      ON CONFLICT ("userId") DO UPDATE SET hidden = EXCLUDED.hidden`,
-    [userId, Boolean(hidden)],
+    [String(userId), Boolean(hidden)],
   );
   return { hidden: Boolean(hidden) };
 }
