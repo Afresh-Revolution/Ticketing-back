@@ -353,20 +353,29 @@ export async function sendCircleMessage(req, circleId, body) {
     );
     if (!reply.rows?.length) replyToId = null;
   }
+  const messageId = createId();
   await query(
     `INSERT INTO "CircleChatMessage" (id, "chatId", "senderUserId", body, "replyToId")
      VALUES ($1, $2, $3, $4, $5)`,
-    [createId(), chat.id, userId, text, replyToId],
+    [messageId, chat.id, userId, text, replyToId],
   );
-  const community = await import('./community.js');
-  const person = await query(`SELECT name FROM "User" WHERE id::text = $1`, [String(userId)]).catch(() => ({ rows: [] }));
-  const name = String(person.rows?.[0]?.name || '').trim() || 'Someone';
-  await community.notifyCircleMembers(circleId, userId, {
-    title: circle.name || 'Private circle',
-    body: `${name}: ${preview(text) || 'New message'}`,
-    data: { circleId: String(circleId), chat: true },
-  });
-  return getCircleChat(req, circleId);
+  const thread = await getCircleChat(req, circleId);
+  // Push after the response so sending stays snappy.
+  void (async () => {
+    try {
+      const community = await import('./community.js');
+      const person = await query(`SELECT name FROM "User" WHERE id::text = $1`, [String(userId)]).catch(() => ({ rows: [] }));
+      const name = String(person.rows?.[0]?.name || '').trim() || 'Someone';
+      await community.notifyCircleMembers(circleId, userId, {
+        title: circle.name || 'Private circle',
+        body: `${name}: ${preview(text) || 'New message'}`,
+        data: { circleId: String(circleId), chat: true },
+      });
+    } catch {
+      /* ignore notify failures */
+    }
+  })();
+  return thread;
 }
 
 export async function markCircleChatRead(req, circleId, lastCreatedAt) {
