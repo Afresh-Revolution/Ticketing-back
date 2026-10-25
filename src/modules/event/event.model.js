@@ -1,4 +1,4 @@
-import { query, createId } from '../../shared/config/db.js';
+import { query, createId, getPool } from '../../shared/config/db.js';
 
 async function fetchMerchByEventId(eventId) {
   try {
@@ -625,27 +625,49 @@ export const eventModel = {
     }
     return eventModel.findById(id);
   },
-  async delete(id) {
-    const { rows } = await query('SELECT * FROM "Event" WHERE id = $1', [id]);
-    const deleted = rowToEvent(rows[0]);
-    if (!deleted) return null;
+  async delete(id, actor) {
+    const pool = getPool();
+    if (!pool) throw new Error('DATABASE_URL is not set');
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query('SELECT * FROM "Event" WHERE id = $1 FOR UPDATE', [id]);
+      const deleted = rowToEvent(rows[0]);
+      if (!deleted) {
+        await client.query('COMMIT');
+        return null;
+      }
+      if (actor && !actor.isSuperAdmin &&
+          (deleted.createdBy == null || actor.userId == null ||
+           String(deleted.createdBy) !== String(actor.userId))) {
+        const error = new Error('You can only delete events you created');
+        error.status = 403;
+        throw error;
+      }
 
-    // Cascade delete: remove dependent rows so FK constraints don't block event delete
-    // Order: ScanLog -> OrderItem -> Order, Withdrawal, TicketType -> Event
-    await query('DELETE FROM "ScanLog" WHERE "orderId" IN (SELECT id FROM "Order" WHERE "eventId" = $1)', [id]);
-    await query('DELETE FROM "OrderItem" WHERE "orderId" IN (SELECT id FROM "Order" WHERE "eventId" = $1)', [id]);
-    await query('DELETE FROM "StreamAccess" WHERE "eventId" = $1', [id]);
-    await query('DELETE FROM "Order" WHERE "eventId" = $1', [id]);
-    await query('DELETE FROM "Withdrawal" WHERE "eventId" = $1', [id]);
-    await query(
-      `DELETE FROM "TicketDiscountTier"
-       WHERE "ticketTypeId" IN (
-         SELECT "id"::text FROM "TicketType" WHERE "eventId" = $1
-       )`,
-      [id]
-    );
-    await query('DELETE FROM "TicketType" WHERE "eventId" = $1', [id]);
-    await query('DELETE FROM "Event" WHERE id = $1', [id]);
-    return deleted;
+      // Cascade delete: remove dependent rows so FK constraints don't block event delete
+      // Order: ScanLog -> OrderItem -> Order, Withdrawal, TicketType -> Event
+      await client.query('DELETE FROM "ScanLog" WHERE "orderId" IN (SELECT id FROM "Order" WHERE "eventId" = $1)', [id]);
+      await client.query('DELETE FROM "OrderItem" WHERE "orderId" IN (SELECT id FROM "Order" WHERE "eventId" = $1)', [id]);
+      await client.query('DELETE FROM "StreamAccess" WHERE "eventId" = $1', [id]);
+      await client.query('DELETE FROM "Order" WHERE "eventId" = $1', [id]);
+      await client.query('DELETE FROM "Withdrawal" WHERE "eventId" = $1', [id]);
+      await client.query(
+        `DELETE FROM "TicketDiscountTier"
+         WHERE "ticketTypeId" IN (
+           SELECT "id"::text FROM "TicketType" WHERE "eventId" = $1
+         )`,
+        [id]
+      );
+      await client.query('DELETE FROM "TicketType" WHERE "eventId" = $1', [id]);
+      await client.query('DELETE FROM "Event" WHERE id = $1', [id]);
+      await client.query('COMMIT');
+      return deleted;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 };

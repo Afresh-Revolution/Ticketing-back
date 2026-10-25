@@ -319,17 +319,15 @@ export async function setTrending(req, res) {
 /** DELETE /api/events/:id - only owner or superadmin can delete */
 export async function deleteEvent(req, res) {
   try {
-    const isSuperAdmin = req.userRole === 'superadmin';
-    const userId = req.userId;
-    const result = await query(
-      isSuperAdmin
-        ? 'DELETE FROM "Event" WHERE "id" = $1 RETURNING "id"'
-        : 'DELETE FROM "Event" WHERE "id" = $1 AND "createdBy" = $2 RETURNING "id"',
-      isSuperAdmin ? [req.params.id] : [req.params.id, userId]
-    ).catch(() => ({ rows: [] }));
-    if (!result.rows?.length) return res.status(404).json({ error: 'Event not found' });
+    const deleted = await eventModel.delete(req.params.id, {
+      isSuperAdmin: req.userRole === 'superadmin',
+      userId: req.userId,
+    });
+    if (!deleted) return res.status(404).json({ error: 'Event not found' });
     return res.json({ message: 'Deleted' });
-  } catch {
-    return res.status(404).json({ error: 'Not found' });
+  } catch (err) {
+    if (err.status === 403) return res.status(403).json({ error: err.message });
+    console.error('deleteEvent', err);
+    return res.status(500).json({ error: 'Failed to delete event' });
   }
 }
