@@ -67,6 +67,7 @@ export const userPageModel = {
     const normalizedEmail = normalizeBuyerEmail(userEmail);
     const { rows } = await query(
       `SELECT o.id AS "orderId", o."eventId", o."fullName", o.email, o."totalAmount", o.status, o."ticketCode", o."createdAt" AS "orderCreatedAt",
+              COALESCE((SELECT COUNT(*)::int FROM "ScanLog" s WHERE s."orderId"::text = o.id::text), 0) AS "scanCount",
               e.title AS "event_title", e.description AS "event_description", e.date AS "event_date",
               e."endDate" AS "event_endDate", e."endTime" AS "event_endTime",
               COALESCE(e.venue, e.location) AS "event_venue", e.location AS "event_location",
@@ -92,10 +93,15 @@ export const userPageModel = {
          WHERE oi."orderId" = $1`,
         [r.orderId]
       );
+      const scanCount = Number(r.scanCount) || 0;
+      const totalQuantity = items.reduce((total, item) => total + (Number(item.quantity) || 0), 0);
       orders.push({
         id: r.orderId,
         eventId: r.eventId,
         ticketCode: r.ticketCode ?? null,
+        scanCount,
+        totalQuantity,
+        fullyUsed: totalQuantity > 0 && scanCount >= totalQuantity,
         fullName: r.fullName,
         email: r.email,
         totalAmount: r.totalAmount,
