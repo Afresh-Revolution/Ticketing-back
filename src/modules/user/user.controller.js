@@ -29,7 +29,9 @@ export async function getMyOrders(req, res) {
       createdAt: o.createdAt,
       ticketCode: o.ticketCode ?? null,
       scanCount: Number(o.scanCount) || 0,
+      scannedQuantity: Number(o.scannedQuantity ?? o.scanCount) || 0,
       totalQuantity: Number(o.totalQuantity) || 0,
+      remainingQuantity: Number(o.remainingQuantity) || 0,
       fullyUsed: Boolean(o.fullyUsed),
       event: o.event
         ? {
