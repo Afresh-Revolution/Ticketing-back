@@ -405,7 +405,21 @@ export async function enrichPlan(req, plan, shaped, viewerId) {
       })),
     });
   }
-  const suggestions = (shaped.options || []).filter((option) => !option.pollId);
+  const suggestionOptions = (shaped.options || []).filter((option) => !option.pollId);
+  const suggestionEventIds = [...new Set(suggestionOptions
+    .filter((option) => !option.label?.trim() && !option.proposedDate && option.eventId)
+    .map((option) => String(option.eventId)))];
+  const suggestionEvents = suggestionEventIds.length ? await query(
+    `SELECT id::text AS id, title FROM "Event" WHERE id::text = ANY($1::text[])`,
+    [suggestionEventIds],
+  ) : { rows: [] };
+  const suggestionTitles = new Map(suggestionEvents.rows.map((row) => [row.id, row.title?.trim()]));
+  const suggestions = suggestionOptions.map((option) => ({
+    ...option,
+    label: option.label?.trim() || option.proposedDate || (option.eventId
+      ? suggestionTitles.get(String(option.eventId)) || 'Event unavailable'
+      : 'Suggestion'),
+  }));
   const memoryRows = (memories.rows || []).map((memory) => ({
     id: memory.id,
     userId: memory.userId,
