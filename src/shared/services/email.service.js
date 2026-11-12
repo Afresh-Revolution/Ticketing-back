@@ -1,3 +1,4 @@
+import { renderTicketEmail } from './ticketTemplate.js';
 import { Resend } from "resend";
 import QRCode from "qrcode";
 import { config } from "../config/env.js";
@@ -30,7 +31,7 @@ function withTimeout(promise, ms) {
   ]);
 }
 
-export async function sendEmail({ to, subject, text, html }) {
+export async function sendEmail({ to, subject, text, html, attachments }) {
   const { resend } = config;
   if (!resend.apiKey) {
     console.log("[email] (Resend not configured) Would send:", {
@@ -46,6 +47,7 @@ export async function sendEmail({ to, subject, text, html }) {
       from: resend.from,
       to: Array.isArray(to) ? to : [to],
       subject,
+      ...(attachments?.length ? { attachments } : {}),
       html: html || text || "",
       text: text || (html ? html.replace(/<[^>]+>/g, "") : ""),
     });
@@ -284,135 +286,6 @@ function buildOnlineAccessNoticeHtml() {
   `;
 }
 
-function buildInPersonTicketCardHtml({ ticketCode, qrDataUrl, eventTitle }) {
-  return `
-    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:20px;text-align:center;margin:20px 0;">
-      <p style="margin:0 0 6px;font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;">Venue entry</p>
-      <p style="margin:0 0 14px;font-weight:700;color:#111827;">${escapeHtml(eventTitle || "Event")}</p>
-      <p style="margin:0 0 6px;font-size:12px;color:#9ca3af;">Ticket code</p>
-      <p style="margin:0 0 14px;font-size:18px;font-weight:700;letter-spacing:2px;color:#111827;">${escapeHtml(ticketCode)}</p>
-      ${qrDataUrl ? `<img src="${qrDataUrl}" alt="QR code" width="180" height="180" style="display:block;margin:0 auto;border-radius:8px;" />` : ""}
-      <p style="margin:14px 0 0;font-size:12px;color:#6b7280;">Show this QR code at the venue for entry.</p>
-    </div>
-  `;
-}
-
-function buildTicketEmailContent(ctx) {
-  const eventType = normalizeEventFormat(ctx.eventType);
-  const ticketItems = (ctx.ticketItems || []).map((item) => ({
-    name: item.name || "Ticket",
-    deliveryMode: normalizeDeliveryMode(item, eventType),
-    quantity: Math.max(1, Number(item.quantity) || 1),
-  }));
-  if (ticketItems.length === 0 && Array.isArray(ctx.ticketTypes)) {
-    for (const name of ctx.ticketTypes) {
-      ticketItems.push({
-        name: String(name || "Ticket"),
-        deliveryMode: normalizeDeliveryMode({}, eventType),
-        quantity: 1,
-      });
-    }
-  }
-
-  const hasOnlineTicket = ticketItems.some((t) => t.deliveryMode === "online");
-  const hasInPersonTicket = ticketItems.some(
-    (t) => t.deliveryMode === "in_person",
-  );
-  const isOnlineOnlyPurchase = hasOnlineTicket && !hasInPersonTicket;
-  const isHybridEvent = eventType === "hybrid";
-  const showSchedule =
-    isHybridEvent || isOnlineOnlyPurchase || eventType === "online";
-  const greeting = escapeHtml(ctx.fullName || "there");
-  const title = escapeHtml(ctx.eventTitle || "Event");
-  const badges = ticketTypeBadgesHtml(ticketItems);
-  const scheduleHtml = showSchedule
-    ? buildScheduleCardHtml({
-        eventDate: ctx.eventDate,
-        eventEndDate: ctx.eventEndDate,
-        eventStartTime: ctx.eventStartTime,
-        eventEndTime: ctx.eventEndTime,
-        eventLocation: ctx.eventLocation,
-        eventVenue: ctx.eventVenue,
-        eventId: ctx.eventId,
-        showCountdown: true,
-      })
-    : "";
-
-  if (isOnlineOnlyPurchase || (eventType === "online" && !hasInPersonTicket)) {
-    const bodyHtml = `
-      <p style="margin:0 0 16px;">Hi <strong>${greeting}</strong>,</p>
-      <p style="margin:0 0 16px;">Your payment was successful. You are confirmed for the <strong>online stream</strong> of <strong>${title}</strong>.</p>
-      ${scheduleHtml}
-      ${buildOnlineAccessNoticeHtml()}
-      <p style="margin:16px 0 0;font-size:13px;color:#6b7280;">No QR code or ticket code is needed for online access — we will email your private watch link when the event goes live.</p>
-      <p style="margin:12px 0 0;font-size:12px;color:#9ca3af;">If you bought multiple online tickets, forward the watch link to each attendee when you receive it.</p>
-    `;
-    return {
-      subject: `You're in — ${ctx.eventTitle || "Live stream"}`,
-      html: wrapTicketEmailLayout({
-        preheader:
-          "Your online access is confirmed. We will send your watch link when the event goes live.",
-        headerTitle: "Online access confirmed",
-        headerSubtitle: ctx.eventTitle || "Live event",
-        bodyHtml,
-      }),
-    };
-  }
-
-  if (hasOnlineTicket && hasInPersonTicket) {
-    const bodyHtml = `
-      <p style="margin:0 0 16px;">Hi <strong>${greeting}</strong>,</p>
-      <p style="margin:0 0 16px;">Your payment was successful for <strong>${title}</strong>.</p>
-      ${scheduleHtml}
-      ${badges ? `<div style="margin:0 0 8px;">${badges}</div>` : ""}
-      ${hasOnlineTicket ? buildOnlineAccessNoticeHtml() : ""}
-      ${hasInPersonTicket ? ctx.inPersonCardHtml || "" : ""}
-      ${
-        hasInPersonTicket && hasOnlineTicket
-          ? '<p style="margin:16px 0 0;font-size:13px;color:#6b7280;">This order includes both venue and online tickets — use the QR above for in-person entry; your stream link will arrive separately when the event goes live.</p>'
-          : hasInPersonTicket
-            ? '<p style="margin:16px 0 0;font-size:13px;color:#6b7280;">Show the QR code above at the venue for entry.</p>'
-            : ""
-      }
-    `;
-    return {
-      subject: `Your ticket — ${ctx.eventTitle || "Event"}`,
-      html: wrapTicketEmailLayout({
-        preheader: "Event details, countdown, and your ticket information.",
-        headerTitle: "Hybrid event ticket",
-        headerSubtitle: "In-person and/or online access",
-        bodyHtml,
-      }),
-    };
-  }
-
-  const dateStr = ctx.eventDate
-    ? new Date(ctx.eventDate).toLocaleDateString("en-NG", {
-        weekday: "short",
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      })
-    : "";
-  const bodyHtml = `
-    <p style="margin:0 0 16px;">Hi <strong>${greeting}</strong>,</p>
-    <p style="margin:0 0 16px;">Your payment was successful. Here is your digital ticket. If multiple tickets were purchased, please share with individual attendees.</p>
-    ${ctx.inPersonCardHtml || ""}
-    ${dateStr ? `<p style="margin:0 0 12px;color:#6b7280;font-size:14px;text-align:center;">${escapeHtml(dateStr)}</p>` : ""}
-    ${badges ? `<div style="text-align:center;margin:0 0 8px;">${badges}</div>` : ""}
-    <p style="margin:12px 0 0;font-size:12px;color:#6b7280;text-align:center;">Show this QR code at the venue for entry.</p>
-  `;
-  return {
-    subject: `Your ticket — ${ctx.eventTitle || "Event"}`,
-    html: wrapTicketEmailLayout({
-      preheader: "Your digital ticket and QR code for venue entry.",
-      headerTitle: "Your ticket",
-      headerSubtitle: ctx.eventTitle || "Event",
-      bodyHtml,
-    }),
-  };
-}
-
 /** Send digital ticket email (after payment success). Routes template by event/ticket type. */
 export async function sendTicketEmail(ctx) {
   let qrDataUrl = "";
@@ -427,7 +300,7 @@ export async function sendTicketEmail(ctx) {
   if (hasInPerson && ctx.ticketCode) {
     try {
       qrDataUrl = await QRCode.toDataURL(ctx.ticketCode, {
-        margin: 2,
+        margin: 4,
         width: 200,
       });
     } catch (qrErr) {
@@ -435,23 +308,18 @@ export async function sendTicketEmail(ctx) {
     }
   }
 
-  const enriched = {
-    ...ctx,
-    inPersonCardHtml: hasInPerson
-      ? buildInPersonTicketCardHtml({
-          ticketCode: ctx.ticketCode,
-          qrDataUrl,
-          eventTitle: ctx.eventTitle,
-        })
-      : "",
-  };
-
-  const { subject, html } = buildTicketEmailContent(enriched);
-  const text = html
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return sendEmail({ to: ctx.to, subject, html, text });
+  const attachments = qrDataUrl ? [{
+    filename: 'gatewav-entry.png',
+    content: qrDataUrl.split(',')[1],
+    content_type: 'image/png',
+    // Resend v3 passes API attachment keys through without camel-case mapping.
+    content_id: 'gatewav-entry',
+  }] : [];
+  const { subject, html, text } = renderTicketEmail(ctx, {
+    frontendBaseUrl: config.frontendBaseUrl,
+    qrSrc: qrDataUrl ? 'cid:gatewav-entry' : '',
+  });
+  return sendEmail({ to: ctx.to, subject, html, text, attachments });
 }
 
 function naira(amount) {

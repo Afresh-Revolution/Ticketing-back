@@ -9,7 +9,7 @@ import { query } from '../config/db.js';
 export async function loadEventForTicketEmail(eventId) {
   if (eventId == null || String(eventId).trim() === '') return null;
   const result = await query(
-    `SELECT id, title, date, "endDate", "startTime", "endTime", location, venue, "eventType"
+    `SELECT id, title, "imageUrl", date, "endDate", "startTime", "endTime", location, venue, "eventType"
      FROM "Event"
      WHERE id::text = $1
      LIMIT 1`,
@@ -27,7 +27,7 @@ export async function loadOrderTicketItems(orderId) {
   const result = await query(
     `SELECT COALESCE(tt.name, 'General') AS name,
             COALESCE(tt."deliveryMode", 'in_person') AS "deliveryMode",
-            COALESCE(oi.quantity, 1)::int AS quantity
+            COALESCE(oi.quantity, 1)::int AS quantity, oi.price
      FROM "OrderItem" oi
      LEFT JOIN "TicketType" tt ON tt.id::text = oi."ticketTypeId"::text
      WHERE oi."orderId"::text = $1`,
@@ -36,6 +36,7 @@ export async function loadOrderTicketItems(orderId) {
 
   return (result.rows || []).map((row) => ({
     name: String(row.name || 'General').trim() || 'General',
+    price: row.price == null ? undefined : Number(row.price),
     deliveryMode: String(row.deliveryMode || 'in_person').toLowerCase(),
     quantity: Math.max(1, Number(row.quantity) || 1),
   }));
@@ -58,7 +59,7 @@ export async function loadOrderTicketItems(orderId) {
 export async function loadWalkInTicketItem(eventId, ticketTypeName) {
   const name = String(ticketTypeName || 'General').trim() || 'General';
   const result = await query(
-    `SELECT name, COALESCE("deliveryMode", 'in_person') AS "deliveryMode"
+    `SELECT name, price, COALESCE("deliveryMode", 'in_person') AS "deliveryMode"
      FROM "TicketType"
      WHERE "eventId"::text = $1
        AND LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM($2))
@@ -68,6 +69,7 @@ export async function loadWalkInTicketItem(eventId, ticketTypeName) {
   const row = result.rows?.[0];
   return {
     name: row?.name || name,
+    price: row?.price == null ? undefined : Number(row.price),
     deliveryMode: String(row?.deliveryMode || 'in_person').toLowerCase(),
     quantity: 1,
   };
@@ -93,6 +95,9 @@ export function buildTicketEmailPayload({
 
   return {
     to: order.email,
+    orderId: order.id ?? null,
+    totalAmount: order.totalAmount ?? order.total_amount ?? null,
+    eventImageUrl: event.imageUrl ?? null,
     fullName: order.fullName || order.full_name,
     ticketCode,
     eventId: order.eventId ?? order.event_id ?? event.id,
